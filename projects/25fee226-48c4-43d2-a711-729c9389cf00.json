@@ -1,0 +1,120 @@
+{
+  "version": 1,
+  "id": "25fee226-48c4-43d2-a711-729c9389cf00",
+  "name": "Untitled video",
+  "fontId": "0f173b3e6cb6d1af",
+  "aspect": "16:9",
+  "brush": {
+    "style": "ink",
+    "color": "#f4f4f5",
+    "sizeScale": 1,
+    "opacity": 1,
+    "jitter": 0,
+    "nibModel": "round",
+    "cap": "round",
+    "seed": 1337
+  },
+  "baseEmFraction": 0.085,
+  "defaults": {
+    "sizeScale": 1,
+    "interCharDelayMs": 55,
+    "lineHeightScale": 1.2,
+    "delayBeforeMs": 300,
+    "holdBeforeTransitionMs": 1000,
+    "transition": {
+      "kind": "fade",
+      "durationMs": 600
+    }
+  },
+  "slides": [
+    {
+      "id": "f23ffa5a-51c8-4e08-9840-606dc20c1987",
+      "background": "#0b0d11",
+      "textBoxes": [
+        {
+          "id": "330b48ee-726b-466a-a37f-bdb9479ff8de",
+          "frame": {
+            "x": 0.12,
+            "y": 0.22,
+            "w": 0.7
+          },
+          "align": "left",
+          "runs": [
+            {
+              "text": "Text"
+            }
+          ],
+          "lineHeightScale": 1.2,
+          "animOrder": 0,
+          "delayBeforeMs": 300,
+          "interCharDelayMs": 55
+        }
+      ],
+      "holdBeforeTransitionMs": 1000,
+      "transition": {
+        "kind": "fade",
+        "durationMs": 600
+      }
+    },
+    {
+      "id": "608ddc03-7d94-474b-872c-a90c834f6d77",
+      "background": "#0b0d11",
+      "textBoxes": [
+        {
+          "id": "af87eeab-7522-4646-8411-9ddf477346f9",
+          "frame": {
+            "x": 0.12,
+            "y": 0.22,
+            "w": 0.7
+          },
+          "align": "left",
+          "runs": [
+            {
+              "text": "Text"
+            }
+          ],
+          "lineHeightScale": 1.2,
+          "animOrder": 0,
+          "delayBeforeMs": 300,
+          "interCharDelayMs": 55
+        }
+      ],
+      "holdBeforeTransitionMs": 1000,
+      "transition": {
+        "kind": "fade",
+        "durationMs": 600
+      }
+    },
+    {
+      "id": "5c45a0ca-deec-446d-92b3-2e07a8f2c25a",
+      "background": "#0b0d11",
+      "textBoxes": [
+        {
+          "id": "a8c7f9bc-73c4-482f-8cdb-6b6e1b415045",
+          "frame": {
+            "x": 0.12,
+            "y": 0.22,
+            "w": 0.7
+          },
+          "align": "left",
+          "runs": [
+            {
+              "text": "Text"
+            }
+          ],
+          "lineHeightScale": 1.2,
+          "animOrder": 0,
+          "delayBeforeMs": 300,
+          "interCharDelayMs": 55
+        }
+      ],
+      "holdBeforeTransitionMs": 1000,
+      "transition": {
+        "kind": "fade",
+        "durationMs": 600
+      }
+    }
+  ],
+  "createdAt": "2026-06-23T22:38:48.573Z",
+  "updatedAt": "2026-06-23T22:39:22.336Z"
+}

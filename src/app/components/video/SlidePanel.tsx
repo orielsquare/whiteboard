@@ -1,0 +1,117 @@
+import { type MouseEvent } from 'react'
+import {
+  DndContext,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  arrayMove,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import type { Slide } from '@lib/project/schema'
+import { useVideoStore } from '../../state/videoStore'
+
+const EMPTY: Slide[] = []
+
+export function SlidePanel() {
+  const slides = useVideoStore((s) => s.project?.slides ?? EMPTY)
+  const selectedId = useVideoStore((s) => s.selectedSlideId)
+  const select = useVideoStore((s) => s.selectSlide)
+  const add = useVideoStore((s) => s.addSlide)
+  const copy = useVideoStore((s) => s.copySlide)
+  const del = useVideoStore((s) => s.deleteSlide)
+  const reorder = useVideoStore((s) => s.reorderSlides)
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
+  const onDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e
+    if (!over || active.id === over.id) return
+    const ids = slides.map((s) => s.id)
+    const oi = ids.indexOf(String(active.id))
+    const ni = ids.indexOf(String(over.id))
+    if (oi < 0 || ni < 0) return
+    reorder(arrayMove(ids, oi, ni))
+  }
+
+  return (
+    <div className="slidepanel">
+      <div className="slidepanel-head">
+        <span>Slides ({slides.length})</span>
+        <button onClick={add}>+ Slide</button>
+      </div>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+        <SortableContext items={slides.map((s) => s.id)} strategy={verticalListSortingStrategy}>
+          <ol className="slidelist">
+            {slides.map((s, i) => (
+              <SlideRow
+                key={s.id}
+                slide={s}
+                index={i}
+                selected={s.id === selectedId}
+                canDelete={slides.length > 1}
+                onSelect={() => select(s.id)}
+                onCopy={() => copy(s.id)}
+                onDelete={() => del(s.id)}
+              />
+            ))}
+          </ol>
+        </SortableContext>
+      </DndContext>
+    </div>
+  )
+}
+
+function SlideRow({
+  slide,
+  index,
+  selected,
+  canDelete,
+  onSelect,
+  onCopy,
+  onDelete,
+}: {
+  slide: Slide
+  index: number
+  selected: boolean
+  canDelete: boolean
+  onSelect: () => void
+  onCopy: () => void
+  onDelete: () => void
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: slide.id,
+  })
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+  }
+  const text =
+    slide.textBoxes
+      .map((b) => b.runs.map((r) => r.text).join(''))
+      .join(' · ')
+      .slice(0, 28) || '(empty)'
+  const stop = (e: MouseEvent) => e.stopPropagation()
+
+  return (
+    <li ref={setNodeRef} style={style} className={selected ? 'slide-row sel' : 'slide-row'} onClick={onSelect}>
+      <span className="drag" title="drag to reorder" {...attributes} {...listeners}>
+        ⠿
+      </span>
+      <span className="slide-no">{index + 1}</span>
+      <span className="slide-thumb" style={{ background: slide.background }}>
+        {text}
+      </span>
+      <span className="rowbtns">
+        <button title="duplicate" onClick={(e) => { stop(e); onCopy() }}>⧉</button>
+        <button title="delete" disabled={!canDelete} onClick={(e) => { stop(e); onDelete() }}>×</button>
+      </span>
+    </li>
+  )
+}

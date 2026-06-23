@@ -1,0 +1,186 @@
+import { defineConfig, type Plugin } from 'vite'
+import react from '@vitejs/plugin-react'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+import fs from 'node:fs/promises'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+
+const rootDir = fileURLToPath(new URL('.', import.meta.url))
+const fontsDir = path.join(rootDir, 'fonts')
+const projectsDir = path.join(rootDir, 'projects')
+
+function readBody(req: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    req.on('data', (c) => chunks.push(c as Buffer))
+    req.on('end', () => resolve(Buffer.concat(chunks)))
+    req.on('error', reject)
+  })
+}
+
+function sendJson(res: ServerResponse, status: number, body: unknown) {
+  res.statusCode = status
+  res.setHeader('content-type', 'application/json')
+  res.end(JSON.stringify(body))
+}
+
+/**
+ * Persists font manifests to disk under ./fonts/<id>/ via /api/fonts, so the
+ * full configuration (and the font file) survives reloads and is consumable by
+ * future tools (slide editor, ffmpeg export).
+ */
+function fontStorePlugin(): Plugin {
+  return {
+    name: 'font-store',
+    configureServer(server) {
+      server.middlewares.use(async (req: IncomingMessage, res: ServerResponse, next) => {
+        const url = req.url ?? ''
+        if (!url.startsWith('/api/fonts')) return next()
+        const pathname = url.split('?')[0]
+        const rest = pathname.slice('/api/fonts'.length).replace(/^\/+/, '') // "", "<id>", "<id>/font"
+        const [idRaw, sub] = rest.split('/')
+        const id = idRaw ? decodeURIComponent(idRaw) : ''
+
+        try {
+          if (req.method === 'GET' && !id) {
+            return sendJson(res, 200, await listManifests())
+          }
+          if (req.method === 'GET' && id && !sub) {
+            const file = path.join(fontsDir, id, 'manifest.json')
+            try {
+              const data = await fs.readFile(file, 'utf8')
+              res.statusCode = 200
+              res.setHeader('content-type', 'application/json')
+              return res.end(data)
+            } catch {
+              return sendJson(res, 404, { error: 'not found' })
+            }
+          }
+          if (req.method === 'PUT' && id && !sub) {
+            const body = await readBody(req)
+            const dir = path.join(fontsDir, id)
+            await fs.mkdir(dir, { recursive: true })
+            await fs.writeFile(path.join(dir, 'manifest.json'), body)
+            return sendJson(res, 200, { ok: true })
+          }
+          if (req.method === 'PUT' && id && sub === 'font') {
+            const body = await readBody(req)
+            const dir = path.join(fontsDir, id)
+            await fs.mkdir(dir, { recursive: true })
+            await fs.writeFile(path.join(dir, 'font.ttf'), body)
+            return sendJson(res, 200, { ok: true })
+          }
+          return sendJson(res, 405, { error: 'method not allowed' })
+        } catch (err) {
+          return sendJson(res, 500, { error: String(err) })
+        }
+      })
+    },
+  }
+}
+
+async function listManifests() {
+  try {
+    const entries = await fs.readdir(fontsDir, { withFileTypes: true })
+    const out = []
+    for (const e of entries) {
+      if (!e.isDirectory()) continue
+      try {
+        const data = await fs.readFile(path.join(fontsDir, e.name, 'manifest.json'), 'utf8')
+        const m = JSON.parse(data)
+        out.push({
+          id: m.metadata?.fontId ?? e.name,
+          family: m.metadata?.family ?? e.name,
+          glyphCount: Object.keys(m.glyphs ?? {}).length,
+          updatedAt: m.updatedAt ?? '',
+        })
+      } catch {
+        // skip dirs without a valid manifest
+      }
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+/** Persists video projects to disk under ./projects/<id>.json via /api/projects. */
+function projectStorePlugin(): Plugin {
+  return {
+    name: 'project-store',
+    configureServer(server) {
+      server.middlewares.use(async (req: IncomingMessage, res: ServerResponse, next) => {
+        const url = req.url ?? ''
+        if (!url.startsWith('/api/projects')) return next()
+        const pathname = url.split('?')[0]
+        const rest = pathname.slice('/api/projects'.length).replace(/^\/+/, '')
+        const id = rest ? decodeURIComponent(rest.split('/')[0]) : ''
+        try {
+          if (req.method === 'GET' && !id) return sendJson(res, 200, await listProjects())
+          if (req.method === 'GET' && id) {
+            try {
+              const data = await fs.readFile(path.join(projectsDir, id + '.json'), 'utf8')
+              res.statusCode = 200
+              res.setHeader('content-type', 'application/json')
+              return res.end(data)
+            } catch {
+              return sendJson(res, 404, { error: 'not found' })
+            }
+          }
+          if (req.method === 'PUT' && id) {
+            const body = await readBody(req)
+            await fs.mkdir(projectsDir, { recursive: true })
+            await fs.writeFile(path.join(projectsDir, id + '.json'), body)
+            return sendJson(res, 200, { ok: true })
+          }
+          if (req.method === 'DELETE' && id) {
+            try {
+              await fs.unlink(path.join(projectsDir, id + '.json'))
+            } catch {
+              // already gone
+            }
+            return sendJson(res, 200, { ok: true })
+          }
+          return sendJson(res, 405, { error: 'method not allowed' })
+        } catch (err) {
+          return sendJson(res, 500, { error: String(err) })
+        }
+      })
+    },
+  }
+}
+
+async function listProjects() {
+  try {
+    const entries = await fs.readdir(projectsDir, { withFileTypes: true })
+    const out = []
+    for (const e of entries) {
+      if (!e.isFile() || !e.name.endsWith('.json')) continue
+      try {
+        const m = JSON.parse(await fs.readFile(path.join(projectsDir, e.name), 'utf8'))
+        out.push({
+          id: m.id ?? e.name.replace(/\.json$/, ''),
+          name: m.name ?? '(untitled)',
+          fontId: m.fontId ?? '',
+          slideCount: (m.slides ?? []).length,
+          updatedAt: m.updatedAt ?? '',
+        })
+      } catch {
+        // skip invalid project file
+      }
+    }
+    return out
+  } catch {
+    return []
+  }
+}
+
+export default defineConfig({
+  plugins: [react(), fontStorePlugin(), projectStorePlugin()],
+  resolve: {
+    alias: {
+      '@lib': fileURLToPath(new URL('./src/lib', import.meta.url)),
+      '@app': fileURLToPath(new URL('./src/app', import.meta.url)),
+    },
+  },
+})
