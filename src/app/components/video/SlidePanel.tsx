@@ -14,12 +14,21 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import type { PreparedGlyph } from '@lib/animation/timeline'
+import type { FontMetrics } from '@lib/project/layout'
 import type { Slide } from '@lib/project/schema'
 import { useVideoStore } from '../../state/videoStore'
+import { SlideThumbnail } from './SlideThumbnail'
 
 const EMPTY: Slide[] = []
 
-export function SlidePanel() {
+export function SlidePanel({
+  glyphs,
+  metrics,
+}: {
+  glyphs: Map<string, PreparedGlyph>
+  metrics: FontMetrics | null
+}) {
   const slides = useVideoStore((s) => s.project?.slides ?? EMPTY)
   const selectedId = useVideoStore((s) => s.selectedSlideId)
   const select = useVideoStore((s) => s.selectSlide)
@@ -55,6 +64,8 @@ export function SlidePanel() {
                 index={i}
                 selected={s.id === selectedId}
                 canDelete={slides.length > 1}
+                glyphs={glyphs}
+                metrics={metrics}
                 onSelect={() => select(s.id)}
                 onCopy={() => copy(s.id)}
                 onDelete={() => del(s.id)}
@@ -72,6 +83,8 @@ function SlideRow({
   index,
   selected,
   canDelete,
+  glyphs,
+  metrics,
   onSelect,
   onCopy,
   onDelete,
@@ -80,6 +93,8 @@ function SlideRow({
   index: number
   selected: boolean
   canDelete: boolean
+  glyphs: Map<string, PreparedGlyph>
+  metrics: FontMetrics | null
   onSelect: () => void
   onCopy: () => void
   onDelete: () => void
@@ -92,11 +107,6 @@ function SlideRow({
     transition,
     opacity: isDragging ? 0.6 : 1,
   }
-  const text =
-    slide.textBoxes
-      .map((b) => b.runs.map((r) => r.text).join(''))
-      .join(' · ')
-      .slice(0, 28) || '(empty)'
   const stop = (e: MouseEvent) => e.stopPropagation()
 
   return (
@@ -105,9 +115,7 @@ function SlideRow({
         ⠿
       </span>
       <span className="slide-no">{index + 1}</span>
-      <span className="slide-thumb" style={{ background: slide.background }}>
-        {text}
-      </span>
+      <SlideThumbnail slide={slide} glyphs={glyphs} metrics={metrics} />
       <span className="rowbtns">
         <button title="duplicate" onClick={(e) => { stop(e); onCopy() }}>⧉</button>
         <button title="delete" disabled={!canDelete} onClick={(e) => { stop(e); onDelete() }}>×</button>

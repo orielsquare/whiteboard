@@ -1,18 +1,24 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { LoadedFont } from '@lib/font/load'
-import type { ExtractionParams, GlyphExtractor } from '@lib/extraction'
+import { extractionSig, type ExtractionParams, type GlyphExtractor } from '@lib/extraction'
 import type { BrushSettings, BrushStyle } from '@lib/manifest/schema'
-import type { Aspect, TransitionKind } from '@lib/project/schema'
+import { prepareGlyph, type PreparedGlyph } from '@lib/animation/timeline'
+import type { FontMetrics } from '@lib/project/layout'
+import type { Aspect } from '@lib/project/schema'
 import { projectStore, type ProjectSummary } from '@lib/persistence/ProjectStore'
-import { useVideoStore, videoHistory } from '../../state/videoStore'
+import { ensureProjectGlyphsDerived, useVideoStore, videoHistory } from '../../state/videoStore'
+import { useEditorStore } from '../../state/store'
 import { SlidePanel } from './SlidePanel'
+import { SlideCanvas } from './SlideCanvas'
+import { Inspector } from './Inspector'
 
 const ASPECTS: Aspect[] = ['16:9', '9:16']
 const BRUSH_STYLES: BrushStyle[] = ['chalk', 'ink', 'marker']
-const TRANSITIONS: TransitionKind[] = ['none', 'fade', 'rubout', 'scroll-up', 'scroll-left']
 
 export function VideoView({
   font,
+  extractor,
+  params,
   brush,
 }: {
   font: LoadedFont
@@ -21,18 +27,44 @@ export function VideoView({
   brush: BrushSettings
 }) {
   const project = useVideoStore((s) => s.project)
-  const selectedSlideId = useVideoStore((s) => s.selectedSlideId)
   const newProject = useVideoStore((s) => s.newProject)
   const loadProject = useVideoStore((s) => s.loadProject)
   const saveProject = useVideoStore((s) => s.saveProject)
   const setAspect = useVideoStore((s) => s.setAspect)
   const setBaseEmFraction = useVideoStore((s) => s.setBaseEmFraction)
   const setBrush = useVideoStore((s) => s.setBrush)
-  const setSlideTransition = useVideoStore((s) => s.setSlideTransition)
-  const updateSlide = useVideoStore((s) => s.updateSlide)
 
   const [status, setStatus] = useState<string | null>(null)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
+
+  // The shared font manifest drives glyph geometry; gate derivation on it
+  // belonging to the current font (as App + PreviewView do).
+  const manifestGlyphs = useEditorStore((s) => s.manifest?.glyphs)
+  const manifestMeta = useEditorStore((s) => s.manifest?.metadata)
+  const manifestFontId = manifestMeta?.fontId
+
+  // Prepared glyphs keyed by character, rebuilt only when the manifest changes.
+  const glyphs = useMemo(() => {
+    const m = new Map<string, PreparedGlyph>()
+    if (!manifestGlyphs) return m
+    for (const key of Object.keys(manifestGlyphs)) {
+      const g = manifestGlyphs[key]
+      try {
+        m.set(g.char, prepareGlyph(g))
+      } catch {
+        /* malformed glyph — skip */
+      }
+    }
+    return m
+  }, [manifestGlyphs])
+
+  const metrics: FontMetrics | null = useMemo(
+    () =>
+      manifestMeta
+        ? { unitsPerEm: manifestMeta.unitsPerEm, ascender: manifestMeta.ascender, descender: manifestMeta.descender }
+        : { unitsPerEm: font.unitsPerEm, ascender: font.font.ascender, descender: font.font.descender },
+    [manifestMeta, font],
+  )
 
   // Bootstrap a project on first entry.
   useEffect(() => {
@@ -41,6 +73,24 @@ export function VideoView({
       videoHistory.clear()
     }
   }, [font, brush, newProject])
+
+  // Derive every character used in the project so it can render. Keyed on a
+  // signature of the needed chars + extraction params (NOT the whole project),
+  // so dragging/positioning doesn't re-trigger derivation every frame.
+  const paramsSig = extractionSig(params)
+  const charsSig = useMemo(() => {
+    if (!project) return ''
+    const set = new Set<string>()
+    for (const sl of project.slides)
+      for (const b of sl.textBoxes) for (const r of b.runs) for (const ch of r.text) if (ch.trim().length) set.add(ch)
+    return [...set].sort().join('')
+  }, [project])
+  useEffect(() => {
+    if (!extractor || manifestFontId !== font.hash) return
+    const p = useVideoStore.getState().project
+    if (p) void ensureProjectGlyphsDerived(extractor, p, params)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [charsSig, paramsSig, extractor, manifestFontId, font.hash])
 
   const refreshList = () => projectStore.list().then(setProjects).catch(() => {})
   useEffect(() => {
@@ -65,7 +115,6 @@ export function VideoView({
   }
 
   if (!project) return <div className="stage">Loading project…</div>
-  const slide = project.slides.find((s) => s.id === selectedSlideId) ?? project.slides[0]
 
   return (
     <div className="video">
@@ -122,56 +171,15 @@ export function VideoView({
       {status && <div className="savestatus">{status}</div>}
 
       <div className="video-body">
-        <SlidePanel />
-        <div className="stage stage-overlay video-stage">
-          <div className="placeholder">
-            Slide {project.slides.indexOf(slide) + 1} / {project.slides.length} — layout canvas arrives in
-            the next phase. {slide.textBoxes.length} textbox(es).
-          </div>
-        </div>
-        <aside className="inspector">
-          <h3>Slide</h3>
-          <label className="slider">
-            <span>closing transition</span>
-            <select
-              value={slide.transition.kind}
-              onChange={(e) => setSlideTransition(slide.id, { kind: e.target.value as TransitionKind })}
-            >
-              {TRANSITIONS.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="slider">
-            <span>transition <b>{slide.transition.durationMs}ms</b></span>
-            <input
-              type="range"
-              min={100}
-              max={2000}
-              step={50}
-              value={slide.transition.durationMs}
-              onChange={(e) => setSlideTransition(slide.id, { durationMs: Number(e.target.value) })}
-            />
-          </label>
-          <label className="slider">
-            <span>hold before <b>{slide.holdBeforeTransitionMs}ms</b></span>
-            <input
-              type="range"
-              min={0}
-              max={4000}
-              step={100}
-              value={slide.holdBeforeTransitionMs}
-              onChange={(e) => updateSlide(slide.id, { holdBeforeTransitionMs: Number(e.target.value) })}
-            />
-          </label>
-        </aside>
+        <SlidePanel glyphs={glyphs} metrics={metrics} />
+        <SlideCanvas glyphs={glyphs} metrics={metrics ?? { unitsPerEm: font.unitsPerEm, ascender: font.font.ascender, descender: font.font.descender }} />
+        <Inspector />
       </div>
 
       <p className="hint">
-        Video editor — phase 1: slides (add/copy/delete/drag-reorder) + save/load to disk. Layout,
-        inline styling, and animated playback come next.
+        Video editor — layout view: click empty space to add a textbox, drag to move (one undo per
+        drag). Select a textbox to edit its text, per-selection styling, alignment, wrap width and
+        timing in the inspector. Animated playback comes next.
       </p>
     </div>
   )

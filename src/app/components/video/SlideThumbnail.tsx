@@ -1,0 +1,78 @@
+import { useEffect, useMemo, useRef } from 'react'
+import type { PreparedGlyph } from '@lib/animation/timeline'
+import { aspectHeightUnits } from '@lib/project/coords'
+import { layoutTextBox, type FontMetrics } from '@lib/project/layout'
+import { renderTextBox } from '@lib/project/render'
+import type { Slide } from '@lib/project/schema'
+import { useVideoStore } from '../../state/videoStore'
+import { boxOriginPx } from './layoutCanvas'
+
+/** Backing height of a thumbnail in px (2× the ~40px display height, for crispness). */
+const THUMB_BACK_H = 80
+
+/**
+ * A small static preview of one slide. Renders **once per content signature**
+ * (effect-gated), reusing the same pure render path as the main canvas — so the
+ * thumbnail always matches the layout view.
+ */
+export function SlideThumbnail({
+  slide,
+  glyphs,
+  metrics,
+}: {
+  slide: Slide
+  glyphs: Map<string, PreparedGlyph>
+  metrics: FontMetrics | null
+}) {
+  const aspect = useVideoStore((s) => s.project?.aspect ?? '16:9')
+  const baseEmFraction = useVideoStore((s) => s.project?.baseEmFraction ?? 0.085)
+  const brush = useVideoStore((s) => s.project?.brush)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+
+  // A cheap signature of everything that affects the rendered pixels.
+  const sig = useMemo(
+    () =>
+      JSON.stringify({
+        a: aspect,
+        e: baseEmFraction,
+        bg: slide.background,
+        br: brush && [brush.style, brush.color, brush.sizeScale, brush.opacity, brush.jitter],
+        boxes: slide.textBoxes.map((b) => ({
+          f: [b.frame.x, b.frame.y, b.frame.w],
+          al: b.align,
+          lh: b.lineHeightScale,
+          d: b.interCharDelayMs,
+          r: b.runs.map((r) => [r.text, r.sizeScale ?? 1, r.color ?? '', !!r.underline]),
+        })),
+      }),
+    [aspect, baseEmFraction, brush, slide],
+  )
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const aspectH = aspectHeightUnits(aspect)
+    const w = Math.max(1, Math.round(THUMB_BACK_H / aspectH))
+    const h = Math.round(w * aspectH)
+    if (canvas.width !== w) canvas.width = w
+    if (canvas.height !== h) canvas.height = h
+    ctx.clearRect(0, 0, w, h)
+    ctx.fillStyle = slide.background
+    ctx.fillRect(0, 0, w, h)
+    if (!metrics || !brush) return
+    const minHalfWidth = metrics.unitsPerEm * 0.004
+    for (const box of slide.textBoxes) {
+      const layout = layoutTextBox(box, glyphs, metrics, baseEmFraction, w)
+      renderTextBox(ctx, layout, boxOriginPx(box, w), brush, Infinity, minHalfWidth)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig, glyphs, metrics])
+
+  return (
+    <span className="slide-thumb">
+      <canvas ref={canvasRef} className="slide-thumb-canvas" />
+    </span>
+  )
+}
