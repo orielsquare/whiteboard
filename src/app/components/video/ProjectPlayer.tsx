@@ -20,6 +20,8 @@ export function ProjectPlayer({ glyphs, metrics }: { glyphs: Map<string, Prepare
   const selectedSlideId = useVideoStore((s) => s.selectedSlideId)
   const playSelectedIds = useVideoStore((s) => s.playSelectedIds)
   const setPlaySelected = useVideoStore((s) => s.setPlaySelected)
+  const playbackRate = useVideoStore((s) => s.project?.playbackRate ?? 1)
+  const setPlaybackRate = useVideoStore((s) => s.setPlaybackRate)
   const [scope, setScope] = useState<Scope>('all')
 
   // The slides actually played, in project order.
@@ -31,8 +33,8 @@ export function ProjectPlayer({ glyphs, metrics }: { glyphs: Map<string, Prepare
   }, [project, scope, playSelectedIds])
 
   const rc = useMemo(
-    () => (subProject ? buildRenderContext(subProject, glyphs, BACKING_W, metrics) : null),
-    [subProject, glyphs, metrics],
+    () => (subProject ? buildRenderContext(subProject, glyphs, BACKING_W, metrics, playbackRate) : null),
+    [subProject, glyphs, metrics, playbackRate],
   )
   const totalMs = rc ? projectDurationMs(rc) : 0
 
@@ -85,6 +87,8 @@ export function ProjectPlayer({ glyphs, metrics }: { glyphs: Map<string, Prepare
         ready={ready}
         resetKey={resetKey}
         draw={draw}
+        speed={playbackRate}
+        onSpeedChange={setPlaybackRate}
         autoPlay
         emptyHint={scope === 'selected' ? 'tick one or more slides in the panel' : 'no slides'}
       />

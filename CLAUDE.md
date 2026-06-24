@@ -110,8 +110,13 @@ Font tooling (load → extract → edit → animate → save) is complete. The *
 complete**: slides (add/copy/delete/drag-reorder + save/load), the **Layout** view (drag/select/add
 textboxes), **inline rich text** (per-selection size/colour/underline via `runs.ts`/`RunEditor`), the
 **Order** view (per-box animation order + delays + per-slide Play), **Play** (project-level play-all
-with an All/Selected scope for single-slide or subset playback), per-slide **background colour**, and
-human-style **underlines** (drawn after the word). **MP4 export** is done: the pure render seam
+with an All/Selected scope for single-slide or subset playback), per-slide **background colour**,
+human-style **underlines** (drawn after the word), a project **playback speed** (`playbackRate`, ×0.25–6) that
+scales **only the writing animation** — each box gets a real-time window `contentMs/speed` and the
+reveal is sampled at `(tLocal − boxStart)×speed`, while per-box `delayBeforeMs`, the hold, and the
+transition are **invariant** (preview + export both run at real time off `rc.speed`), and
+per-**textbox brush** overrides (`TextBox.brush`, falling back to the project brush; a run's colour
+still wins). **MP4 export** is done: the pure render seam
 (`src/lib/project/` `buildRenderContext` + `renderProject`/`renderSlide`/`projectDurationMs`, with
 `tools/{layout,runs,timing}.test.mjs` covering the pure engines) is driven headlessly by
 `tools/videoExport.mjs` (`@napi-rs/canvas` → ffmpeg) behind `POST /api/export` and a toolbar button.

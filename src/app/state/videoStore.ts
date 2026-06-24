@@ -52,6 +52,7 @@ interface VideoState {
 
   setAspect: (a: Aspect) => void
   setBaseEmFraction: (v: number) => void
+  setPlaybackRate: (v: number) => void
   setBrush: (b: BrushSettings) => void
 
   newProject: (fontId: string, brush: BrushSettings) => void
@@ -144,6 +145,8 @@ export const useVideoStore = create<VideoState>()(
       setAspect: (a) => set((s) => (s.project ? { project: E.setAspect(s.project, a) } : s)),
       setBaseEmFraction: (v) =>
         set((s) => (s.project ? { project: E.setBaseEmFraction(s.project, v) } : s)),
+      setPlaybackRate: (v) =>
+        set((s) => (s.project ? { project: E.setPlaybackRate(s.project, v) } : s)),
       setBrush: (b) => set((s) => (s.project ? { project: E.setBrush(s.project, b) } : s)),
 
       newProject: (fontId, brush) => {

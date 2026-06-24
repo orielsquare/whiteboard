@@ -144,6 +144,9 @@ export function setAspect(p: VideoProject, aspect: Aspect): VideoProject {
 export function setBaseEmFraction(p: VideoProject, baseEmFraction: number): VideoProject {
   return { ...p, baseEmFraction }
 }
+export function setPlaybackRate(p: VideoProject, playbackRate: number): VideoProject {
+  return { ...p, playbackRate }
+}
 export function setBrush(p: VideoProject, brush: BrushSettings): VideoProject {
   return { ...p, brush }
 }

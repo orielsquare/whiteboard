@@ -16,13 +16,15 @@ import { PlaybackCanvas } from './PlaybackCanvas'
 export function SlideOrderView({ glyphs, metrics }: { glyphs: Map<string, PreparedGlyph>; metrics: FontMetrics }) {
   const project = useVideoStore((s) => s.project)
   const selectedSlideId = useVideoStore((s) => s.selectedSlideId)
+  const playbackRate = useVideoStore((s) => s.project?.playbackRate ?? 1)
+  const setPlaybackRate = useVideoStore((s) => s.setPlaybackRate)
 
   const slideIndex = project ? Math.max(0, project.slides.findIndex((s) => s.id === selectedSlideId)) : -1
   const slide = project && slideIndex >= 0 ? project.slides[slideIndex] : undefined
 
   const rc = useMemo(
-    () => (project ? buildRenderContext(project, glyphs, BACKING_W, metrics) : null),
-    [project, glyphs, metrics],
+    () => (project ? buildRenderContext(project, glyphs, BACKING_W, metrics, playbackRate) : null),
+    [project, glyphs, metrics, playbackRate],
   )
   const totalMs = rc && slideIndex >= 0 ? rc.timing.slides[slideIndex]?.timing.totalMs ?? 0 : 0
 
@@ -45,7 +47,16 @@ export function SlideOrderView({ glyphs, metrics }: { glyphs: Map<string, Prepar
 
   return (
     <div className="orderview">
-      <PlaybackCanvas aspect={project.aspect} totalMs={totalMs} ready={ready} resetKey={selectedSlideId ?? ''} draw={draw} autoPlay />
+      <PlaybackCanvas
+        aspect={project.aspect}
+        totalMs={totalMs}
+        ready={ready}
+        resetKey={selectedSlideId ?? ''}
+        draw={draw}
+        speed={playbackRate}
+        onSpeedChange={setPlaybackRate}
+        autoPlay
+      />
       <div className="order-head">
         Animation order — drag to reorder; “+ms” delays each box after the previous one finishes.
       </div>

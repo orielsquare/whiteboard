@@ -28,21 +28,29 @@ export interface SlideTiming {
   totalMs: number
 }
 
-/** Sequence a slide's boxes by `animOrder`, accumulating delays + content time. */
-export function computeSlideTiming(slide: Slide, layouts: Map<string, TextBoxLayout>): SlideTiming {
+/**
+ * Sequence a slide's boxes by `animOrder` into a real-time timeline. `speed`
+ * scales ONLY the writing animation (a box's `contentMs`, i.e. glyph reveal +
+ * inter-char cadence + underline). Everything else is **invariant**: per-box
+ * `delayBeforeMs` (textbox-order delays), the hold-before-transition, and the
+ * transition duration. So each box's writing occupies `contentMs / speed` of real
+ * time; the transition begins after the last box finishes writing + the hold.
+ */
+export function computeSlideTiming(slide: Slide, layouts: Map<string, TextBoxLayout>, speed = 1): SlideTiming {
+  const rate = speed > 0 ? speed : 1
   const ordered = [...slide.textBoxes].sort((a, b) => a.animOrder - b.animOrder)
   let cursor = 0
   const boxes: BoxTiming[] = []
   for (const box of ordered) {
-    const contentMs = layouts.get(box.id)?.contentMs ?? 0
-    const startMs = cursor + box.delayBeforeMs
-    const endMs = startMs + contentMs
+    const writingMs = (layouts.get(box.id)?.contentMs ?? 0) / rate // only the writing scales
+    const startMs = cursor + box.delayBeforeMs // delay invariant
+    const endMs = startMs + writingMs
     boxes.push({ boxId: box.id, startMs, endMs })
     cursor = endMs
   }
   const contentEndMs = cursor
-  const holdEndMs = contentEndMs + slide.holdBeforeTransitionMs
-  const transitionMs = slide.transition.kind === 'none' ? 0 : slide.transition.durationMs
+  const holdEndMs = contentEndMs + slide.holdBeforeTransitionMs // hold invariant
+  const transitionMs = slide.transition.kind === 'none' ? 0 : slide.transition.durationMs // invariant
   return { boxes, contentEndMs, holdEndMs, transitionMs, totalMs: holdEndMs + transitionMs }
 }
 
@@ -65,11 +73,12 @@ export interface ProjectTiming {
 export function computeProjectTiming(
   project: VideoProject,
   layoutsBySlide: Map<string, Map<string, TextBoxLayout>>,
+  speed = 1,
 ): ProjectTiming {
   let cursor = 0
   const slides: ProjectSlideTiming[] = []
   for (const slide of project.slides) {
-    const timing = computeSlideTiming(slide, layoutsBySlide.get(slide.id) ?? new Map())
+    const timing = computeSlideTiming(slide, layoutsBySlide.get(slide.id) ?? new Map(), speed)
     slides.push({ slideId: slide.id, startMs: cursor, timing })
     cursor += timing.holdEndMs // next slide starts as this one's transition begins
   }

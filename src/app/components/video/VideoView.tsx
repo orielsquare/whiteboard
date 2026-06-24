@@ -134,6 +134,7 @@ export function VideoView({
           metrics: { unitsPerEm: m.metadata.unitsPerEm, ascender: m.metadata.ascender, descender: m.metadata.descender },
           fps: 30,
           width: 1280,
+          speed: p.playbackRate ?? 1,
           name: p.name,
         }),
       })

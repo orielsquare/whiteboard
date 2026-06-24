@@ -42,6 +42,8 @@ export interface TextBox {
   delayBeforeMs: number
   /** handwriting cadence between glyphs in this box. */
   interCharDelayMs: number
+  /** per-box brush override; undefined = use the project brush. A run's colour still wins. */
+  brush?: BrushSettings
 }
 
 export interface ClosingTransition {
@@ -75,8 +77,10 @@ export interface VideoProject {
   /** the font this project animates with (=== LoadedFont.hash / manifest.metadata.fontId). */
   fontId: string
   aspect: Aspect
-  /** global texture; a run's colour overrides brush.color. */
+  /** global texture; a textbox or run can override it. */
   brush: BrushSettings
+  /** playback/export speed multiplier (1 = real time); scales the whole video's time. */
+  playbackRate: number
   /** em height of a size-1 run as a fraction of canvas width. */
   baseEmFraction: number
   defaults: ProjectDefaults
@@ -136,6 +140,7 @@ export function newVideoProject(fontId: string, brush: BrushSettings, isoNow: st
     fontId,
     aspect: '16:9',
     brush: { ...brush },
+    playbackRate: 1,
     baseEmFraction: 0.085,
     defaults,
     slides: [newSlide(defaults)],

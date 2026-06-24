@@ -83,5 +83,42 @@ const layouts = (entries) => new Map(entries.map(([id, contentMs]) => [id, { con
   check('5 slide0 total=800', pt.slides[0].timing.totalMs === 800, pt.slides[0].timing.totalMs)
 }
 
+// 6) speed scales ONLY the writing; per-box delay, hold, transition are invariant
+{
+  const s = slide('s', [box('a', 0, 100)], 1000, { kind: 'fade', durationMs: 600 })
+  const lay = layouts([['a', 500]])
+  const t1 = T.computeSlideTiming(s, lay, 1)
+  const t2 = T.computeSlideTiming(s, lay, 2)
+  // speed 1: delay 100, writing 500 → end 600, contentEnd 600, holdEnd 1600, total 2200
+  check('6 speed1 start=100', t1.boxes[0].startMs === 100, t1.boxes[0].startMs)
+  check('6 speed1 contentEnd=600', t1.contentEndMs === 600, t1.contentEndMs)
+  check('6 speed1 total=2200', t1.totalMs === 2200, t1.totalMs)
+  // speed 2: delay STILL 100 (invariant), writing 250 → end 350
+  check('6 speed2 start=100 (delay invariant)', t2.boxes[0].startMs === 100, t2.boxes[0].startMs)
+  check('6 speed2 contentEnd=350', t2.contentEndMs === 350, t2.contentEndMs)
+  // hold (1000) + transition (600) UNCHANGED → holdEnd 1350, total 1950
+  check('6 speed2 holdEnd=1350 (hold invariant)', t2.holdEndMs === 1350, t2.holdEndMs)
+  check('6 speed2 transition still 600', t2.transitionMs === 600, t2.transitionMs)
+  check('6 speed2 total=1950', t2.totalMs === 1950, t2.totalMs)
+  // The render maps writing time as (real - boxStart) × speed; the window must
+  // satisfy (end - start) × speed === contentMs so the box finishes exactly at end.
+  check('6 window×speed === contentMs', (t2.boxes[0].endMs - t2.boxes[0].startMs) * 2 === 500)
+}
+
+// 7) multi-box: per-box delays invariant across speeds; writing windows scale
+{
+  const s = slide('s', [box('A', 0, 200), box('B', 1, 300)], 0, { kind: 'none', durationMs: 0 })
+  const lay = layouts([['A', 400], ['B', 600]])
+  const t1 = T.computeSlideTiming(s, lay, 1)
+  const t2 = T.computeSlideTiming(s, lay, 2)
+  // speed1: A start200 end600; B start = 600+300=900, end 1500
+  check('7 s1 A=[200,600]', t1.boxes[0].startMs === 200 && t1.boxes[0].endMs === 600, t1.boxes[0])
+  check('7 s1 B=[900,1500]', t1.boxes[1].startMs === 900 && t1.boxes[1].endMs === 1500, t1.boxes[1])
+  // speed2: A start200 (delay invariant) end 200+200=400; B start = 400+300=700 (delay invariant), end 700+300=1000
+  check('7 s2 A=[200,400]', t2.boxes[0].startMs === 200 && t2.boxes[0].endMs === 400, t2.boxes[0])
+  check('7 s2 B start=700 (delay invariant)', t2.boxes[1].startMs === 700, t2.boxes[1].startMs)
+  check('7 s2 B end=1000', t2.boxes[1].endMs === 1000, t2.boxes[1].endMs)
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)

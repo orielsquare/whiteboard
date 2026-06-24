@@ -63,7 +63,7 @@ export function SlideCanvas({
     for (const box of slide.textBoxes) {
       const layout = layouts.get(box.id)
       if (!layout) continue
-      renderTextBox(ctx, layout, boxOriginPx(box, w), project.brush, Infinity, minHalfWidth)
+      renderTextBox(ctx, layout, boxOriginPx(box, w), box.brush ?? project.brush, Infinity, minHalfWidth)
     }
     const selBox = slide.textBoxes.find((b) => b.id === selectedTextBoxId)
     if (selBox) {

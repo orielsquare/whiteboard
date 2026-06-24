@@ -65,6 +65,7 @@ export async function renderProjectToMp4({
   metrics,
   fps = 30,
   width = 1280,
+  speed = 1,
   slideIds = null,
   tailMs = 600,
   outPath,
@@ -87,9 +88,14 @@ export async function renderProjectToMp4({
   let h = seam.canvasSize(sub.aspect, w).h
   if (h % 2) h -= 1
 
-  const rc = seam.buildRenderContext(sub, glyphMap, w, metrics)
-  const durationMs = seam.projectDurationMs(rc)
-  const totalFrames = Math.max(1, Math.ceil(((durationMs + tailMs) / 1000) * fps))
+  // Speed is baked into the timeline (writing scaled, holds/transitions invariant),
+  // so we render the resulting timeline at real time.
+  const rate = speed > 0 ? speed : 1
+  const rc = seam.buildRenderContext(sub, glyphMap, w, metrics, rate)
+  const animDurationMs = seam.projectDurationMs(rc)
+  const videoDurationMs = animDurationMs + tailMs
+  const totalFrames = Math.max(1, Math.ceil((videoDurationMs / 1000) * fps))
+  const lastAnimMs = Math.max(0, animDurationMs - 1)
 
   const canvas = createCanvas(w, h)
   const ctx = canvas.getContext('2d')
@@ -120,8 +126,8 @@ export async function renderProjectToMp4({
   })
 
   for (let i = 0; i < totalFrames; i++) {
-    const t = (i / fps) * 1000
-    seam.renderProject(ctx, sub, rc, t, w, h)
+    const animT = Math.min((i / fps) * 1000, lastAnimMs)
+    seam.renderProject(ctx, sub, rc, animT, w, h)
     const png = canvas.toBuffer('image/png')
     if (!ff.stdin.write(png)) await new Promise((r) => ff.stdin.once('drain', r))
     if (onProgress && (i % 10 === 0 || i === totalFrames - 1)) onProgress((i + 1) / totalFrames)
@@ -129,7 +135,7 @@ export async function renderProjectToMp4({
   ff.stdin.end()
   await ffDone
 
-  return { w, h, fps, frames: totalFrames, durationMs }
+  return { w, h, fps, frames: totalFrames, durationMs: videoDurationMs, speed: rate }
 }
 
 // --- CLI: node tools/videoExport.mjs <projectFile> [out.mp4] [width] [fps] ----
@@ -158,6 +164,7 @@ if (invokedDirectly) {
     metrics,
     width: widthArg ? Number(widthArg) : 1280,
     fps: fpsArg ? Number(fpsArg) : 30,
+    speed: project.playbackRate ?? 1,
     outPath,
     onProgress: (p) => process.stdout.write(`\r  rendering ${(p * 100).toFixed(0)}%   `),
   })

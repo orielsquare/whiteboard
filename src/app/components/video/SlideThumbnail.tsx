@@ -42,6 +42,7 @@ export function SlideThumbnail({
           al: b.align,
           lh: b.lineHeightScale,
           d: b.interCharDelayMs,
+          bx: b.brush && [b.brush.style, b.brush.color, b.brush.sizeScale, b.brush.opacity, b.brush.jitter],
           r: b.runs.map((r) => [r.text, r.sizeScale ?? 1, r.color ?? '', !!r.underline]),
         })),
       }),
@@ -65,7 +66,7 @@ export function SlideThumbnail({
     const minHalfWidth = metrics.unitsPerEm * 0.004
     for (const box of slide.textBoxes) {
       const layout = layoutTextBox(box, glyphs, metrics, baseEmFraction, w)
-      renderTextBox(ctx, layout, boxOriginPx(box, w), brush, Infinity, minHalfWidth)
+      renderTextBox(ctx, layout, boxOriginPx(box, w), box.brush ?? brush, Infinity, minHalfWidth)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig, glyphs, metrics])

@@ -18,6 +18,8 @@ export function PlaybackCanvas({
   ready,
   resetKey,
   draw,
+  speed,
+  onSpeedChange,
   autoPlay = false,
   notReadyHint = 'extracting…',
   emptyHint,
@@ -27,13 +29,15 @@ export function PlaybackCanvas({
   ready: boolean
   resetKey: string
   draw: (ctx: CanvasRenderingContext2D, tMs: number, w: number, h: number) => void
+  /** Playback/export speed multiplier (project-level). */
+  speed: number
+  onSpeedChange: (v: number) => void
   /** Start playing automatically once content is ready (resets per `resetKey`). */
   autoPlay?: boolean
   notReadyHint?: string
   emptyHint?: string
 }) {
   const [isPlaying, setIsPlaying] = useState(false)
-  const [speed, setSpeed] = useState(1)
   const [loop, setLoop] = useState(true)
   const [progress, setProgress] = useState(0)
 
@@ -43,14 +47,12 @@ export function PlaybackCanvas({
   const aspectRef = useRef<Aspect>(aspect)
   const tRef = useRef(0)
   const playingRef = useRef(false)
-  const speedRef = useRef(1)
   const loopRef = useRef(true)
 
   drawRef.current = draw
   totalRef.current = totalMs
   aspectRef.current = aspect
   playingRef.current = isPlaying
-  speedRef.current = speed
   loopRef.current = loop
 
   // Tracks whether we've auto-started for the current `resetKey`, so a manual
@@ -87,7 +89,8 @@ export function PlaybackCanvas({
       if (canvas) {
         const total = totalRef.current
         if (playingRef.current && total > 0) {
-          tRef.current += dt * speedRef.current
+          // Real time — speed is already baked into the timeline (rc).
+          tRef.current += dt
           if (tRef.current >= total + END_HOLD_MS) {
             if (loopRef.current) tRef.current = 0
             else {
@@ -131,48 +134,61 @@ export function PlaybackCanvas({
         />
       </div>
       <div className="transport">
-        <button
-          onClick={() => {
-            if (tRef.current >= totalMs) tRef.current = 0
-            setIsPlaying((p) => !p)
-          }}
-          disabled={!canPlay}
-        >
-          {isPlaying ? '❚❚ Pause' : '▶ Play'}
-        </button>
-        <button
-          onClick={() => {
-            tRef.current = 0
-            setProgress(0)
-            setIsPlaying(canPlay)
-          }}
-          disabled={!canPlay}
-        >
-          ↺ Restart
-        </button>
-        <input
-          type="range"
-          className="scrubber"
-          min={0}
-          max={Math.max(1, totalMs)}
-          step={1}
-          value={Math.min(progress, totalMs)}
-          onChange={(e) => onScrub(Number(e.target.value))}
-          disabled={totalMs <= 0}
-        />
-        <span className="time">
-          {(Math.min(progress, totalMs) / 1000).toFixed(1)}s / {(totalMs / 1000).toFixed(1)}s
-        </span>
-        <label className="toggle">
-          <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} />
-          Loop
-        </label>
-        <label className="slider inline">
-          <span>×{speed.toFixed(2)}</span>
-          <input type="range" min={0.25} max={3} step={0.05} value={speed} onChange={(e) => setSpeed(Number(e.target.value))} />
-        </label>
-        {!ready && <span className="busy">{notReadyHint}</span>}
-        {ready && totalMs <= 0 && emptyHint && <span className="busy">{emptyHint}</span>}
+        <div className="transport-row">
+          <button
+            onClick={() => {
+              if (tRef.current >= totalMs) tRef.current = 0
+              setIsPlaying((p) => !p)
+            }}
+            disabled={!canPlay}
+          >
+            {isPlaying ? '❚❚ Pause' : '▶ Play'}
+          </button>
+          <button
+            onClick={() => {
+              tRef.current = 0
+              setProgress(0)
+              setIsPlaying(canPlay)
+            }}
+            disabled={!canPlay}
+          >
+            ↺ Restart
+          </button>
+          <input
+            type="range"
+            className="scrubber"
+            min={0}
+            max={Math.max(1, totalMs)}
+            step={1}
+            value={Math.min(progress, totalMs)}
+            onChange={(e) => onScrub(Number(e.target.value))}
+            disabled={totalMs <= 0}
+          />
+          <span className="time">
+            {(Math.min(progress, totalMs) / 1000).toFixed(1)}s / {(totalMs / 1000).toFixed(1)}s
+          </span>
+        </div>
+        <div className="transport-row transport-row2">
+          <label className="toggle">
+            <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} />
+            Loop
+          </label>
+          <label className="speed-control">
+            <span className="speed-label">
+              speed <b>×{speed.toFixed(2)}</b> <span className="muted">(applies to the exported video)</span>
+            </span>
+            <input
+              type="range"
+              min={0.25}
+              max={6}
+              step={0.05}
+              value={speed}
+              onChange={(e) => onSpeedChange(Number(e.target.value))}
+            />
+          </label>
+          {!ready && <span className="busy">{notReadyHint}</span>}
+          {ready && totalMs <= 0 && emptyHint && <span className="busy">{emptyHint}</span>}
+        </div>
       </div>
     </>
   )
