@@ -36,6 +36,10 @@ export function SlidePanel({
   const copy = useVideoStore((s) => s.copySlide)
   const del = useVideoStore((s) => s.deleteSlide)
   const reorder = useVideoStore((s) => s.reorderSlides)
+  // In Play mode, rows show a checkbox that picks the slides to play.
+  const playMode = useVideoStore((s) => s.slideView === 'play')
+  const playSelectedIds = useVideoStore((s) => s.playSelectedIds)
+  const togglePlaySelected = useVideoStore((s) => s.togglePlaySelected)
 
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }))
   const onDragEnd = (e: DragEndEvent) => {
@@ -66,6 +70,9 @@ export function SlidePanel({
                 canDelete={slides.length > 1}
                 glyphs={glyphs}
                 metrics={metrics}
+                playMode={playMode}
+                playChecked={playSelectedIds.includes(s.id)}
+                onTogglePlay={() => togglePlaySelected(s.id)}
                 onSelect={() => select(s.id)}
                 onCopy={() => copy(s.id)}
                 onDelete={() => del(s.id)}
@@ -85,6 +92,9 @@ function SlideRow({
   canDelete,
   glyphs,
   metrics,
+  playMode,
+  playChecked,
+  onTogglePlay,
   onSelect,
   onCopy,
   onDelete,
@@ -95,6 +105,9 @@ function SlideRow({
   canDelete: boolean
   glyphs: Map<string, PreparedGlyph>
   metrics: FontMetrics | null
+  playMode: boolean
+  playChecked: boolean
+  onTogglePlay: () => void
   onSelect: () => void
   onCopy: () => void
   onDelete: () => void
@@ -111,6 +124,16 @@ function SlideRow({
 
   return (
     <li ref={setNodeRef} style={style} className={selected ? 'slide-row sel' : 'slide-row'} onClick={onSelect}>
+      {playMode && (
+        <input
+          type="checkbox"
+          className="slide-play-check"
+          title="include in scoped play"
+          checked={playChecked}
+          onClick={stop}
+          onChange={onTogglePlay}
+        />
+      )}
       <span className="drag" title="drag to reorder" {...attributes} {...listeners}>
         ⠿
       </span>

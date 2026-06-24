@@ -4,10 +4,9 @@ import { canvasSize } from '@lib/project/coords'
 import { layoutTextBox, type FontMetrics, type TextBoxLayout } from '@lib/project/layout'
 import { renderTextBox } from '@lib/project/render'
 import { useVideoStore, videoHistory } from '../../state/videoStore'
-import { boxOriginPx, clientToNorm, drawSelection, hitTest, type NormPoint } from './layoutCanvas'
-
-/** Backing width the layout/render run at; CSS scales the canvas to fit. */
-const BACKING_W = 960
+import { BACKING_W, boxOriginPx, clientToNorm, drawSelection, hitTest, type NormPoint } from './layoutCanvas'
+import { SlideOrderView } from './SlideOrderView'
+import { ProjectPlayer } from './ProjectPlayer'
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
 
@@ -137,6 +136,12 @@ export function SlideCanvas({
         >
           Order
         </button>
+        <button
+          className={slideView === 'play' ? 'tool tool-on' : 'tool'}
+          onClick={() => setSlideView('play')}
+        >
+          ▶ Play
+        </button>
         <span className="slideview-hint">
           {slideView === 'layout' ? 'drag to move · click empty space to add a textbox' : ''}
         </span>
@@ -154,10 +159,10 @@ export function SlideCanvas({
             onPointerUp={onPointerUp}
           />
         </div>
+      ) : slideView === 'order' ? (
+        <SlideOrderView glyphs={glyphs} metrics={metrics} />
       ) : (
-        <div className="stage video-stage">
-          <div className="placeholder">Animation-order view arrives in VP4 (order list + per-slide Play).</div>
-        </div>
+        <ProjectPlayer glyphs={glyphs} metrics={metrics} />
       )}
     </div>
   )

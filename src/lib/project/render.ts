@@ -1,8 +1,11 @@
-import { sampleGlyph } from '@lib/animation/timeline'
+import { sampleGlyph, type PreparedGlyph } from '@lib/animation/timeline'
 import type { BrushSettings } from '@lib/manifest/schema'
 import { paintStroke } from '@lib/render/brush'
 import type { Transform } from '@lib/render/ribbon'
-import type { TextBoxLayout } from './layout'
+import { layoutTextBox, type FontMetrics, type TextBoxLayout } from './layout'
+import type { Slide, VideoProject } from './schema'
+import { computeProjectTiming, type ProjectTiming, type SlideTiming } from './timing'
+import { composeTransition, transitionProgress } from './transitions'
 
 /**
  * Render a laid-out textbox at local time `tLocalMs` (ms since the box began
@@ -77,4 +80,211 @@ function fillRoundedBar(
   ctx.closePath()
   ctx.fill()
   ctx.restore()
+}
+
+// --- slide / project rendering -------------------------------------------
+
+const boxOrigin = (box: { frame: { x: number; y: number } }, w: number) => ({
+  x: box.frame.x * w,
+  y: box.frame.y * w,
+})
+
+/** Draw every box of a slide at the given slide-local time (no background). */
+export function renderSlideContent(
+  ctx: CanvasRenderingContext2D,
+  slide: Slide,
+  layouts: Map<string, TextBoxLayout>,
+  timing: SlideTiming,
+  tLocalMs: number,
+  w: number,
+  brush: BrushSettings,
+  minHalfWidth: number,
+): void {
+  const starts = new Map(timing.boxes.map((b) => [b.boxId, b.startMs]))
+  for (const box of slide.textBoxes) {
+    const layout = layouts.get(box.id)
+    if (!layout) continue
+    renderTextBox(ctx, layout, boxOrigin(box, w), brush, tLocalMs - (starts.get(box.id) ?? 0), minHalfWidth)
+  }
+}
+
+/** Fill the slide background, then draw its content at `tLocalMs`. */
+function drawSlideFull(
+  ctx: CanvasRenderingContext2D,
+  slide: Slide,
+  layouts: Map<string, TextBoxLayout>,
+  timing: SlideTiming,
+  tLocalMs: number,
+  w: number,
+  h: number,
+  brush: BrushSettings,
+  minHalfWidth: number,
+): void {
+  ctx.fillStyle = slide.background
+  ctx.fillRect(0, 0, w, h)
+  renderSlideContent(ctx, slide, layouts, timing, tLocalMs, w, brush, minHalfWidth)
+}
+
+/** A slide's ink with the last `p` fraction of every stroke retracted (rubout). */
+function renderSlideInkRubout(
+  ctx: CanvasRenderingContext2D,
+  slide: Slide,
+  layouts: Map<string, TextBoxLayout>,
+  brush: BrushSettings,
+  minHalfWidth: number,
+  w: number,
+  p: number,
+): void {
+  const frac = 1 - p
+  if (frac <= 0) return
+  for (const box of slide.textBoxes) {
+    const layout = layouts.get(box.id)
+    if (!layout) continue
+    const origin = boxOrigin(box, w)
+    for (const u of layout.underlines) {
+      fillRoundedBar(ctx, origin.x + u.x0Px, origin.y + u.yPx, (u.x1Px - u.x0Px) * frac, u.thicknessPx, u.color ?? brush.color, brush.opacity)
+    }
+    for (const inst of layout.instances) {
+      const tr: Transform = { scale: inst.scale, ox: origin.x + inst.xPx, oy: origin.y + inst.baselineYPx }
+      const { reveals } = sampleGlyph(inst.prepared, Infinity)
+      const b = inst.color ? { ...brush, color: inst.color } : brush
+      for (const r of reveals) {
+        const len = r.revealedLen * frac
+        if (len <= 0) continue
+        paintStroke(ctx, r.lut, len, tr, b, minHalfWidth, inst.seedSalt + r.id)
+      }
+    }
+  }
+}
+
+/** Pre-computed layouts + timing for a project. Build once; sample every frame. */
+export interface RenderContext {
+  layoutsBySlide: Map<string, Map<string, TextBoxLayout>>
+  timing: ProjectTiming
+  minHalfWidth: number
+}
+
+/** Lay out every slide and compute timing. Memoize on (project, glyphs, canvasW, metrics). */
+export function buildRenderContext(
+  project: VideoProject,
+  glyphs: Map<string, PreparedGlyph>,
+  canvasW: number,
+  metrics: FontMetrics,
+): RenderContext {
+  const layoutsBySlide = new Map<string, Map<string, TextBoxLayout>>()
+  for (const slide of project.slides) {
+    const m = new Map<string, TextBoxLayout>()
+    for (const box of slide.textBoxes) {
+      m.set(box.id, layoutTextBox(box, glyphs, metrics, project.baseEmFraction, canvasW))
+    }
+    layoutsBySlide.set(slide.id, m)
+  }
+  return {
+    layoutsBySlide,
+    timing: computeProjectTiming(project, layoutsBySlide),
+    minHalfWidth: metrics.unitsPerEm * 0.004,
+  }
+}
+
+export const projectDurationMs = (rc: RenderContext): number => rc.timing.totalMs
+
+/**
+ * Render the whole project at absolute time `tMs`. During a slide's closing
+ * transition the next slide is already visible underneath; the two are composed
+ * by the transition. **Pure** (only draws on ctx) — the headless-export seam.
+ */
+export function renderProject(
+  ctx: CanvasRenderingContext2D,
+  project: VideoProject,
+  rc: RenderContext,
+  tMs: number,
+  w: number,
+  h: number,
+): void {
+  ctx.clearRect(0, 0, w, h)
+  const vis: { i: number; st: ProjectTiming['slides'][number]; tLocal: number }[] = []
+  rc.timing.slides.forEach((st, i) => {
+    const tLocal = tMs - st.startMs
+    if (tLocal >= 0 && tLocal < st.timing.totalMs) vis.push({ i, st, tLocal })
+  })
+
+  if (vis.length === 0) {
+    const fallback = tMs < 0 ? project.slides[0] : project.slides[project.slides.length - 1]
+    if (fallback) {
+      ctx.fillStyle = fallback.background
+      ctx.fillRect(0, 0, w, h)
+    }
+    return
+  }
+
+  if (vis.length === 1) {
+    const v = vis[0]
+    const slide = project.slides[v.i]
+    drawSlideFull(ctx, slide, rc.layoutsBySlide.get(slide.id) ?? new Map(), v.st.timing, v.tLocal, w, h, project.brush, rc.minHalfWidth)
+    return
+  }
+
+  // Overlap: earliest start = outgoing (in its closing transition), latest = incoming.
+  vis.sort((a, b) => a.st.startMs - b.st.startMs)
+  const out = vis[0]
+  const inc = vis[vis.length - 1]
+  const outSlide = project.slides[out.i]
+  const incSlide = project.slides[inc.i]
+  const outLayouts = rc.layoutsBySlide.get(outSlide.id) ?? new Map()
+  const incLayouts = rc.layoutsBySlide.get(incSlide.id) ?? new Map()
+  const p = transitionProgress(out.tLocal, out.st.timing.holdEndMs, out.st.timing.transitionMs)
+
+  composeTransition(outSlide.transition.kind, ctx, w, h, p, {
+    drawIncomingFull: () => drawSlideFull(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, h, project.brush, rc.minHalfWidth),
+    drawOutgoingFull: () => drawSlideFull(ctx, outSlide, outLayouts, out.st.timing, out.tLocal, w, h, project.brush, rc.minHalfWidth),
+    fillOutgoingBg: () => {
+      ctx.fillStyle = outSlide.background
+      ctx.fillRect(0, 0, w, h)
+    },
+    drawIncomingContent: () => renderSlideContent(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, project.brush, rc.minHalfWidth),
+    drawOutgoingInk: () => renderSlideInkRubout(ctx, outSlide, outLayouts, project.brush, rc.minHalfWidth, w, p),
+  })
+}
+
+/**
+ * Render a single slide at slide-local time `tLocalMs`, including its own closing
+ * transition (which dissolves to the background, since there is no next slide in
+ * isolation). Drives the per-slide preview.
+ */
+export function renderSlide(
+  ctx: CanvasRenderingContext2D,
+  project: VideoProject,
+  rc: RenderContext,
+  slideIndex: number,
+  tLocalMs: number,
+  w: number,
+  h: number,
+): void {
+  const slide = project.slides[slideIndex]
+  if (!slide) return
+  const layouts = rc.layoutsBySlide.get(slide.id) ?? new Map()
+  const st = rc.timing.slides[slideIndex].timing
+  ctx.clearRect(0, 0, w, h)
+
+  if (st.transitionMs <= 0 || tLocalMs < st.holdEndMs) {
+    drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.minHalfWidth)
+    return
+  }
+
+  const p = transitionProgress(tLocalMs, st.holdEndMs, st.transitionMs)
+  const kind = slide.transition.kind
+  // No incoming slide: dissolve to the slide's own background (board) / scroll off it.
+  composeTransition(kind, ctx, w, h, p, {
+    drawIncomingFull: () => {
+      ctx.fillStyle = slide.background
+      ctx.fillRect(0, 0, w, h)
+    },
+    drawOutgoingFull: () => drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.minHalfWidth),
+    fillOutgoingBg: () => {
+      ctx.fillStyle = slide.background
+      ctx.fillRect(0, 0, w, h)
+    },
+    drawIncomingContent: () => {},
+    drawOutgoingInk: () => renderSlideInkRubout(ctx, slide, layouts, project.brush, rc.minHalfWidth, w, p),
+  })
 }

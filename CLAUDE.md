@@ -106,5 +106,12 @@ gated on `manifest.metadata.fontId === font.hash`.
 
 ## Status
 
-Font tooling (load → extract → edit → animate → save) is complete. The **Video editor** is mid-build:
-**VP1 done** (data model, store, persistence, tab, slide panel). **VP2–VP5 remain** — see `HANDOVER.md`.
+Font tooling (load → extract → edit → animate → save) is complete. The **Video editor (VP1–VP5) is
+complete**: slides (add/copy/delete/drag-reorder + save/load), the **Layout** view (drag/select/add
+textboxes), **inline rich text** (per-selection size/colour/underline via `runs.ts`/`RunEditor`), the
+**Order** view (per-box animation order + delays + per-slide Play), and **Play** (project-level
+play-all with an All/Selected scope for single-slide or subset playback). The pure render seam
+(`src/lib/project/` `buildRenderContext` + `renderProject`/`renderSlide`/`projectDurationMs`, with
+`tools/{layout,runs,timing}.test.mjs` covering the pure engines) is ready for the future headless
+Node+ffmpeg MP4 exporter. See `HANDOVER.md` for the remaining "later" items (MP4 export, batch
+"extract all glyphs", mid-stroke pause UI).

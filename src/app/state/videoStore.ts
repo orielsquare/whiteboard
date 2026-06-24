@@ -18,7 +18,7 @@ import type { BrushSettings } from '@lib/manifest/schema'
 import * as E from './videoEdit'
 
 const nowIso = () => new Date().toISOString()
-type SlideView = 'layout' | 'order'
+type SlideView = 'layout' | 'order' | 'play'
 
 interface VideoState {
   project: VideoProject | null
@@ -27,10 +27,14 @@ interface VideoState {
   selectedSlideId: string | null
   selectedTextBoxId: string | null
   slideView: SlideView
+  /** slides ticked for scoped ("Selected") play; project order applied at play time. */
+  playSelectedIds: string[]
 
   selectSlide: (id: string | null) => void
   selectTextBox: (id: string | null) => void
   setSlideView: (v: SlideView) => void
+  togglePlaySelected: (id: string) => void
+  setPlaySelected: (ids: string[]) => void
 
   addSlide: () => void
   copySlide: (id: string) => void
@@ -63,10 +67,18 @@ export const useVideoStore = create<VideoState>()(
       selectedSlideId: null,
       selectedTextBoxId: null,
       slideView: 'layout',
+      playSelectedIds: [],
 
       selectSlide: (id) => set({ selectedSlideId: id, selectedTextBoxId: null }),
       selectTextBox: (id) => set({ selectedTextBoxId: id }),
       setSlideView: (v) => set({ slideView: v }),
+      togglePlaySelected: (id) =>
+        set((s) => ({
+          playSelectedIds: s.playSelectedIds.includes(id)
+            ? s.playSelectedIds.filter((x) => x !== id)
+            : [...s.playSelectedIds, id],
+        })),
+      setPlaySelected: (ids) => set({ playSelectedIds: ids }),
 
       addSlide: () =>
         set((s) => {
@@ -90,7 +102,12 @@ export const useVideoStore = create<VideoState>()(
             const next = project.slides[Math.min(i, project.slides.length - 1)]
             sel = next ? next.id : null
           }
-          return { project, selectedSlideId: sel, selectedTextBoxId: null }
+          return {
+            project,
+            selectedSlideId: sel,
+            selectedTextBoxId: null,
+            playSelectedIds: s.playSelectedIds.filter((x) => x !== id),
+          }
         }),
       reorderSlides: (orderedIds) =>
         set((s) => (s.project ? { project: E.reorderSlides(s.project, orderedIds) } : s)),
@@ -137,6 +154,7 @@ export const useVideoStore = create<VideoState>()(
           selectedSlideId: p.slides[0]?.id ?? null,
           selectedTextBoxId: null,
           slideView: 'layout',
+          playSelectedIds: [],
         })
       },
       loadProject: async (id) => {
@@ -148,6 +166,7 @@ export const useVideoStore = create<VideoState>()(
           selectedSlideId: p.slides[0]?.id ?? null,
           selectedTextBoxId: null,
           slideView: 'layout',
+          playSelectedIds: [],
         })
       },
       saveProject: async (font) => {

@@ -39,7 +39,40 @@ VideoView). Verified in-browser: typing updates runs + canvas; underline renders
 `runStyleAt` drives the active-style highlight; align/wrap/delete via clicks; delete-to-zero stays
 healthy; `tsc` + both test suites clean. Selection ↔ runs uses fresh `textarea.selectionStart/End`.
 
-**Remaining: Video editor VP4–VP5.**
+**Video editor VP4 done & verified:** animation engine + order view + per-slide playback —
+`timing.ts` (`computeSlideTiming` boxes-by-animOrder with delay accumulation + hold + transition;
+`computeProjectTiming` overlapping slides; unit-tested in `tools/timing.test.mjs`, 19 assertions),
+`transitions.ts` (`composeTransition` fade/rubout/scroll-up/scroll-left via draw callbacks +
+`transitionProgress`), `render.ts` additions (`buildRenderContext`, `renderSlideContent`,
+`renderSlide` per-slide incl. closing transition, `renderProject` with overlap compositing,
+`projectDurationMs` — the headless-export seam), `AnimationOrderList.tsx` (dnd reorder →
+`reorderTextBoxes`; per-box delay input), and `SlideOrderView.tsx` (per-slide Play/scrub/speed/loop rAF
+over `renderSlide`, with an all-chars-derived ready gate; shown in SlideCanvas's Order view). Verified
+in-browser by scrubbing: ordered writing-on with per-box delays (box A completes, then box B begins
+after its delay), fade / rubout (reverse-reveal) / scroll-up closing transitions, order reorder + delay
+inputs. `tsc` + `npm run build` clean; all three test suites green (35+23+19).
+
+**Video editor VP5 done & verified:** play-all + scoped playback. `PlaybackCanvas.tsx` (shared
+canvas + rAF + play/pause/restart/scrub/speed/loop driven by a `draw(ctx,t,w,h)` callback — used by
+both players); `ProjectPlayer.tsx` (an **All slides** / **Selected** scope, builds a sub-project for the
+chosen slides and plays it through `renderProject` — slides write on in order with closing transitions
+overlapping); the slide panel shows a per-row checkbox in Play mode (`playSelectedIds` in the store,
+pruned on delete); SlideCanvas's view toggle is now **Layout / Order / ▶ Play**; `SlideOrderView`
+refactored onto `PlaybackCanvas`. A single ticked slide plays on its own; a subset plays in project
+order. Verified in-browser by scrubbing a 2-slide project: play-all sequenced slide 1 ("Text") →
+fade → slide 2 ("II") with total 13.4s; Selected=slide 2 only played "II" from t=0 at 3.4s;
+Selected=both = 13.4s. `tsc` + `npm run build` clean; all three suites green.
+
+**Play auto-starts:** opening the **Order** or **Play** view starts playback automatically (the
+`▶ Play` view-toggle was previously just switching views, and `t=0` is blank because of box start
+delays, so it looked like nothing happened). `PlaybackCanvas` takes an `autoPlay` prop (both players
+pass it) and starts once content is `ready`, rewinding per `resetKey`; a manual pause is not overridden
+(`autoStartedRef`).
+
+**The Video editor (VP1–VP5) is complete.** Remaining work is the "later" list below (MP4 export,
+batch glyph extraction, mid-stroke pause UI). The pure render seam (`buildRenderContext` +
+`renderProject` / `projectDurationMs`, all in `src/lib/project/`) is ready to drive a headless
+Node+ffmpeg exporter.
 
 ## Files already created for the Video feature (VP1)
 
@@ -164,10 +197,12 @@ incoming under + outgoing through its transition) → `renderSlideContent` (each
 driving an rAF loop over `renderSlideContent` for the slide incl. its closing transition (reuse the
 `PreviewView` tRef/scrub/speed/loop pattern). Await an "all chars derived" ready flag before playing.
 
-## VP5 — Play-all transport
+## VP5 — Play-all transport  ✅ done
 
-Project-level rAF over `renderProject` (slides in sequence with overlapping closing transitions) +
-transport (play/pause/scrub/speed/loop). Same pure render path → ready to feed a future MP4 exporter.
+Built as `ProjectPlayer.tsx` (project-level rAF over `renderProject`, via the shared
+`PlaybackCanvas.tsx`) with an **All slides / Selected** scope so you can play everything, a single
+slide, or any subset (ticked in the slide panel → `playSelectedIds`). Same pure render path → ready to
+feed a future MP4 exporter.
 
 ## Pitfalls (from the adversarial design review — mitigate these)
 
@@ -197,6 +232,7 @@ reload → **Load** restores it. `tsc --noEmit` clean; check `preview_console_lo
 ## TODO checklist
 - [x] VP2 — layout.ts, render.ts (renderTextBox + static), layoutCanvas.ts, SlideCanvas (layout view + drag/select/add), SlideThumbnail; wired into VideoView/SlidePanel + glyph derivation. (`tools/layout.test.mjs` covers the layout engine.)
 - [x] VP3 — runs.ts (+ `tools/runs.test.mjs`), RunEditor, Inspector (styling/align/wrap/delay/delete). Slide controls moved into Inspector.
-- [ ] VP4 — timing.ts, transitions.ts, render.ts (renderProject), AnimationOrderList, per-slide Play.
+- [x] VP4 — timing.ts (+ `tools/timing.test.mjs`), transitions.ts, render.ts (buildRenderContext/renderProject/renderSlide/projectDurationMs), AnimationOrderList, SlideOrderView per-slide Play.
+- [x] VP5 — PlaybackCanvas (shared transport), ProjectPlayer (All/Selected scope play-all), slide-panel play checkboxes, Layout/Order/Play toggle.
 - [ ] VP5 — play-all transport.
 - [ ] (later) MP4 export via headless renderProject + ffmpeg; batch "extract all glyphs"; mid-stroke pause UI.

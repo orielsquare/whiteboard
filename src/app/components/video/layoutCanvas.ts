@@ -8,6 +8,9 @@ import type { TextBoxLayout } from '@lib/project/layout'
  * the canvas backing size + getBoundingClientRect (mirrors editorCanvas).
  */
 
+/** Backing width (px) the layout/render run at; CSS scales the canvas to fit. */
+export const BACKING_W = 960
+
 export interface NormPoint {
   nx: number
   ny: number
