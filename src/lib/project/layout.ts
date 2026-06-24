@@ -92,6 +92,12 @@ const SPACE_EM = 0.3
 const MISSING_EM = 0.5
 const UNDERLINE_OFFSET_EM = 0.06
 const UNDERLINE_THICK_EM = 0.04
+/** Pause after the underlined word is written before the pen goes back to underline (ms). */
+const UNDERLINE_DELAY_MS = 130
+/** How long the underline sweep itself takes, scaled by its length in ems. */
+function underlineDrawMs(spanEm: number): number {
+  return Math.min(700, Math.max(200, 120 + spanEm * 180))
+}
 
 /** Lay out one textbox. Pure; safe to memoize on (box, glyphs, metrics, baseEmFraction, canvasW). */
 export function layoutTextBox(
@@ -285,14 +291,21 @@ export function layoutTextBox(
       if (drawnInSeg.length > 0) {
         const maxScale = seg.reduce((m, s) => Math.max(m, s.scale), 0)
         const emPx = unitsPerEm * maxScale
-        const revealAtMs = drawnInSeg[drawnInSeg.length - 1].endMs
+        const x0Px = seg[0].xPx
+        const x1Px = seg[seg.length - 1].xPx + seg[seg.length - 1].advancePx
+        // Human behaviour: underline the word AFTER it's fully written — wait for
+        // the last glyph to finish, a brief pen-lift, then a quick left→right sweep.
+        const wordEndMs = drawnInSeg[drawnInSeg.length - 1].endMs
+        const startMs = wordEndMs + UNDERLINE_DELAY_MS
+        const spanEm = emPx > 0 ? (x1Px - x0Px) / emPx : 1
+        const revealAtMs = startMs + underlineDrawMs(spanEm)
         underlines.push({
-          x0Px: seg[0].xPx,
-          x1Px: seg[seg.length - 1].xPx + seg[seg.length - 1].advancePx,
+          x0Px,
+          x1Px,
           yPx: baseY + UNDERLINE_OFFSET_EM * emPx,
           thicknessPx: UNDERLINE_THICK_EM * emPx,
           color: drawnInSeg[0].color,
-          startMs: drawnInSeg[0].startMs,
+          startMs,
           revealAtMs,
         })
         contentMs = Math.max(contentMs, revealAtMs)

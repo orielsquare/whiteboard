@@ -36,6 +36,10 @@ export function VideoView({
 
   const [status, setStatus] = useState<string | null>(null)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [exporting, setExporting] = useState(false)
+  const [exportResult, setExportResult] = useState<
+    { file: string; bytes: number; w: number; h: number; durationMs: number; frames: number } | null
+  >(null)
 
   // The shared font manifest drives glyph geometry; gate derivation on it
   // belonging to the current font (as App + PreviewView do).
@@ -113,6 +117,39 @@ export function VideoView({
     videoHistory.clear()
     setStatus('loaded')
   }
+  const doExport = async () => {
+    const p = useVideoStore.getState().project
+    const m = useEditorStore.getState().manifest
+    if (!p || !m) return
+    setExporting(true)
+    setExportResult(null)
+    setStatus('rendering MP4 — this can take a moment…')
+    try {
+      const res = await fetch('/api/export', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          project: p,
+          glyphs: m.glyphs,
+          metrics: { unitsPerEm: m.metadata.unitsPerEm, ascender: m.metadata.ascender, descender: m.metadata.descender },
+          fps: 30,
+          width: 1280,
+          name: p.name,
+        }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        setExportResult(data)
+        setStatus(null)
+      } else {
+        setStatus('export failed: ' + (data.error ?? 'unknown'))
+      }
+    } catch (e) {
+      setStatus('export failed: ' + e)
+    } finally {
+      setExporting(false)
+    }
+  }
 
   if (!project) return <div className="stage">Loading project…</div>
 
@@ -167,8 +204,23 @@ export function VideoView({
           ))}
         </select>
         <button onClick={() => { newProject(font.hash, brush); videoHistory.clear() }}>New</button>
+        <button onClick={doExport} disabled={exporting} title="render to MP4 (saved under ./exports)">
+          {exporting ? '⏳ Exporting…' : '🎬 Export MP4'}
+        </button>
       </div>
       {status && <div className="savestatus">{status}</div>}
+      {exportResult && (
+        <div className="exportresult">
+          <div className="exportresult-info">
+            Exported <code>exports/{exportResult.file}</code> — {(exportResult.bytes / 1048576).toFixed(2)} MB ·{' '}
+            {exportResult.w}×{exportResult.h} · {(exportResult.durationMs / 1000).toFixed(1)}s · {exportResult.frames} frames{' '}
+            <a href={`/api/export/${exportResult.file}`} target="_blank" rel="noreferrer" download>
+              ↓ download
+            </a>
+          </div>
+          <video className="export-preview" src={`/api/export/${exportResult.file}`} controls />
+        </div>
+      )}
 
       <div className="video-body">
         <SlidePanel glyphs={glyphs} metrics={metrics} />

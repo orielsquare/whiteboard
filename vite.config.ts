@@ -1,13 +1,15 @@
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 const rootDir = fileURLToPath(new URL('.', import.meta.url))
 const fontsDir = path.join(rootDir, 'fonts')
 const projectsDir = path.join(rootDir, 'projects')
+const exportsDir = path.join(rootDir, 'exports')
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -175,8 +177,72 @@ async function listProjects() {
   }
 }
 
+/**
+ * MP4 export: POST /api/export renders the posted project (with its glyphs) to
+ * ./exports/<name>.mp4 via the headless renderer + ffmpeg; GET /api/export/<file>
+ * streams the result (range-aware) for in-app preview / download.
+ */
+function exportPlugin(): Plugin {
+  return {
+    name: 'video-export',
+    configureServer(server) {
+      server.middlewares.use(async (req: IncomingMessage, res: ServerResponse, next) => {
+        const url = req.url ?? ''
+        if (!url.startsWith('/api/export')) return next()
+        const pathname = url.split('?')[0]
+        const rest = pathname.slice('/api/export'.length).replace(/^\/+/, '')
+
+        try {
+          if (req.method === 'POST' && !rest) {
+            const body = JSON.parse((await readBody(req)).toString('utf8'))
+            const { project, glyphs, metrics, fps, width, slideIds, name } = body
+            const safe =
+              (String(name || project?.name || 'video')
+                .replace(/[^a-z0-9-_]+/gi, '_')
+                .slice(0, 60) || 'video')
+            await fs.mkdir(exportsDir, { recursive: true })
+            const outPath = path.join(exportsDir, safe + '.mp4')
+            const spec = pathToFileURL(path.join(rootDir, 'tools/videoExport.mjs')).href
+            const mod = await import(spec)
+            const info = await mod.renderProjectToMp4({ project, glyphs, metrics, fps, width, slideIds, outPath })
+            const bytes = (await fs.stat(outPath)).size
+            return sendJson(res, 200, { ok: true, file: safe + '.mp4', bytes, ...info })
+          }
+          if (req.method === 'GET' && rest) {
+            const file = path.join(exportsDir, path.basename(rest))
+            let stat
+            try {
+              stat = await fs.stat(file)
+            } catch {
+              return sendJson(res, 404, { error: 'not found' })
+            }
+            res.setHeader('content-type', 'video/mp4')
+            res.setHeader('accept-ranges', 'bytes')
+            const range = req.headers.range
+            const m = range ? /bytes=(\d*)-(\d*)/.exec(range) : null
+            if (m) {
+              const start = m[1] ? parseInt(m[1], 10) : 0
+              const end = m[2] ? parseInt(m[2], 10) : stat.size - 1
+              res.statusCode = 206
+              res.setHeader('content-range', `bytes ${start}-${end}/${stat.size}`)
+              res.setHeader('content-length', String(end - start + 1))
+              return createReadStream(file, { start, end }).pipe(res)
+            }
+            res.statusCode = 200
+            res.setHeader('content-length', String(stat.size))
+            return createReadStream(file).pipe(res)
+          }
+          return sendJson(res, 405, { error: 'method not allowed' })
+        } catch (err) {
+          return sendJson(res, 500, { error: String((err as Error)?.stack ?? err) })
+        }
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), fontStorePlugin(), projectStorePlugin()],
+  plugins: [react(), fontStorePlugin(), projectStorePlugin(), exportPlugin()],
   resolve: {
     alias: {
       '@lib': fileURLToPath(new URL('./src/lib', import.meta.url)),

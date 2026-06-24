@@ -204,6 +204,22 @@ Built as `ProjectPlayer.tsx` (project-level rAF over `renderProject`, via the sh
 slide, or any subset (ticked in the slide panel → `playSelectedIds`). Same pure render path → ready to
 feed a future MP4 exporter.
 
+## Post-VP5 follow-ups  ✅ done
+
+- **Per-slide background colour** — Inspector "Slide" section has a colour-well + hex input bound to
+  `slide.background` via `updateSlide`. (Image backgrounds: later.)
+- **Human-style underline** — the underline is now drawn *after* its word is fully written: in
+  `layout.ts` the segment's `startMs` = last underlined glyph's end + a pen-lift pause, then a quick
+  left→right sweep (`underlineDrawMs` scales with the segment's em-width); `contentMs` includes it.
+- **MP4 export** — `tools/videoExport.mjs` bundles the pure render seam with esbuild (resolving `@lib`),
+  renders every frame with `@napi-rs/canvas` (skia; prebuilt, no system deps) and pipes PNGs into
+  `ffmpeg` (libx264, yuv420p). Dev-server `exportPlugin` (`vite.config.ts`): `POST /api/export`
+  `{project, glyphs, metrics, fps, width, slideIds?, name}` → writes `exports/<name>.mp4`, returns
+  `{file,bytes,w,h,durationMs,frames}`; `GET /api/export/<file>` streams it (range-aware). UI: a **🎬
+  Export MP4** button in the video toolbar POSTs the live project + manifest glyphs and shows an inline
+  `<video>` preview + download link. Verified: exported frames show glyphs, per-slide bg, and underline.
+  Runnable headless too: `node tools/videoExport.mjs <projectFile> [out.mp4] [width] [fps]`.
+
 ## Pitfalls (from the adversarial design review — mitigate these)
 
 1. Mixed-size lines: per-line max ascent/descent, anchor to first baseline.
@@ -234,5 +250,5 @@ reload → **Load** restores it. `tsc --noEmit` clean; check `preview_console_lo
 - [x] VP3 — runs.ts (+ `tools/runs.test.mjs`), RunEditor, Inspector (styling/align/wrap/delay/delete). Slide controls moved into Inspector.
 - [x] VP4 — timing.ts (+ `tools/timing.test.mjs`), transitions.ts, render.ts (buildRenderContext/renderProject/renderSlide/projectDurationMs), AnimationOrderList, SlideOrderView per-slide Play.
 - [x] VP5 — PlaybackCanvas (shared transport), ProjectPlayer (All/Selected scope play-all), slide-panel play checkboxes, Layout/Order/Play toggle.
-- [ ] VP5 — play-all transport.
-- [ ] (later) MP4 export via headless renderProject + ffmpeg; batch "extract all glyphs"; mid-stroke pause UI.
+- [x] Per-slide background colour; human-style underline (drawn after the word); **MP4 export** (`tools/videoExport.mjs` + `@napi-rs/canvas` + ffmpeg, `/api/export`, toolbar button).
+- [ ] (later) image/photo slide backgrounds; batch "extract all glyphs"; mid-stroke pause UI; scope MP4 export to the play selection.

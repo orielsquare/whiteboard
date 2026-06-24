@@ -111,6 +111,23 @@ export function Inspector() {
 
       <h3>Slide</h3>
       <label className="slider">
+        <span>background</span>
+        <div className="bg-row">
+          <input
+            type="color"
+            value={slide.background}
+            onChange={(e) => updateSlide(slide.id, { background: e.target.value })}
+          />
+          <input
+            type="text"
+            className="bg-hex"
+            value={slide.background}
+            spellCheck={false}
+            onChange={(e) => updateSlide(slide.id, { background: e.target.value })}
+          />
+        </div>
+      </label>
+      <label className="slider">
         <span>closing transition</span>
         <select
           value={slide.transition.kind}

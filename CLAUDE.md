@@ -109,9 +109,11 @@ gated on `manifest.metadata.fontId === font.hash`.
 Font tooling (load → extract → edit → animate → save) is complete. The **Video editor (VP1–VP5) is
 complete**: slides (add/copy/delete/drag-reorder + save/load), the **Layout** view (drag/select/add
 textboxes), **inline rich text** (per-selection size/colour/underline via `runs.ts`/`RunEditor`), the
-**Order** view (per-box animation order + delays + per-slide Play), and **Play** (project-level
-play-all with an All/Selected scope for single-slide or subset playback). The pure render seam
+**Order** view (per-box animation order + delays + per-slide Play), **Play** (project-level play-all
+with an All/Selected scope for single-slide or subset playback), per-slide **background colour**, and
+human-style **underlines** (drawn after the word). **MP4 export** is done: the pure render seam
 (`src/lib/project/` `buildRenderContext` + `renderProject`/`renderSlide`/`projectDurationMs`, with
-`tools/{layout,runs,timing}.test.mjs` covering the pure engines) is ready for the future headless
-Node+ffmpeg MP4 exporter. See `HANDOVER.md` for the remaining "later" items (MP4 export, batch
-"extract all glyphs", mid-stroke pause UI).
+`tools/{layout,runs,timing}.test.mjs` covering the pure engines) is driven headlessly by
+`tools/videoExport.mjs` (`@napi-rs/canvas` → ffmpeg) behind `POST /api/export` and a toolbar button.
+See `HANDOVER.md` for the remaining "later" items (image/photo backgrounds, batch "extract all glyphs",
+mid-stroke pause UI).

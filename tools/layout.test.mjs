@@ -84,13 +84,17 @@ const check = (name, cond, got) => {
   check('3 right offset=450', approx(r.instances[0].xPx, 500 - 50), r.instances[0].xPx)
 }
 
-// 4) underline segment timing + geometry
+// 4) underline drawn AFTER the word is written (human-style), then geometry
 {
   const l = lay({ runs: [{ text: 'ab', underline: true }] })
   check('4 one underline', l.underlines.length === 1, l.underlines.length)
   const u = l.underlines[0]
-  check('4 u.startMs=0', u.startMs === 0, u.startMs)
-  check('4 u.revealAtMs=250', u.revealAtMs === 250, u.revealAtMs) // last glyph end
+  // glyph a@0..100, b@150..250 → word ends at 250; underline waits +130 = 380
+  check('4 u starts after word (380)', u.startMs === 380, u.startMs)
+  check('4 u starts after last glyph end', u.startMs >= 250, u.startMs)
+  // spanEm = 100/100 = 1 → drawMs = 120 + 180 = 300 → reveal at 680
+  check('4 u.revealAtMs=680', u.revealAtMs === 680, u.revealAtMs)
+  check('4 contentMs = underline end (680)', l.contentMs === 680, l.contentMs)
   check('4 u.x0=0', approx(u.x0Px, 0), u.x0Px)
   check('4 u.x1=100', approx(u.x1Px, 100), u.x1Px)
   check('4 u.y=baseline+0.06em', approx(u.yPx, 80 + 0.06 * EM), u.yPx)
