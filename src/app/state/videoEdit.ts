@@ -12,7 +12,7 @@ import {
   type VoiceoverAudio,
   type VoiceoverCue,
 } from '@lib/project/schema'
-import { DEFAULT_TTS } from '@lib/project/schema'
+import { DEFAULT_TTS, DEFAULT_TTS_VOICE_SETTINGS } from '@lib/project/schema'
 import type { BrushSettings } from '@lib/manifest/schema'
 import { estimateDurationMs } from '@lib/project/vtt'
 
@@ -184,5 +184,14 @@ export function setBrush(p: VideoProject, brush: BrushSettings): VideoProject {
 }
 
 export function setTts(p: VideoProject, patch: Partial<TtsSettings>): VideoProject {
-  return { ...p, tts: { ...DEFAULT_TTS, ...(p.tts ?? {}), ...patch } }
+  const cur = { ...DEFAULT_TTS, ...(p.tts ?? {}) }
+  return {
+    ...p,
+    tts: {
+      ...cur,
+      ...patch,
+      // deep-merge nested settings so a single-slider patch keeps the rest
+      settings: { ...DEFAULT_TTS_VOICE_SETTINGS, ...(cur.settings ?? {}), ...(patch.settings ?? {}) },
+    },
+  }
 }

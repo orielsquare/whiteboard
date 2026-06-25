@@ -1,69 +1,39 @@
-// Text-to-speech for voiceover cues, via Gemini 2.5 TTS on Vertex AI.
+// Text-to-speech for voiceover cues, via ElevenLabs.
 //
-// Auth is Application Default Credentials (the user's `gcloud auth application-
-// default login`) — we shell out for an access token, so no SDK/npm dep and no API
-// key. The model returns 16-bit PCM (L16) which ffmpeg encodes to .m4a. A natural-
-// language `prompt` (style instruction) is prepended to the spoken text. Used by the
-// dev-server /api/tts route.
+// Auth is an API key from the ELEVENLABS_API_KEY env var (server-side only — never
+// sent to the browser). The accent comes from the chosen voice; v2/Flash/Turbo
+// models are steered with voice_settings, the v3 model with a free-text `direction`
+// (audio-tag cues) prepended to the text. ElevenLabs returns mp3 (or pcm) which
+// ffmpeg encodes to .m4a. Used by the dev-server /api/tts + /api/voices routes.
 import { spawn } from 'node:child_process'
 
-const LOCATION = process.env.GOOGLE_CLOUD_LOCATION || process.env.VERTEX_LOCATION || 'us-central1'
-const MODEL = process.env.GEMINI_TTS_MODEL || 'gemini-2.5-flash-preview-tts'
-const DEFAULT_VOICE = 'Kore'
+const BASE = process.env.ELEVENLABS_BASE_URL || 'https://api.elevenlabs.io'
+const OUTPUT_FORMAT = process.env.ELEVENLABS_OUTPUT_FORMAT || 'mp3_44100_128'
 
-// Survive the dev server's per-request module cache-busting (`?v=…` re-imports):
-// keep the ADC token + project on globalThis so we don't spawn gcloud every call.
-const cache = (globalThis.__vertexTtsCache ??= { token: null, exp: 0, project: null })
-
-/** Run a command and resolve its trimmed stdout (rejects on non-zero exit). */
-function sh(cmd, args) {
-  return new Promise((resolve, reject) => {
-    let out = ''
-    let err = ''
-    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] })
-    p.stdout.on('data', (d) => (out += d))
-    p.stderr.on('data', (d) => (err += d))
-    p.on('error', reject)
-    p.on('close', (code) => (code === 0 ? resolve(out.trim()) : reject(new Error(`${cmd} exited ${code}: ${err.slice(-300)}`))))
-  })
+function apiKey() {
+  const k = process.env.ELEVENLABS_API_KEY
+  if (!k) throw new Error('ELEVENLABS_API_KEY is not set — add it to the dev server’s environment.')
+  return k
 }
 
-/** A Vertex AI access token (env override, else ADC via gcloud), cached ~50 min. */
-async function getAccessToken() {
-  if (process.env.VERTEX_ACCESS_TOKEN) return process.env.VERTEX_ACCESS_TOKEN
-  const now = Date.now()
-  if (cache.token && now < cache.exp) return cache.token
-  let token
+/** Read + parse an ElevenLabs error body into a short message. */
+async function errorMessage(res) {
+  let body = ''
   try {
-    token = await sh('gcloud', ['auth', 'application-default', 'print-access-token'])
-  } catch (e) {
-    throw new Error(
-      'Could not get a Vertex AI access token. Run `gcloud auth application-default login` ' +
-        '(or set VERTEX_ACCESS_TOKEN). Underlying error: ' + (e?.message ?? e),
-    )
+    body = await res.text()
+  } catch {
+    /* ignore */
   }
-  cache.token = token
-  cache.exp = now + 50 * 60 * 1000 // ADC tokens last ~1h
-  return token
-}
-
-/** Drop the cached token so the next getAccessToken() fetches a fresh one. */
-function clearTokenCache() {
-  cache.token = null
-  cache.exp = 0
-}
-
-/** The GCP project id (env override, else `gcloud config get-value project`). */
-async function getProject() {
-  if (process.env.GOOGLE_CLOUD_PROJECT) return process.env.GOOGLE_CLOUD_PROJECT
-  if (process.env.GCLOUD_PROJECT) return process.env.GCLOUD_PROJECT
-  if (cache.project) return cache.project
-  const proj = await sh('gcloud', ['config', 'get-value', 'project']).catch(() => '')
-  if (!proj || proj === '(unset)') {
-    throw new Error('No GCP project set. Set GOOGLE_CLOUD_PROJECT or run `gcloud config set project <id>`.')
+  try {
+    const j = JSON.parse(body)
+    const d = j?.detail
+    if (typeof d === 'string') return d
+    if (d?.message) return d.message
+    if (Array.isArray(d) && d[0]?.msg) return d[0].msg
+  } catch {
+    /* not json */
   }
-  cache.project = proj
-  return proj
+  return body.slice(0, 200) || `HTTP ${res.status} ${res.statusText}`
 }
 
 function ffprobeDurationMs(file) {
@@ -76,83 +46,91 @@ function ffprobeDurationMs(file) {
   })
 }
 
-/** Encode raw little-endian 16-bit mono PCM (from stdin) to an .m4a file. */
-function pcmToM4a(pcm, rate, outPath) {
+/** Encode the returned audio (mp3 by default, or raw pcm) from stdin to .m4a. */
+function encodeToM4a(audio, outPath) {
+  const pcm = OUTPUT_FORMAT.startsWith('pcm_')
+  const rate = pcm ? Number(OUTPUT_FORMAT.split('_')[1]) || 24000 : 0
+  const inArgs = pcm ? ['-f', 's16le', '-ar', String(rate), '-ac', '1'] : []
   return new Promise((resolve, reject) => {
     let err = ''
     const p = spawn(
       'ffmpeg',
-      ['-y', '-f', 's16le', '-ar', String(rate), '-ac', '1', '-i', 'pipe:0', '-c:a', 'aac', '-b:a', '96k', '-movflags', '+faststart', outPath],
+      ['-y', ...inArgs, '-i', 'pipe:0', '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', outPath],
       { stdio: ['pipe', 'ignore', 'pipe'] },
     )
     p.stderr.on('data', (d) => (err += d))
     p.on('error', reject)
     p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}: ${err.slice(-300)}`))))
-    p.stdin.end(pcm)
-  })
-}
-
-function postVertex(url, body, token) {
-  return fetch(url, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body,
+    p.stdin.end(audio)
   })
 }
 
 /**
- * Synthesize `text` (optionally prefixed with the style `prompt`) in the given
- * Gemini `voice` into `outPath` (.m4a). Returns { durationMs, voice }.
+ * Synthesize `text` in the given ElevenLabs `voiceId` + `model` into `outPath`
+ * (.m4a). v3 uses the free-text `direction` (prepended); other models use
+ * `settings` (voice_settings). Returns { durationMs, voiceId, model }.
  */
-export async function generateTts({ text, voice, accent, prompt, outPath }) {
+export async function generateTts({ text, voiceId, model, direction, settings, outPath }) {
   if (!text || !String(text).trim()) throw new Error('Cue has no text to synthesize.')
-  const spoken = String(text)
-  // Gemini interprets leading natural-language directives (accent, then style) as
-  // delivery instructions rather than spoken content.
-  const directives = []
-  if (accent && String(accent).trim()) directives.push(`Speak with a ${String(accent).trim()} accent.`)
-  if (prompt && String(prompt).trim()) directives.push(String(prompt).trim())
-  const instruction = directives.join(' ')
-  const content = instruction ? `${instruction}\n\n${spoken}` : spoken
-  const voiceName = voice || DEFAULT_VOICE
+  if (!voiceId) throw new Error('No ElevenLabs voice selected.')
+  const key = apiKey()
+  const modelId = model || 'eleven_multilingual_v2'
+  const isV3 = modelId === 'eleven_v3'
 
-  const project = await getProject()
-  const host = LOCATION === 'global' ? 'aiplatform.googleapis.com' : `${LOCATION}-aiplatform.googleapis.com`
-  const url = `https://${host}/v1/projects/${project}/locations/${LOCATION}/publishers/google/models/${MODEL}:generateContent`
-  const body = JSON.stringify({
-    contents: [{ role: 'user', parts: [{ text: content }] }],
-    generationConfig: {
-      responseModalities: ['AUDIO'],
-      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
-    },
+  // v3 takes inline delivery direction (audio-tag cues); other models ignore it.
+  const dir = direction && String(direction).trim() ? String(direction).trim() : ''
+  const content = isV3 && dir ? `${dir} ${text}` : String(text)
+
+  const body = { text: content, model_id: modelId }
+  if (!isV3 && settings) {
+    body.voice_settings = {
+      stability: clamp01(settings.stability, 0.5),
+      similarity_boost: clamp01(settings.similarityBoost, 0.75),
+      style: clamp01(settings.style, 0),
+      use_speaker_boost: true,
+      speed: clampRange(settings.speed, 0.7, 1.2, 1),
+    }
+  }
+
+  const url = `${BASE}/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=${encodeURIComponent(OUTPUT_FORMAT)}`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'xi-api-key': key, 'Content-Type': 'application/json', accept: 'audio/mpeg' },
+    body: JSON.stringify(body),
   })
+  if (!res.ok) {
+    const hint = res.status === 401 ? ' (check ELEVENLABS_API_KEY)' : ''
+    throw new Error(`ElevenLabs TTS failed: ${await errorMessage(res)}${hint}`)
+  }
+  const audio = Buffer.from(await res.arrayBuffer())
+  if (!audio.length) throw new Error('ElevenLabs returned empty audio.')
+  await encodeToM4a(audio, outPath)
+  return { durationMs: await ffprobeDurationMs(outPath), voiceId, model: modelId }
+}
 
-  // A cached ADC token can expire before our soft TTL — on an auth failure,
-  // refresh the token once and retry before giving up.
-  let res = await postVertex(url, body, await getAccessToken())
-  if ((res.status === 401 || res.status === 403) && !process.env.VERTEX_ACCESS_TOKEN) {
-    clearTokenCache()
-    res = await postVertex(url, body, await getAccessToken())
+/** List the account's voices: [{ voiceId, name, accent, description, category }]. */
+export async function listVoices() {
+  const key = apiKey()
+  const res = await fetch(`${BASE}/v1/voices`, { headers: { 'xi-api-key': key, accept: 'application/json' } })
+  if (!res.ok) {
+    const hint = res.status === 401 ? ' (check ELEVENLABS_API_KEY)' : ''
+    throw new Error(`ElevenLabs voice list failed: ${await errorMessage(res)}${hint}`)
   }
+  const json = await res.json()
+  return (json.voices || []).map((v) => ({
+    voiceId: v.voice_id,
+    name: v.name,
+    accent: v.labels?.accent ?? '',
+    description: v.labels?.description ?? '',
+    category: v.category ?? '',
+  }))
+}
 
-  let json = null
-  try {
-    json = await res.json()
-  } catch {
-    /* non-JSON error body */
-  }
-  if (!res.ok || !json) {
-    const msg = json?.error?.message || `HTTP ${res.status} ${res.statusText}`
-    const hint = res.status === 401 || res.status === 403 ? ' (try `gcloud auth application-default login`)' : ''
-    throw new Error(`Vertex AI TTS request failed: ${msg}${hint}`)
-  }
-  const cand = json.candidates?.[0]
-  const part = cand?.content?.parts?.find((pt) => pt.inlineData?.data)
-  const b64 = part?.inlineData?.data
-  if (!b64) {
-    throw new Error(`Vertex AI TTS returned no audio (finishReason: ${cand?.finishReason ?? 'unknown'})`)
-  }
-  const rate = Number(/rate=(\d+)/.exec(part.inlineData.mimeType || '')?.[1]) || 24000
-  await pcmToM4a(Buffer.from(b64, 'base64'), rate, outPath)
-  return { durationMs: await ffprobeDurationMs(outPath), voice: voiceName }
+function clamp01(v, fallback) {
+  const n = Number(v)
+  return Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : fallback
+}
+function clampRange(v, lo, hi, fallback) {
+  const n = Number(v)
+  return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : fallback
 }

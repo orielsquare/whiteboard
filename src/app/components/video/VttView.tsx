@@ -1,28 +1,31 @@
 import { useEffect, useRef, useState } from 'react'
 import { DEFAULT_TTS, makeId, type VoiceoverCue } from '@lib/project/schema'
-import { formatTimestamp, hashText, isAudioStale, parseVtt, reconcileParsed, serializeVtt } from '@lib/project/vtt'
-import { useVideoStore } from '../../state/videoStore'
+import { formatTimestamp, hashText, isAudioStale, parseVtt, reconcileParsed, serializeVtt, ttsEngineKey } from '@lib/project/vtt'
+import { useVideoStore, videoHistory } from '../../state/videoStore'
 
 const EMPTY: never[] = []
 
-/** Suggested accents (free-text input — describe more specifically if you like). */
-const ACCENTS = [
-  'British', 'Received Pronunciation', 'Estuary English', 'Cockney', 'Scottish', 'Glaswegian', 'Irish',
-  'Welsh', 'Northern English', 'Geordie', 'American', 'General American', 'Southern American', 'Australian',
-  'New Zealand', 'Canadian', 'South African', 'Indian English',
+/** ElevenLabs models (v3 takes a free-text direction; the rest take voice settings). */
+const MODELS = [
+  { id: 'eleven_multilingual_v2', label: 'Multilingual v2 — high quality' },
+  { id: 'eleven_v3', label: 'Eleven v3 — expressive (direction)' },
+  { id: 'eleven_turbo_v2_5', label: 'Turbo v2.5 — fast' },
+  { id: 'eleven_flash_v2_5', label: 'Flash v2.5 — fastest' },
 ]
 
-/** Prebuilt Gemini 2.5 TTS voices (Vertex AI). */
-const VOICES = [
-  'Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Leda', 'Orus', 'Aoede', 'Callirrhoe', 'Autonoe',
-  'Enceladus', 'Iapetus', 'Umbriel', 'Algieba', 'Despina', 'Erinome', 'Algenib', 'Rasalgethi',
-  'Laomedeia', 'Achernar', 'Alnilam', 'Schedar', 'Gacrux', 'Pulcherrima', 'Achird', 'Zubenelgenubi',
-  'Vindemiatrix', 'Sadachbia', 'Sadaltager', 'Sulafat',
-]
+interface Voice {
+  voiceId: string
+  name: string
+  accent: string
+  description: string
+  category: string
+}
+
+const isBritish = (v: Voice) => /british|england|english \(uk|^uk\b|\buk\b|received pronunciation/i.test(`${v.accent} ${v.description}`)
 
 /** URL for a cue's generated audio (served by the dev server). The `?v=` version
  * (bumped each regeneration) busts the browser + <audio>-element cache so a clip
- * regenerated with a new voice/prompt actually reloads. */
+ * regenerated with new voice/settings actually reloads. */
 export function cueAudioUrl(projectId: string, cue: VoiceoverCue): string | null {
   if (!cue.audio) return null
   const v = cue.audio.version ? `?v=${cue.audio.version}` : ''
@@ -32,17 +35,16 @@ export function cueAudioUrl(projectId: string, cue: VoiceoverCue): string | null
 /**
  * Editable WebVTT view of the project voiceover. The raw WebVTT text is the
  * editing surface (parsed live, reconciled into the cue model, preserving audio
- * by id). A Voice panel sets the project-wide Gemini voice + style prompt used to
- * synthesize cue audio (macOS-free: Gemini 2.5 TTS on Vertex AI). Below, a cue
- * list generates/plays the audio; cues are shaded and flagged stale when the
- * text, voice, or prompt no longer match the generated clip.
+ * by id). A Voice panel picks the **ElevenLabs** voice (its accent), model, and
+ * delivery controls (v3: a free-text direction; otherwise voice-settings sliders),
+ * all project-wide. The cue list generates/plays audio; cues are shaded and flagged
+ * stale when the text or any synthesis setting no longer matches the clip.
  */
 export function VttView() {
   const project = useVideoStore((s) => s.project)
   const cues = useVideoStore((s) => s.project?.voiceover ?? EMPTY)
   const ttsRaw = useVideoStore((s) => s.project?.tts)
-  // fill any missing fields (e.g. accent on projects saved before it existed)
-  const tts = { ...DEFAULT_TTS, ...(ttsRaw ?? {}) }
+  const tts = { ...DEFAULT_TTS, ...(ttsRaw ?? {}), settings: { ...DEFAULT_TTS.settings, ...(ttsRaw?.settings ?? {}) } }
   const setTts = useVideoStore((s) => s.setTts)
   const setVoiceover = useVideoStore((s) => s.setVoiceover)
   const updateCue = useVideoStore((s) => s.updateCue)
@@ -55,6 +57,48 @@ export function VttView() {
   const [errors, setErrors] = useState<string[]>([])
   const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [genError, setGenError] = useState<string | null>(null)
+
+  const [voices, setVoices] = useState<Voice[]>([])
+  const [voicesError, setVoicesError] = useState<string | null>(null)
+  const [voicesLoading, setVoicesLoading] = useState(true)
+
+  const isV3 = tts.model === 'eleven_v3'
+  const engineKey = ttsEngineKey(tts)
+
+  // Load the account's voices once (carries the accents).
+  useEffect(() => {
+    let alive = true
+    setVoicesLoading(true)
+    fetch('/api/voices')
+      .then((r) => r.json())
+      .then((data) => {
+        if (!alive) return
+        if (data.ok) {
+          setVoices(data.voices)
+          setVoicesError(null)
+        } else {
+          setVoicesError(data.error || 'Could not load voices')
+        }
+      })
+      .catch((e) => alive && setVoicesError(String(e?.message ?? e)))
+      .finally(() => alive && setVoicesLoading(false))
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // Default to a British voice (else the first) once voices load and none is chosen.
+  useEffect(() => {
+    if (!voices.length) return
+    const cur = useVideoStore.getState().project?.tts?.voiceId
+    if (cur && voices.some((v) => v.voiceId === cur)) return
+    const pick = voices.find(isBritish) ?? voices[0]
+    // Not a user edit — don't make the default selection an undoable step.
+    videoHistory.pause()
+    setTts({ voiceId: pick.voiceId, voiceName: pick.name })
+    videoHistory.resume()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voices])
 
   const canonical = serializeVtt(cues)
   useEffect(() => {
@@ -73,6 +117,8 @@ export function VttView() {
     addCue(last ? last.endMs + 200 : 0)
   }
 
+  const setSetting = (patch: Partial<typeof tts.settings>) => setTts({ settings: { ...tts.settings, ...patch } })
+
   const generate = async (cue: VoiceoverCue): Promise<boolean> => {
     const p = useVideoStore.getState().project
     if (!p) return false
@@ -80,14 +126,26 @@ export function VttView() {
       setGenError('This cue has no text to synthesize — add narration first.')
       return false
     }
-    const cur = p.tts ?? DEFAULT_TTS
+    const cur = { ...DEFAULT_TTS, ...(p.tts ?? {}) }
+    if (!cur.voiceId) {
+      setGenError('Pick a voice first (set ELEVENLABS_API_KEY if the list is empty).')
+      return false
+    }
     setGenError(null)
     setBusy((b) => ({ ...b, [cue.id]: true }))
     try {
       const res = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId: p.id, cueId: cue.id, text: cue.text, voice: cur.voice, accent: cur.accent, prompt: cur.prompt }),
+        body: JSON.stringify({
+          projectId: p.id,
+          cueId: cue.id,
+          text: cue.text,
+          voiceId: cur.voiceId,
+          model: cur.model,
+          direction: cur.direction,
+          settings: cur.settings,
+        }),
       })
       const data = await res.json()
       if (data.ok) {
@@ -95,9 +153,9 @@ export function VttView() {
           audio: {
             file: data.file,
             durationMs: data.durationMs,
-            voice: data.voice ?? cur.voice,
-            accent: cur.accent,
-            prompt: cur.prompt,
+            voiceId: data.voiceId ?? cur.voiceId,
+            model: data.model ?? cur.model,
+            engineKey: ttsEngineKey(cur),
             textHash: hashText(cue.text),
             version: Date.now(),
           },
@@ -116,7 +174,6 @@ export function VttView() {
   }
 
   const generateAll = async () => {
-    // Skip blank cues silently; stop on a real failure rather than hammering it.
     for (const cue of [...cues].sort((a, b) => a.startMs - b.startMs)) {
       if (!cue.text.trim()) continue
       const ok = await generate(cue)
@@ -136,52 +193,68 @@ export function VttView() {
 
   const sorted = [...cues].sort((a, b) => a.startMs - b.startMs)
   const anyGenerating = Object.values(busy).some(Boolean)
+  const noVoice = !tts.voiceId
 
   return (
     <div className="vttview">
       <div className="vtt-voice">
         <div className="vtt-voice-row">
           <label className="vtt-voice-field">
-            <span>Voice</span>
-            <select value={tts.voice} onChange={(e) => setTts({ voice: e.target.value })}>
-              {VOICES.map((v) => (
-                <option key={v} value={v}>
-                  {v}
+            <span>Model</span>
+            <select value={tts.model} onChange={(e) => setTts({ model: e.target.value })}>
+              {MODELS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
                 </option>
               ))}
             </select>
           </label>
-          <label className="vtt-voice-field vtt-voice-accent">
-            <span>Accent</span>
-            <input
-              type="text"
-              list="tts-accents"
-              placeholder="British"
-              value={tts.accent}
-              onChange={(e) => setTts({ accent: e.target.value })}
-            />
-            <datalist id="tts-accents">
-              {ACCENTS.map((a) => (
-                <option key={a} value={a} />
+          <label className="vtt-voice-field vtt-voice-pick">
+            <span>Voice {tts.voiceName && <span className="muted">· {tts.voiceName}</span>}</span>
+            <select
+              value={tts.voiceId}
+              disabled={voices.length === 0}
+              onChange={(e) => {
+                const v = voices.find((x) => x.voiceId === e.target.value)
+                if (v) setTts({ voiceId: v.voiceId, voiceName: v.name })
+              }}
+            >
+              {voices.length === 0 && <option value="">{voicesLoading ? 'loading…' : 'no voices'}</option>}
+              {voices.map((v) => (
+                <option key={v.voiceId} value={v.voiceId}>
+                  {v.name}
+                  {v.accent ? ` · ${v.accent}` : ''}
+                </option>
               ))}
-            </datalist>
+            </select>
           </label>
         </div>
-        <label className="vtt-voice-field vtt-voice-prompt">
-          <span>Style prompt</span>
-          <textarea
-            rows={2}
-            spellCheck
-            placeholder="e.g. Read in a warm, encouraging teacher’s voice — clear and unhurried."
-            value={tts.prompt}
-            onChange={(e) => setTts({ prompt: e.target.value })}
-          />
-        </label>
+
+        {isV3 ? (
+          <label className="vtt-voice-field vtt-voice-prompt">
+            <span>Direction</span>
+            <textarea
+              rows={2}
+              spellCheck
+              placeholder="e.g. [warmly] [slowly] — audio-tag delivery cues for the v3 model."
+              value={tts.direction}
+              onChange={(e) => setTts({ direction: e.target.value })}
+            />
+          </label>
+        ) : (
+          <div className="vtt-voice-sliders">
+            <Slider label="Stability" value={tts.settings.stability} min={0} max={1} step={0.05} onChange={(v) => setSetting({ stability: v })} />
+            <Slider label="Similarity" value={tts.settings.similarityBoost} min={0} max={1} step={0.05} onChange={(v) => setSetting({ similarityBoost: v })} />
+            <Slider label="Style" value={tts.settings.style} min={0} max={1} step={0.05} onChange={(v) => setSetting({ style: v })} />
+            <Slider label="Speed" value={tts.settings.speed} min={0.7} max={1.2} step={0.01} onChange={(v) => setSetting({ speed: v })} />
+          </div>
+        )}
+
         <p className="vtt-voice-hint muted">
-          Audio is synthesized with <b>Gemini</b> on Vertex AI. The accent and style prompt become
-          natural-language instructions applied to every cue (the accent can be as specific as you like —
-          e.g. <i>Received Pronunciation</i>, <i>Glaswegian</i>). Changing the voice, accent, or prompt
-          flags existing clips as stale.
+          Synthesized with <b>ElevenLabs</b> — the accent comes from the voice. {isV3
+            ? 'v3 takes a free-text direction (audio-tag cues like [whispering]).'
+            : 'Stability lower = more expressive; Style adds emphasis; Speed bakes in the pace.'}{' '}
+          {voicesError && <span className="vtt-voice-warn">⚠ {voicesError}</span>}
         </p>
       </div>
 
@@ -189,7 +262,7 @@ export function VttView() {
         <h3>Voiceover script (WebVTT)</h3>
         <div className="spacer" />
         <button onClick={onAdd}>+ Add cue</button>
-        <button onClick={generateAll} disabled={anyGenerating || cues.length === 0}>
+        <button onClick={generateAll} disabled={anyGenerating || cues.length === 0 || noVoice}>
           {anyGenerating ? '⏳ Generating…' : '🔊 Generate all'}
         </button>
         <span className="muted">{cues.length} cue(s)</span>
@@ -219,7 +292,7 @@ export function VttView() {
       {sorted.length > 0 && (
         <ul className="cue-list">
           {sorted.map((c) => {
-            const stale = isAudioStale(c, { voice: tts.voice, accent: tts.accent, prompt: tts.prompt })
+            const stale = isAudioStale(c, { engineKey })
             return (
               <li key={c.id} className={c.audio ? 'cue-row has-audio' : 'cue-row'}>
                 <span className="cue-row-time">{formatTimestamp(c.startMs)}</span>
@@ -232,7 +305,7 @@ export function VttView() {
                 <button className="tool" disabled={!c.audio || busy[c.id]} onClick={() => play(c)} title="play">
                   ▶
                 </button>
-                <button className="tool" disabled={busy[c.id]} onClick={() => generate(c)} title="generate / regenerate TTS">
+                <button className="tool" disabled={busy[c.id] || noVoice} onClick={() => generate(c)} title="generate / regenerate TTS">
                   {c.audio ? '↻' : '🔊'}
                 </button>
                 <button className="tool" onClick={() => removeCue(c.id)} title="delete cue">
@@ -249,5 +322,30 @@ export function VttView() {
         cue's generated audio across edits. Generating sets the cue's end time to the spoken length.
       </p>
     </div>
+  )
+}
+
+function Slider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string
+  value: number
+  min: number
+  max: number
+  step: number
+  onChange: (v: number) => void
+}) {
+  return (
+    <label className="vtt-slider">
+      <span className="vtt-slider-label">
+        {label} <b>{value.toFixed(2)}</b>
+      </span>
+      <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(Number(e.target.value))} />
+    </label>
   )
 }

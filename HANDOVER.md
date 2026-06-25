@@ -275,7 +275,7 @@ new views are **Video sub-views** (the Layout/Order/Play switch now also has **T
 the toggle was lifted from SlideCanvas to VideoView).
 
 - [x] **P1** — `src/lib/project/vtt.ts` (parse/serialize/format/estimate/reconcile/`cuesInRange`/staleness, + `tools/vtt.test.mjs` 24 tests); `timing.ts` `slideTimeWindows`; store cue actions (`setVoiceover/addCue/updateCue/removeCue/setCueAudio`); **VttView** (editable raw WebVTT, live parse, reconcile preserving audio by id); read-only **SlideVttExtract** beneath the Layout canvas (highlights in-range cues).
-- [x] **P2** — TTS: `tools/tts.mjs` (**Gemini 2.5 TTS on Vertex AI** → ffmpeg → `.m4a` + duration; see "Voice synthesis" below); `ttsPlugin` in `vite.config.ts` (`POST /api/tts`, `GET /api/voiceover/<project>/<file>` range-aware); VttView cue list with Generate/Generate-all/Play/regenerate + audio shading; generating sets `cue.endMs = startMs + durationMs` and `cue.audio.textHash` (staleness). Synced playback: `PlaybackCanvas` takes `audioCues` and schedules `<audio>` against the clock; `ProjectPlayer` supplies them for the **All-slides** scope (clock == project time).
+- [x] **P2** — TTS: `tools/tts.mjs` (**ElevenLabs** → ffmpeg → `.m4a` + duration; see "Voice synthesis" below); `ttsPlugin` in `vite.config.ts` (`POST /api/tts`, `GET /api/voices`, `GET /api/voiceover/<project>/<file>` range-aware); VttView cue list with Generate/Generate-all/Play/regenerate + audio shading; generating sets `cue.endMs = startMs + durationMs` and `cue.audio.{textHash,engineKey}` (staleness). Synced playback: `PlaybackCanvas` takes `audioCues` and schedules `<audio>` against the clock; `ProjectPlayer` supplies them for the **All-slides** scope (clock == project time).
 - [x] **P3 — Timeline view** done & verified — `TimelineView.tsx` is now a full-width, real-time-scaled
   track (DOM divs, not canvas) with horizontal scroll + zoom (`pxPerSec`, −/＋/Fit). Built off
   `buildRenderContext` + `slideTimeWindows`: **slide sections** cleanly partition `[projStart, nextStart)`
@@ -320,27 +320,29 @@ the toggle was lifted from SlideCanvas to VideoView).
   Play/regenerate/delete; **exports `cueAudioUrl(projectId,cue)`**). `SlideVttExtract.tsx` (read-only,
   beneath the Layout canvas — `SlideCanvas` computes the selected slide's window via `buildRenderContext`
   + `slideTimeWindows`). View toggle lives in `VideoView` (lifted out of `SlideCanvas`).
-- **TTS (Gemini on Vertex AI)**: `tools/tts.mjs` `generateTts({text,voice,prompt,outPath})` → returns
-  `{durationMs,voice}`. Calls `gemini-2.5-flash-preview-tts` via the Vertex REST `:generateContent`
-  endpoint (`responseModalities:['AUDIO']`, `speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName`),
-  prepends the accent (`Speak with a <accent> accent.`) + style `prompt` to the text as natural-language
-  directives, decodes the returned L16 PCM and ffmpeg-encodes it to `.m4a`.
-  **Auth = ADC** (shells out to `gcloud auth application-default print-access-token`, token cached on
-  `globalThis` to survive the plugin's per-request module cache-busting). Config via env (`GOOGLE_CLOUD_PROJECT`
-  / `gcloud config`, `GOOGLE_CLOUD_LOCATION` default `us-central1` — note `global` 500s for this preview
-  model, `GEMINI_TTS_MODEL`). `vite.config.ts` `ttsPlugin` — `POST /api/tts {projectId,cueId,text,voice,prompt}`
-  writes `voiceover/<projectId>/<cueId>.m4a`; `GET /api/voiceover/<projectId>/<file>` streams it (ignores
-  the `?v=` cache-bust). Generate stores `audio.{voice,accent,prompt,textHash,version}` (version =
-  `Date.now()`, appended to the audio URL by `cueAudioUrl` so regenerated clips reload), and sets
-  `cue.endMs = startMs + durationMs`. Blank cue text is rejected (no Vertex call). A 401/403 clears the
-  cached ADC token and retries once.
-- **Voice settings**: `VideoProject.tts: { voice, accent, prompt }` (default `{ voice:'Kore',
-  accent:'British', prompt:'' }`); store action `setTts(patch)` / `videoEdit.setTts`. The VTT view's
-  **Voice panel** sets it: a voice `<select>` (30 prebuilt Gemini voices), a free-text **accent** input
-  (with a `<datalist>` of suggestions — "as specific as you like"), and a style-prompt `<textarea>`, all
-  commit on change. `isAudioStale(cue, {voice,accent,prompt})` flags a clip stale when the text, voice,
-  accent, or prompt changed. The MP4 export already muxes whatever clips exist, so Gemini audio flows into
-  exports unchanged.
+- **TTS (ElevenLabs)**: `tools/tts.mjs` `generateTts({text,voiceId,model,direction,settings,outPath})` →
+  `{durationMs,voiceId,model}`, and `listVoices()` → `[{voiceId,name,accent,description,category}]`.
+  **Auth = an `ELEVENLABS_API_KEY` env var** (server-side only; never sent to the browser). POSTs
+  `/v1/text-to-speech/{voiceId}?output_format=mp3_44100_128` with `{text, model_id, voice_settings?}`;
+  ffmpeg encodes the returned audio (mp3, or pcm if `ELEVENLABS_OUTPUT_FORMAT=pcm_*`) to `.m4a`. The
+  **accent is the voice** — there is no accent/prompt instruction. v3 (`eleven_v3`) takes a free-text
+  `direction` prepended to the text (audio-tag cues); other models take `voice_settings`
+  {stability,similarity_boost,style,use_speaker_boost,speed}. Config via env (`ELEVENLABS_API_KEY`,
+  `ELEVENLABS_OUTPUT_FORMAT`, `ELEVENLABS_BASE_URL`). `vite.config.ts` `ttsPlugin` — `POST /api/tts
+  {projectId,cueId,text,voiceId,model,direction,settings}` writes `voiceover/<projectId>/<cueId>.m4a`;
+  `GET /api/voices` proxies the account voice list (returns `{ok:false,error}` cleanly if the key is
+  unset); `GET /api/voiceover/<projectId>/<file>` streams it (ignores the `?v=` cache-bust). Generate
+  stores `audio.{voiceId,model,engineKey,textHash,version}` and sets `cue.endMs = startMs + durationMs`.
+  Blank cue text / no voice are rejected before any call.
+- **Voice settings**: `VideoProject.tts: { voiceId, voiceName, model, direction, settings:
+  {stability,similarityBoost,style,speed} }` (default model `eleven_multilingual_v2`, empty voiceId until
+  voices load); store action `setTts(patch)` deep-merges `settings`. The VTT **Voice panel** has a **model**
+  `<select>`, a **voice** `<select>` populated from `/api/voices` (auto-selects a British voice on first
+  load), and — depending on the model — a v3 **direction** `<textarea>` or **stability/similarity/style/
+  speed** sliders. Staleness: `ttsEngineKey(tts)` hashes voiceId+model+(direction for v3 | settings else);
+  `isAudioStale(cue, {engineKey})` flags a clip stale when the text or any synthesis input changed (a clip
+  with no stored `engineKey` — e.g. from a prior engine — is always stale). The MP4 export already muxes
+  whatever clips exist, so ElevenLabs audio flows into exports unchanged.
 - **Synced audio**: `PlaybackCanvas` accepts `audioCues: AudioCue[] {id,startMs,endMs,url}` and schedules
   `<audio>` against `tRef` in the rAF tick (play when `t∈[start,end)`, pause otherwise, resync on >0.35s
   drift). `ProjectPlayer` builds them from `project.voiceover` **only for the `all` scope** (clock ==

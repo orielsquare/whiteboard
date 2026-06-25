@@ -75,28 +75,58 @@ export interface VoiceoverAudio {
   /** file name under the project's voiceover dir (served via /api/voiceover). */
   file: string
   durationMs: number
-  voice?: string
-  /** the spoken accent this clip was generated with — detects staleness when it changes. */
-  accent?: string
-  /** the style prompt this clip was generated with — detects staleness when it changes. */
-  prompt?: string
+  /** the ElevenLabs voice id this clip was generated with (record/display). */
+  voiceId?: string
+  /** the ElevenLabs model id used. */
+  model?: string
+  /** hash of every synthesis input EXCEPT text (voice/model/direction/settings) — staleness. */
+  engineKey?: string
   /** hash of the text the audio was generated from — detects staleness after edits. */
   textHash?: string
   /** bumped each (re)generation; appended to the audio URL so players reload the new clip. */
   version?: number
 }
 
-/** Project-wide voice-synthesis settings (Gemini TTS on Vertex AI). */
-export interface TtsSettings {
-  /** prebuilt Gemini voice name (e.g. "Kore"). */
-  voice: string
-  /** spoken accent, woven into the synthesis instruction (e.g. "British", "Received Pronunciation"). */
-  accent: string
-  /** natural-language style instruction prepended to each cue's text (may be empty). */
-  prompt: string
+/** ElevenLabs voice settings (applied to v2/Flash/Turbo models). */
+export interface TtsVoiceSettings {
+  /** 0..1 — lower is more variable/expressive, higher is more consistent. */
+  stability: number
+  /** 0..1 — adherence to the original voice. */
+  similarityBoost: number
+  /** 0..1 — style exaggeration. */
+  style: number
+  /** 0.7..1.2 — playback rate baked into the synthesis. */
+  speed: number
 }
 
-export const DEFAULT_TTS: TtsSettings = { voice: 'Kore', accent: 'British', prompt: '' }
+/** Project-wide voice-synthesis settings (ElevenLabs). */
+export interface TtsSettings {
+  /** ElevenLabs voice id (carries the accent). */
+  voiceId: string
+  /** display name for the chosen voice. */
+  voiceName: string
+  /** ElevenLabs model id (e.g. "eleven_multilingual_v2", "eleven_v3"). */
+  model: string
+  /** v3 only: a free-text delivery direction (audio-tag style cues) prepended to the text. */
+  direction: string
+  /** non-v3 models: ElevenLabs voice settings. */
+  settings: TtsVoiceSettings
+}
+
+export const DEFAULT_TTS_MODEL = 'eleven_multilingual_v2'
+export const DEFAULT_TTS_VOICE_SETTINGS: TtsVoiceSettings = {
+  stability: 0.5,
+  similarityBoost: 0.75,
+  style: 0,
+  speed: 1,
+}
+export const DEFAULT_TTS: TtsSettings = {
+  voiceId: '',
+  voiceName: '',
+  model: DEFAULT_TTS_MODEL,
+  direction: '',
+  settings: { ...DEFAULT_TTS_VOICE_SETTINGS },
+}
 
 /**
  * A timed voiceover snippet (WebVTT cue). Times are ABSOLUTE project real-time

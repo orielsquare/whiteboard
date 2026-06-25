@@ -71,8 +71,8 @@ src/app/
                 SlideOrderView/ProjectPlayer/PlaybackCanvas, AnimationOrderList, VttView, SlideVttExtract,
                 TimelineView [placeholder]).
 vite.config.ts  React + fontStorePlugin (/api/fonts) + projectStorePlugin (/api/projects) +
-                exportPlugin (/api/export → MP4) + ttsPlugin (/api/tts, /api/voiceover/<project>/<file>).
-tools/          videoExport.mjs (headless MP4), tts.mjs (Gemini TTS on Vertex AI→ffmpeg), *.test.mjs (pure-engine tests).
+                exportPlugin (/api/export → MP4) + ttsPlugin (/api/tts, /api/voices, /api/voiceover/<project>/<file>).
+tools/          videoExport.mjs (headless MP4), tts.mjs (ElevenLabs TTS + voice list→ffmpeg), *.test.mjs (pure-engine tests).
 fonts/<id>/     saved font manifests (manifest.json + font.ttf).   projects/<id>.json  saved videos.
 exports/<name>.mp4  rendered videos.   voiceover/<projectId>/<cueId>.m4a  generated TTS clips.
 public/fonts/   bundled OFL samples: Patrick Hand (handwriting), Fira Sans (sans).
@@ -138,10 +138,11 @@ failure.
 **Voiceover — complete** (a project-wide WebVTT track synced to the animation; see `HANDOVER.md` →
 "Voiceover feature" for decisions + design). **P1–P4 done & verified:** the data model
 (`VideoProject.voiceover: VoiceoverCue[]`, absolute-time cues, no box/slide link), the pure `vtt.ts`
-engine, the editable **VTT** sub-view + read-only slide extract, **TTS** (Gemini 2.5 TTS on **Vertex AI**
-— ADC auth; a project-wide voice, accent (default British) + style-prompt set in the VTT view's Voice
-panel, woven into the synthesis instruction — → ffmpeg via `/api/tts`, with audio-exists/stale shading and
-clock-synced `<audio>` playback), the full-width **Timeline**
+engine, the editable **VTT** sub-view + read-only slide extract, **TTS** (**ElevenLabs** — `ELEVENLABS_API_KEY`
+env key; the VTT Voice panel picks an account voice [accent comes from the voice], a model, and per-model
+steering [v3 = free-text direction, else stability/style/speed sliders] — → ffmpeg `.m4a` via `/api/tts`,
+voices listed via `/api/voices`, with audio-exists/stale shading and clock-synced `<audio>` playback), the
+full-width **Timeline**
 view (`TimelineView.tsx` — real-time-scaled DOM track: slide sections + numbered writing sub-bars + hold
 + bleeding transition overlays + ruler + floating thumbnails, with zoom/Fit), and draggable voiceover
 **leader lines** (re-time a cue live, preserving its duration + id, as one atomic undo; double-click to

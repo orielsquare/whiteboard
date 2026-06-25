@@ -3,10 +3,28 @@ import react from '@vitejs/plugin-react'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs/promises'
-import { createReadStream } from 'node:fs'
+import { createReadStream, existsSync, readFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 const rootDir = fileURLToPath(new URL('.', import.meta.url))
+
+// Load a gitignored .env into process.env (only filling unset vars) so server-side
+// keys like ELEVENLABS_API_KEY reach the dev-server plugins without a shell export.
+function loadDotEnv(file: string) {
+  if (!existsSync(file)) return
+  try {
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
+      const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line)
+      if (!m) continue
+      let v = m[2].trim()
+      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1)
+      if (process.env[m[1]] === undefined) process.env[m[1]] = v
+    }
+  } catch {
+    /* ignore malformed .env */
+  }
+}
+loadDotEnv(path.join(rootDir, '.env'))
 const fontsDir = path.join(rootDir, 'fonts')
 const projectsDir = path.join(rootDir, 'projects')
 const exportsDir = path.join(rootDir, 'exports')
@@ -257,9 +275,20 @@ function ttsPlugin(): Plugin {
       server.middlewares.use(async (req: IncomingMessage, res: ServerResponse, next) => {
         const url = req.url ?? ''
         try {
+          if (req.method === 'GET' && url.split('?')[0] === '/api/voices') {
+            const spec = pathToFileURL(path.join(rootDir, 'tools/tts.mjs')).href + '?v=' + Date.now()
+            const mod = await import(spec)
+            try {
+              const voices = await mod.listVoices()
+              return sendJson(res, 200, { ok: true, voices })
+            } catch (e) {
+              // surface a clean message (e.g. missing key) the UI can show inline
+              return sendJson(res, 200, { ok: false, error: (e as Error)?.message ?? String(e) })
+            }
+          }
           if (req.method === 'POST' && url.split('?')[0] === '/api/tts') {
             const body = JSON.parse((await readBody(req)).toString('utf8'))
-            const { projectId, cueId, text, voice, accent, prompt } = body
+            const { projectId, cueId, text, voiceId, model, direction, settings } = body
             if (!projectId || !cueId) return sendJson(res, 400, { error: 'projectId and cueId required' })
             const dir = path.join(voiceoverDir, safeSeg(projectId))
             await fs.mkdir(dir, { recursive: true })
@@ -267,8 +296,8 @@ function ttsPlugin(): Plugin {
             const outPath = path.join(dir, file)
             const spec = pathToFileURL(path.join(rootDir, 'tools/tts.mjs')).href + '?v=' + Date.now()
             const mod = await import(spec)
-            const { durationMs, voice: usedVoice } = await mod.generateTts({ text, voice, accent, prompt, outPath })
-            return sendJson(res, 200, { ok: true, file, durationMs, voice: usedVoice ?? voice ?? null })
+            const info = await mod.generateTts({ text, voiceId, model, direction, settings, outPath })
+            return sendJson(res, 200, { ok: true, file, ...info })
           }
           if (req.method === 'GET' && url.startsWith('/api/voiceover/')) {
             const rel = url.split('?')[0].slice('/api/voiceover/'.length).split('/')
@@ -297,7 +326,8 @@ function ttsPlugin(): Plugin {
           }
           return next()
         } catch (err) {
-          return sendJson(res, 500, { error: String((err as Error)?.stack ?? err) })
+          // surface the clean message (shown inline in the VTT view), not a stack
+          return sendJson(res, 500, { error: (err as Error)?.message ?? String(err) })
         }
       })
     },

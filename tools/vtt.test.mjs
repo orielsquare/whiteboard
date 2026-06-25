@@ -109,14 +109,22 @@ check('estimate words', V.estimateDurationMs('one two three') === 1080, V.estima
 {
   // voice/prompt staleness (opts) — only checked when opts is given
   const text = 'hello'
-  const base = { id: 'z', startMs: 0, endMs: 1, text, audio: { file: 'z', durationMs: 1, voice: 'Kore', accent: 'British', prompt: 'calm', textHash: V.hashText(text) } }
-  check('no opts → ignores voice/accent/prompt', V.isAudioStale(base) === false)
-  check('fresh when voice+accent+prompt match', V.isAudioStale(base, { voice: 'Kore', accent: 'British', prompt: 'calm' }) === false)
-  check('stale when voice differs', V.isAudioStale(base, { voice: 'Puck', accent: 'British', prompt: 'calm' }) === true)
-  check('stale when accent differs', V.isAudioStale(base, { voice: 'Kore', accent: 'Scottish', prompt: 'calm' }) === true)
-  check('stale when prompt differs', V.isAudioStale(base, { voice: 'Kore', accent: 'British', prompt: 'excited' }) === true)
-  const noPrompt = { id: 'w', startMs: 0, endMs: 1, text, audio: { file: 'w', durationMs: 1, voice: 'Kore', textHash: V.hashText(text) } }
-  check('empty accent/prompt match missing audio fields', V.isAudioStale(noPrompt, { voice: 'Kore', accent: '', prompt: '' }) === false)
+  const k1 = V.ttsEngineKey({ voiceId: 'v1', model: 'eleven_multilingual_v2', direction: '', settings: { stability: 0.5, style: 0, speed: 1, similarityBoost: 0.75 } })
+  const base = { id: 'z', startMs: 0, endMs: 1, text, audio: { file: 'z', durationMs: 1, engineKey: k1, textHash: V.hashText(text) } }
+  check('no opts → ignores engineKey', V.isAudioStale(base) === false)
+  check('fresh when engineKey matches', V.isAudioStale(base, { engineKey: k1 }) === false)
+  const k2 = V.ttsEngineKey({ voiceId: 'v2', model: 'eleven_multilingual_v2', direction: '', settings: { stability: 0.5, style: 0, speed: 1, similarityBoost: 0.75 } })
+  check('stale when voice differs', V.isAudioStale(base, { engineKey: k2 }) === true)
+  const k3 = V.ttsEngineKey({ voiceId: 'v1', model: 'eleven_multilingual_v2', direction: '', settings: { stability: 0.9, style: 0, speed: 1, similarityBoost: 0.75 } })
+  check('stale when a setting differs', V.isAudioStale(base, { engineKey: k3 }) === true)
+  // v3 ignores settings (uses direction); v2 ignores direction (uses settings)
+  const v3a = V.ttsEngineKey({ voiceId: 'v1', model: 'eleven_v3', direction: 'warm', settings: { stability: 0.5, style: 0, speed: 1, similarityBoost: 0.75 } })
+  const v3b = V.ttsEngineKey({ voiceId: 'v1', model: 'eleven_v3', direction: 'warm', settings: { stability: 0.9, style: 1, speed: 1.2, similarityBoost: 0.1 } })
+  check('v3 ignores voice settings in the key', v3a === v3b)
+  const v3c = V.ttsEngineKey({ voiceId: 'v1', model: 'eleven_v3', direction: 'brisk', settings: { stability: 0.5, style: 0, speed: 1, similarityBoost: 0.75 } })
+  check('v3 key changes with direction', v3a !== v3c)
+  const noKey = { id: 'w', startMs: 0, endMs: 1, text, audio: { file: 'w', durationMs: 1, textHash: V.hashText(text) } }
+  check('clip with no engineKey is stale vs a provided key', V.isAudioStale(noKey, { engineKey: k1 }) === true)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

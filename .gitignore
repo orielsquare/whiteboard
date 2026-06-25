@@ -1,0 +1,4 @@
+# Local secrets — e.g. ELEVENLABS_API_KEY. Never commit these.
+.env
+.env.local
+.env.*.local
