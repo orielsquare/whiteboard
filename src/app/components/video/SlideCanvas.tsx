@@ -80,6 +80,19 @@ export function SlideCanvas({
     }
   }, [project, slide, layouts, selectedTextBoxId, slideView, metrics])
 
+  // Safety net: if this canvas unmounts mid-drag (e.g. the user switches the slide
+  // view while dragging), pointerup never fires — make sure we don't leave zundo's
+  // history tracking paused for the rest of the session (it's a plain flag).
+  useEffect(
+    () => () => {
+      if (dragRef.current) {
+        dragRef.current = null
+        videoHistory.resume()
+      }
+    },
+    [],
+  )
+
   if (!project || !slide) return <div className="stage video-stage">No slide.</div>
 
   const onPointerDown = (e: PointerEvent<HTMLCanvasElement>) => {
@@ -119,7 +132,11 @@ export function SlideCanvas({
       // resume + commit a single undo entry for the whole drag gesture
       videoHistory.resume()
       dragRef.current = null
-      canvas?.releasePointerCapture(e.pointerId)
+      try {
+        canvas?.releasePointerCapture(e.pointerId)
+      } catch {
+        /* never captured, or already lost (e.g. pointercancel) */
+      }
       return
     }
     if (!downHitRef.current && !movedRef.current) {
@@ -146,6 +163,7 @@ export function SlideCanvas({
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
+              onPointerCancel={onPointerUp}
             />
           </div>
           {slideWindow && (

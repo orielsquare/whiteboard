@@ -248,7 +248,7 @@ export function PlaybackCanvas({
             <input
               type="range"
               min={0.25}
-              max={6}
+              max={12}
               step={0.05}
               value={speed}
               onChange={(e) => onSpeedChange(Number(e.target.value))}

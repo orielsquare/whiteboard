@@ -10,7 +10,7 @@ import type { BrushSettings } from '@lib/manifest/schema'
 export const PROJECT_VERSION = 1 as const
 
 export type Aspect = '16:9' | '9:16'
-export type TransitionKind = 'none' | 'fade' | 'rubout' | 'scroll-up' | 'scroll-left'
+export type TransitionKind = 'none' | 'fade' | 'rubout' | 'scroll-up' | 'scroll-down' | 'scroll-left' | 'scroll-right'
 export type TextAlign = 'left' | 'center' | 'right'
 
 /** A styled span of text within a textbox. */

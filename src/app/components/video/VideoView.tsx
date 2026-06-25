@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { LoadedFont } from '@lib/font/load'
+import { captionsVtt } from '@lib/project/vtt'
 import { extractionSig, type ExtractionParams, type GlyphExtractor } from '@lib/extraction'
 import type { BrushSettings, BrushStyle } from '@lib/manifest/schema'
 import { prepareGlyph, type PreparedGlyph } from '@lib/animation/timeline'
@@ -59,8 +60,28 @@ export function VideoView({
       audioMuxed?: boolean
       audioCues?: number
       audioWarning?: string | null
+      /** WebVTT captions snapshotted at export time, so they match the rendered MP4. */
+      captionsVtt?: string | null
     } | null
   >(null)
+
+  // Optional captions for the exported-video preview, built from the voiceover as
+  // it was at export time (snapshot in exportResult), so they stay in sync with the
+  // rendered MP4 even if the script is edited afterwards. Served as a WebVTT blob.
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const [showCaptions, setShowCaptions] = useState(true)
+  const captionsUrl = useMemo(() => {
+    const vtt = exportResult?.captionsVtt
+    if (!vtt) return null
+    return URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }))
+  }, [exportResult?.captionsVtt])
+  useEffect(() => () => { if (captionsUrl) URL.revokeObjectURL(captionsUrl) }, [captionsUrl])
+  // Keep the caption track's visibility in sync with the toggle.
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v || v.textTracks.length === 0) return
+    v.textTracks[0].mode = showCaptions ? 'showing' : 'hidden'
+  }, [showCaptions, captionsUrl, exportResult])
 
   // The shared font manifest drives glyph geometry; gate derivation on it
   // belonging to the current font (as App + PreviewView do).
@@ -166,7 +187,9 @@ export function VideoView({
       })
       const data = await res.json()
       if (data.ok) {
-        setExportResult(data)
+        // snapshot the captions from the project we just rendered, so they match the MP4
+        const vo = p.voiceover ?? []
+        setExportResult({ ...data, captionsVtt: vo.length ? captionsVtt(vo) : null })
         setStatus(null)
       } else {
         setStatus('export failed: ' + (data.error ?? 'unknown'))
@@ -247,7 +270,15 @@ export function VideoView({
               ↓ download
             </a>
           </div>
-          <video className="export-preview" src={`/api/export/${exportResult.file}`} controls />
+          {captionsUrl && (
+            <label className="toggle export-captions">
+              <input type="checkbox" checked={showCaptions} onChange={(e) => setShowCaptions(e.target.checked)} />
+              Captions (from the voiceover script)
+            </label>
+          )}
+          <video ref={videoRef} className="export-preview" src={`/api/export/${exportResult.file}`} controls>
+            {captionsUrl && <track kind="captions" src={captionsUrl} srcLang="en" label="Voiceover" default />}
+          </video>
         </div>
       )}
 

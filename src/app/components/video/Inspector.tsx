@@ -5,7 +5,7 @@ import { RunEditor } from './RunEditor'
 
 const ALIGNS: TextAlign[] = ['left', 'center', 'right']
 const BRUSH_STYLES: BrushStyle[] = ['chalk', 'ink', 'marker']
-const TRANSITIONS: TransitionKind[] = ['none', 'fade', 'rubout', 'scroll-up', 'scroll-left']
+const TRANSITIONS: TransitionKind[] = ['none', 'fade', 'rubout', 'scroll-up', 'scroll-down', 'scroll-left', 'scroll-right']
 const DEFAULT_WRAP_W = 0.7
 
 /** Right-hand panel: edits the selected textbox (text + style + frame + timing) and the slide. */

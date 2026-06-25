@@ -126,6 +126,18 @@ check('estimate words', V.estimateDurationMs('one two three') === 1080, V.estima
   const noKey = { id: 'w', startMs: 0, endMs: 1, text, audio: { file: 'w', durationMs: 1, textHash: V.hashText(text) } }
   check('clip with no engineKey is stale vs a provided key', V.isAudioStale(noKey, { engineKey: k1 }) === true)
 }
+{
+  // captionsVtt: escape markup chars + drop zero-length/reversed cues
+  const out = V.captionsVtt([
+    { id: 'a', startMs: 1000, endMs: 3000, text: '3 < 5 & x > 0' },
+    { id: 'b', startMs: 5000, endMs: 5000, text: 'zero length' }, // dropped
+    { id: 'c', startMs: 9000, endMs: 8000, text: 'reversed' }, // dropped
+  ])
+  check('captions escape < > &', out.includes('3 &lt; 5 &amp; x &gt; 0'))
+  check('captions drop zero-length cue', !out.includes('zero length'))
+  check('captions drop reversed cue', !out.includes('reversed'))
+  check('captions keep the valid cue id+timing', out.includes('a\n00:00:01.000 --> 00:00:03.000'))
+}
 
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)

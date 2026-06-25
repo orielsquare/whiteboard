@@ -59,6 +59,18 @@ export function composeTransition(
       ctx.restore()
       break
     }
+    case 'scroll-down': {
+      // coupled vertical push: outgoing exits downward, incoming follows from above
+      ctx.save()
+      ctx.translate(0, p * h)
+      d.drawOutgoingFull()
+      ctx.restore()
+      ctx.save()
+      ctx.translate(0, -(1 - p) * h)
+      d.drawIncomingFull()
+      ctx.restore()
+      break
+    }
     case 'scroll-left': {
       // coupled horizontal push: outgoing exits left, incoming follows from the right
       ctx.save()
@@ -67,6 +79,18 @@ export function composeTransition(
       ctx.restore()
       ctx.save()
       ctx.translate((1 - p) * w, 0)
+      d.drawIncomingFull()
+      ctx.restore()
+      break
+    }
+    case 'scroll-right': {
+      // coupled horizontal push: outgoing exits right, incoming follows from the left
+      ctx.save()
+      ctx.translate(p * w, 0)
+      d.drawOutgoingFull()
+      ctx.restore()
+      ctx.save()
+      ctx.translate(-(1 - p) * w, 0)
       d.drawIncomingFull()
       ctx.restore()
       break

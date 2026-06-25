@@ -5,7 +5,8 @@ import type { FontMetrics } from '@lib/project/layout'
 import { buildRenderContext } from '@lib/project/render'
 import { slideTimeWindows } from '@lib/project/timing'
 import { runsToPlainText } from '@lib/project/runs'
-import type { VoiceoverCue } from '@lib/project/schema'
+import { isAudioStale, ttsEngineKey } from '@lib/project/vtt'
+import { DEFAULT_TTS, type VoiceoverCue } from '@lib/project/schema'
 import { useVideoStore, videoHistory } from '../../state/videoStore'
 import { BACKING_W } from './layoutCanvas'
 import { SlideThumbnail } from './SlideThumbnail'
@@ -73,6 +74,11 @@ export function TimelineView({ glyphs, metrics }: { glyphs: Map<string, Prepared
 
   const [pxPerSec, setPxPerSec] = useState(80)
   const scrollRef = useRef<HTMLDivElement | null>(null)
+  const pxPerSecRef = useRef(pxPerSec)
+  const spaceRef = useRef(false)
+  const hoverRef = useRef(false)
+  const anchorRef = useRef<{ timeSec: number; offsetX: number } | null>(null)
+  pxPerSecRef.current = pxPerSec
 
   const playbackRate = project?.playbackRate ?? 1
   const rc = useMemo(
@@ -82,6 +88,68 @@ export function TimelineView({ glyphs, metrics }: { glyphs: Map<string, Prepared
   const windows = useMemo(() => (rc ? slideTimeWindows(rc.timing) : []), [rc])
   const sortedCues = useMemo(() => [...cues].sort((a, b) => a.startMs - b.startMs), [cues])
   const xOf = useCallback((ms: number) => (ms / 1000) * pxPerSec, [pxPerSec])
+
+  // Track whether Space is held (Space + wheel scrolls horizontally). Suppress the
+  // page's space-scroll only while the timeline is hovered.
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        spaceRef.current = true
+        if (hoverRef.current) e.preventDefault()
+      }
+    }
+    const up = (e: KeyboardEvent) => {
+      if (e.code === 'Space') spaceRef.current = false
+    }
+    // Don't leave Space "stuck" if the window loses focus mid-press (the keyup
+    // would go to another window).
+    const clear = () => (spaceRef.current = false)
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', clear)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', clear)
+    }
+  }, [])
+
+  // Mouse wheel over the track zooms toward the cursor; Space/Shift + wheel scrolls
+  // left/right. Native non-passive listener so we can preventDefault the page scroll.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY)
+      // Space/Shift + wheel, or a natural two-finger horizontal swipe → pan left/right.
+      if (spaceRef.current || e.shiftKey || horizontal) {
+        e.preventDefault()
+        el.scrollLeft += horizontal ? e.deltaX : e.deltaY
+        return
+      }
+      if (e.deltaY === 0) return // no vertical intent → nothing to zoom
+      e.preventDefault()
+      const cur = pxPerSecRef.current
+      const offsetX = e.clientX - el.getBoundingClientRect().left
+      const timeSec = (el.scrollLeft + offsetX) / cur
+      const next = clampPxPerSec(cur * (e.deltaY < 0 ? 1.15 : 1 / 1.15))
+      if (next === cur) return
+      anchorRef.current = { timeSec, offsetX }
+      setPxPerSec(next)
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
+  // After a zoom re-lays out the track at the new scale, keep the time that was
+  // under the cursor in place (anchored zoom).
+  useEffect(() => {
+    const el = scrollRef.current
+    const a = anchorRef.current
+    if (!el || !a) return
+    el.scrollLeft = a.timeSec * pxPerSec - a.offsetX
+    anchorRef.current = null
+  }, [pxPerSec])
 
   const totalMs = rc ? rc.timing.totalMs : 0
 
@@ -102,6 +170,9 @@ export function TimelineView({ glyphs, metrics }: { glyphs: Map<string, Prepared
 
   const trackWidth = Math.max(360, xOf(totalMs) + END_PAD)
   const thumbW = THUMB_DISP_H / aspectHeightUnits(project.aspect) // rendered thumbnail width (aspect-aware)
+  // Current synthesis key, so a cue whose audio is stale doesn't show fresh-audio affordances.
+  const ttsForKey = { ...DEFAULT_TTS, ...(project.tts ?? {}), settings: { ...DEFAULT_TTS.settings, ...(project.tts?.settings ?? {}) } }
+  const engineKey = ttsEngineKey(ttsForKey)
   const stepSec = niceStepSec(pxPerSec)
   const ticks: number[] = []
   for (let t = 0; t <= totalMs / 1000 + 1e-6; t += stepSec) ticks.push(t)
@@ -120,7 +191,12 @@ export function TimelineView({ glyphs, metrics }: { glyphs: Map<string, Prepared
         <button className="tool" onClick={fit} title="fit to width">Fit</button>
       </div>
 
-      <div className="tl-scroll" ref={scrollRef}>
+      <div
+        className="tl-scroll"
+        ref={scrollRef}
+        onMouseEnter={() => (hoverRef.current = true)}
+        onMouseLeave={() => (hoverRef.current = false)}
+      >
         <div className="tl-track" style={{ width: trackWidth, height: TRACK_H }}>
           {/* P4 — voiceover leader lines */}
           <div
@@ -136,6 +212,7 @@ export function TimelineView({ glyphs, metrics }: { glyphs: Map<string, Prepared
                 level={i % LEADER_LEVELS}
                 leftPx={xOf(c.startMs)}
                 pxPerSec={pxPerSec}
+                engineKey={engineKey}
                 onMove={updateCue}
               />
             ))}
@@ -240,7 +317,9 @@ export function TimelineView({ glyphs, metrics }: { glyphs: Map<string, Prepared
         Each slide is a section: numbered bars are the textbox writing, the striped block is the hold, and the
         red overlay is the closing transition (it bleeds into the next slide — they overlap on screen).
         Voiceover cues hang above as leader lines — <b>drag</b> one to re-time it, <b>double-click</b> empty
-        space to add one. Zoom with −/＋ or Fit.
+        space to add one; the bar to the right of a line shows its generated audio length (yellow = ready,
+        amber/hatched = stale → regenerate). Zoom with
+        the <b>mouse wheel</b> (or −/＋/Fit); <b>Space</b>+wheel scrolls left/right.
       </p>
     </div>
   )
@@ -257,15 +336,22 @@ function LeaderLine({
   level,
   leftPx,
   pxPerSec,
+  engineKey,
   onMove,
 }: {
   cue: VoiceoverCue
   level: number
   leftPx: number
   pxPerSec: number
+  engineKey: string
   onMove: (id: string, patch: Partial<VoiceoverCue>) => void
 }) {
   const lineLen = LEADER_BASE + level * LEADER_STEP
+  // Audio state, mirrored from the VTT view: fresh = green tint + bright bar;
+  // stale = amber tint + hatched bar (regenerate); none = nothing.
+  const stale = !!cue.audio && isAudioStale(cue, { engineKey })
+  const fresh = !!cue.audio && !stale
+  const dur = cue.audio ? (cue.audio.durationMs / 1000).toFixed(1) : '0'
   const dragRef = useRef<{ x0: number; start0: number; dur: number } | null>(null)
   const [dragging, setDragging] = useState(false)
 
@@ -322,15 +408,29 @@ function LeaderLine({
       onDoubleClick={(e) => e.stopPropagation()}
     >
       <div
-        className={cue.audio ? 'tl-leader-label has-audio' : 'tl-leader-label'}
+        className={fresh ? 'tl-leader-label has-audio' : stale ? 'tl-leader-label stale-audio' : 'tl-leader-label'}
         style={{ bottom: lineLen }}
         title={cue.text}
         {...drag}
       >
-        {cue.audio && <span className="tl-leader-note">♪</span>}
+        {cue.audio && (
+          <span
+            className={stale ? 'tl-leader-note stale' : 'tl-leader-note'}
+            title={stale ? 'audio is stale — regenerate in the VTT view' : 'audio ready'}
+          >
+            ♪
+          </span>
+        )}
         <span className="tl-leader-text">{cueLabel(cue.text)}</span>
       </div>
       <div className="tl-leader-line" style={{ height: lineLen }} />
+      {cue.audio && (
+        <div
+          className={stale ? 'tl-leader-audio stale' : 'tl-leader-audio'}
+          style={{ width: Math.max(2, (cue.audio.durationMs / 1000) * pxPerSec) }}
+          title={stale ? `stale audio ~${dur}s — regenerate` : `audio ${dur}s`}
+        />
+      )}
       <div className="tl-leader-handle" title="drag to re-time" {...drag} />
     </div>
   )

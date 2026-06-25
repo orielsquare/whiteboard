@@ -1118,6 +1118,23 @@ body {
   width: 2px;
   background: var(--accent-2);
 }
+/* horizontal bar showing the generated audio length (overlaps hint at 70% opacity) */
+.tl-leader-audio {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  background: var(--accent-2);
+  opacity: 0.7;
+  border-radius: 2px;
+  pointer-events: none;
+}
+/* stale audio: amber + hatched so it clearly reads as "needs regenerating" */
+.tl-leader-audio.stale {
+  height: 4px;
+  background: repeating-linear-gradient(45deg, #ffd166 0 4px, transparent 4px 8px);
+  opacity: 0.9;
+}
 .tl-leader-handle {
   position: absolute;
   left: 0;
@@ -1163,9 +1180,16 @@ body {
   border-left-color: #7fd6a3;
   background: rgba(127, 214, 163, 0.14);
 }
+.tl-leader-label.stale-audio {
+  border-left-color: #ffd166;
+  background: rgba(255, 209, 102, 0.12);
+}
 .tl-leader-note {
   color: #7fd6a3;
   flex: 0 0 auto;
+}
+.tl-leader-note.stale {
+  color: #ffd166;
 }
 .tl-leader-text {
   overflow: hidden;

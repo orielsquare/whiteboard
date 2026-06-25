@@ -122,7 +122,7 @@ complete**: slides (add/copy/delete/drag-reorder + save/load), the **Layout** vi
 textboxes), **inline rich text** (per-selection size/colour/underline via `runs.ts`/`RunEditor`), the
 **Order** view (per-box animation order + delays + per-slide Play), **Play** (project-level play-all
 with an All/Selected scope for single-slide or subset playback), per-slide **background colour**,
-human-style **underlines** (drawn after the word), a project **playback speed** (`playbackRate`, ×0.25–6) that
+human-style **underlines** (drawn after the word), a project **playback speed** (`playbackRate`, ×0.25–12) that
 scales **only the writing animation** — each box gets a real-time window `contentMs/speed` and the
 reveal is sampled at `(tLocal − boxStart)×speed`, while per-box `delayBeforeMs`, the hold, and the
 transition are **invariant** (preview + export both run at real time off `rc.speed`), and

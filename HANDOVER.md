@@ -55,7 +55,7 @@ healthy; `tsc` + both test suites clean. Selection ↔ runs uses fresh `textarea
 **Video editor VP4 done & verified:** animation engine + order view + per-slide playback —
 `timing.ts` (`computeSlideTiming` boxes-by-animOrder with delay accumulation + hold + transition;
 `computeProjectTiming` overlapping slides; unit-tested in `tools/timing.test.mjs`, 19 assertions),
-`transitions.ts` (`composeTransition` fade/rubout/scroll-up/scroll-left via draw callbacks +
+`transitions.ts` (`composeTransition` fade/rubout/scroll-up/scroll-down/scroll-left/scroll-right via draw callbacks +
 `transitionProgress`), `render.ts` additions (`buildRenderContext`, `renderSlideContent`,
 `renderSlide` per-slide incl. closing transition, `renderProject` with overlap compositing,
 `projectDurationMs` — the headless-export seam), `AnimationOrderList.tsx` (dnd reorder →
@@ -254,7 +254,7 @@ feed a future MP4 exporter.
 
 `npm run dev`; open the **Video** tab. Toggle aspect; add/copy/delete/reorder slides; add+drag
 textboxes (one undo entry per drag); type + select-and-style; set order + delays; **Play** (writes on
-in order, then closing transition: test all 5); play-all; **Save** → inspect `projects/<id>.json` →
+in order, then closing transition: test all 7); play-all; **Save** → inspect `projects/<id>.json` →
 reload → **Load** restores it. `tsc --noEmit` clean; check `preview_console_logs` (ignore stale
 `?t=` HMR noise). Remember the preview-env caveats in CLAUDE.md (screenshots + scrubbing, not pixel reads).
 
@@ -264,7 +264,7 @@ reload → **Load** restores it. `tsc --noEmit` clean; check `preview_console_lo
 - [x] VP4 — timing.ts (+ `tools/timing.test.mjs`), transitions.ts, render.ts (buildRenderContext/renderProject/renderSlide/projectDurationMs), AnimationOrderList, SlideOrderView per-slide Play.
 - [x] VP5 — PlaybackCanvas (shared transport), ProjectPlayer (All/Selected scope play-all), slide-panel play checkboxes, Layout/Order/Play toggle.
 - [x] Per-slide background colour; human-style underline (drawn after the word); **MP4 export** (`tools/videoExport.mjs` + `@napi-rs/canvas` + ffmpeg, `/api/export`, toolbar button).
-- [x] Project **playback speed** (`VideoProject.playbackRate`, ×0.25–6) on its own transport row. Speed scales **only the writing animation** (per-glyph reveal + inter-char cadence + underline): `computeSlideTiming` gives each box a real-time window of `contentMs / speed` and `boxStart = cursor + delayBeforeMs` (**delay invariant**); `holdBeforeTransitionMs` + `transition.durationMs` are **invariant** and anchored to the real writing-end. The reveal is scaled at render time — `renderSlideContent` samples each box at writing time `(tLocalMs − boxStart) × rc.speed`, so the box finishes drawing exactly at `boxEnd` (= `boxStart + contentMs/speed`), before the hold/transition. Preview rAF + export both advance at **real time** and read `rc.speed` (built via `buildRenderContext(…, playbackRate)`); the static Layout view/thumbnails use `Infinity` and are unaffected. Per-**textbox brush** (`TextBox.brush`) with an Inspector "custom brush" toggle (style/colour/size/opacity); render uses `box.brush ?? project.brush` everywhere (canvas, thumbnail, export).
+- [x] Project **playback speed** (`VideoProject.playbackRate`, ×0.25–12) on its own transport row. Speed scales **only the writing animation** (per-glyph reveal + inter-char cadence + underline): `computeSlideTiming` gives each box a real-time window of `contentMs / speed` and `boxStart = cursor + delayBeforeMs` (**delay invariant**); `holdBeforeTransitionMs` + `transition.durationMs` are **invariant** and anchored to the real writing-end. The reveal is scaled at render time — `renderSlideContent` samples each box at writing time `(tLocalMs − boxStart) × rc.speed`, so the box finishes drawing exactly at `boxEnd` (= `boxStart + contentMs/speed`), before the hold/transition. Preview rAF + export both advance at **real time** and read `rc.speed` (built via `buildRenderContext(…, playbackRate)`); the static Layout view/thumbnails use `Infinity` and are unaffected. Per-**textbox brush** (`TextBox.brush`) with an Inspector "custom brush" toggle (style/colour/size/opacity); render uses `box.brush ?? project.brush` everywhere (canvas, thumbnail, export).
 - [x] **Hold-before-transition** is a number input (step 500ms, min 0, arbitrarily large) instead of a slider. (`/api/export` cache-busts the `tools/videoExport.mjs` import so edits load without a server restart.)
 
 ### Voiceover feature (in progress)
@@ -301,6 +301,19 @@ the toggle was lifted from SlideCanvas to VideoView).
   silent video if a mux fails (returns `audioMuxed`/`audioCues`/`audioWarning`). `includeAudio` plumbs
   through `/api/export`; the toolbar result shows "🔊 N voiceover clip(s)". Verified end-to-end (API +
   CLI): `silencedetect` confirms audio lands exactly at each cue's start (e.g. 0.5s, 4.0s).
+- [x] **UX additions (done & verified):** (a) **Timeline mouse-wheel zoom** (cursor-anchored) + **Space/
+  Shift + wheel** horizontal scroll (native non-passive `wheel` listener on `.tl-scroll`; `spaceRef` via
+  window keydown/keyup, suppressing the page space-scroll only while hovered); (b) playback **speed max
+  raised to ×12** (`PlaybackCanvas` slider); (c) two new closing transitions **scroll-down** + **scroll-
+  right** (`transitions.ts` + `TransitionKind` + Inspector dropdown; mirror scroll-up/left); (d) Timeline
+  **audio-length bar** — a yellow line (opacity 0.7) right of each leader's foot, width = `audio.durationMs
+  × pxPerSec`, so clip lengths + overlaps are visible (`.tl-leader-audio`) — gated on `!isAudioStale` so a
+  stale clip drops the bar/♪/green tint (matches the VTT view); (f) **optional captions** on the
+  exported-video preview — `vtt.ts` `captionsVtt(cues)` (escapes `&<>` for the native parser; drops
+  zero-length cues) is **snapshotted into `exportResult` at export time** so captions match the rendered
+  MP4 even after the script is edited, served as a `<track>` blob, toggled via a checkbox
+  (`textTracks[0].mode`), in `VideoView`. The wheel handler pans on horizontal-dominant gestures (only
+  vertical zooms) and clears Space on window `blur`.
 - [ ] (later) image/photo slide backgrounds; batch "extract all glyphs"; mid-stroke pause UI; scope MP4
   export to the play selection.
 
