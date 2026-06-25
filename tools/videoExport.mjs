@@ -6,12 +6,15 @@ import esbuild from 'esbuild'
 import { createCanvas } from '@napi-rs/canvas'
 import { spawn } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { dirname, join } from 'node:path'
-import { writeFileSync, mkdtempSync, readFileSync, mkdirSync, statSync } from 'node:fs'
+import { dirname, join, basename } from 'node:path'
+import { writeFileSync, mkdtempSync, readFileSync, mkdirSync, statSync, existsSync, renameSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
+
+/** Mirror the dev server's path sanitiser so we resolve the same voiceover dir. */
+const safeSeg = (s) => String(s).replace(/[^a-z0-9-_]+/gi, '_').slice(0, 80)
 
 /**
  * Bundle the pure render seam so it runs under Node (all imports are framework-
@@ -55,9 +58,71 @@ function prepareGlyphMap(seam, glyphRecord) {
   return map
 }
 
+/** Run ffmpeg with the given args, rejecting on a non-zero exit (with stderr tail). */
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    let stderr = ''
+    const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] })
+    ff.stderr.on('data', (d) => {
+      stderr += d.toString()
+      if (stderr.length > 8000) stderr = stderr.slice(-8000)
+    })
+    ff.on('error', reject)
+    ff.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}:\n${stderr}`))))
+  })
+}
+
+/**
+ * Mux voiceover clips into a (silent) video, each delayed to its absolute cue
+ * time. Clips are summed without auto-normalising (cues rarely overlap, so we
+ * keep their loudness), padded with trailing silence, and `-shortest` clamps the
+ * result to the video length — so audio sits exactly where the cues are, with
+ * silence in the gaps/tail and anything past the end trimmed. Video is copied (no
+ * re-encode); audio is AAC. `cues` = [{ startMs, file }] under `audioDir`.
+ */
+function muxAudioIntoVideo({ silentPath, outPath, cues, audioDir }) {
+  const inputs = []
+  const delayed = []
+  cues.forEach((c, i) => {
+    inputs.push('-i', join(audioDir, basename(c.file)))
+    const lbl = `a${i}`
+    // input 0 is the video, so audio inputs start at index 1
+    delayed.push(`[${i + 1}:a]adelay=${Math.max(0, Math.round(c.startMs))}:all=1[${lbl}]`)
+  })
+  const labels = cues.map((_, i) => `[a${i}]`).join('')
+  const mix =
+    cues.length === 1 ? `${labels}apad[aout]` : `${labels}amix=inputs=${cues.length}:normalize=0,apad[aout]`
+  const filterComplex = `${delayed.join(';')};${mix}`
+  return runFfmpeg([
+    '-y',
+    '-i', silentPath,
+    ...inputs,
+    '-filter_complex', filterComplex,
+    '-map', '0:v',
+    '-map', '[aout]',
+    '-c:v', 'copy',
+    '-c:a', 'aac',
+    '-b:a', '192k',
+    '-movflags', '+faststart',
+    '-shortest',
+    outPath,
+  ])
+}
+
+/** Resolve a project's generated voiceover clips to {startMs, file} that exist on disk. */
+function collectAudioCues(project, audioDir) {
+  return (project.voiceover || [])
+    .filter((c) => c?.audio?.file && existsSync(join(audioDir, basename(c.audio.file))))
+    .map((c) => ({ startMs: Math.max(0, Math.round(c.startMs || 0)), file: c.audio.file }))
+    .sort((a, b) => a.startMs - b.startMs)
+}
+
 /**
  * Render a project (optionally scoped to `slideIds`) to an MP4 at `outPath`.
  * `glyphs` is the manifest glyph record; `metrics` = {unitsPerEm,ascender,descender}.
+ * Voiceover clips are muxed in at their absolute cue times unless `includeAudio`
+ * is false or the export is scoped to a slide subset (cue times are project-wide,
+ * so they only line up with a full-project render).
  */
 export async function renderProjectToMp4({
   project,
@@ -68,6 +133,7 @@ export async function renderProjectToMp4({
   speed = 1,
   slideIds = null,
   tailMs = 600,
+  includeAudio = true,
   outPath,
   onProgress,
 }) {
@@ -100,6 +166,10 @@ export async function renderProjectToMp4({
   const canvas = createCanvas(w, h)
   const ctx = canvas.getContext('2d')
 
+  // Render frames to a silent temp video (next to outPath, so the later rename
+  // stays on one filesystem); audio is muxed into outPath in a second pass.
+  const silentPath = outPath.replace(/\.mp4$/i, '') + '.silent.mp4'
+
   let stderr = ''
   const ff = spawn(
     'ffmpeg',
@@ -112,7 +182,7 @@ export async function renderProjectToMp4({
       '-pix_fmt', 'yuv420p',
       '-preset', 'medium',
       '-movflags', '+faststart',
-      outPath,
+      silentPath,
     ],
     { stdio: ['pipe', 'ignore', 'pipe'] },
   )
@@ -135,7 +205,32 @@ export async function renderProjectToMp4({
   ff.stdin.end()
   await ffDone
 
-  return { w, h, fps, frames: totalFrames, durationMs: videoDurationMs, speed: rate }
+  // Second pass: mux voiceover. Cue times are absolute project-time, so only a
+  // full-project render lines up — skip when scoped to a slide subset.
+  let audioMuxed = false
+  let audioCues = 0
+  let audioWarning = null
+  if (includeAudio && !slideIds) {
+    const audioDir = join(ROOT, 'voiceover', safeSeg(project.id))
+    const cues = collectAudioCues(project, audioDir)
+    if (cues.length) {
+      try {
+        await muxAudioIntoVideo({ silentPath, outPath, cues, audioDir })
+        rmSync(silentPath, { force: true })
+        audioMuxed = true
+        audioCues = cues.length
+      } catch (e) {
+        audioWarning = 'audio mux failed (kept silent video): ' + (e?.message ?? e)
+        renameSync(silentPath, outPath)
+      }
+    } else {
+      renameSync(silentPath, outPath)
+    }
+  } else {
+    renameSync(silentPath, outPath)
+  }
+
+  return { w, h, fps, frames: totalFrames, durationMs: videoDurationMs, speed: rate, audioMuxed, audioCues, audioWarning }
 }
 
 // --- CLI: node tools/videoExport.mjs <projectFile> [out.mp4] [width] [fps] ----
@@ -168,5 +263,6 @@ if (invokedDirectly) {
     outPath,
     onProgress: (p) => process.stdout.write(`\r  rendering ${(p * 100).toFixed(0)}%   `),
   })
-  console.log(`\n✓ ${outPath}  (${info.frames} frames @ ${info.fps}fps, ${info.w}×${info.h}, ${(statSync(outPath).size / 1024).toFixed(0)} KB, ${((Date.now() - t0) / 1000).toFixed(1)}s)`)
+  const audioNote = info.audioMuxed ? `, 🔊 ${info.audioCues} voiceover clip(s)` : info.audioWarning ? `, ⚠ ${info.audioWarning}` : ''
+  console.log(`\n✓ ${outPath}  (${info.frames} frames @ ${info.fps}fps, ${info.w}×${info.h}, ${(statSync(outPath).size / 1024).toFixed(0)} KB, ${((Date.now() - t0) / 1000).toFixed(1)}s${audioNote})`)
 }

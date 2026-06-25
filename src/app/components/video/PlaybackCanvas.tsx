@@ -5,6 +5,14 @@ import { BACKING_W } from './layoutCanvas'
 
 const END_HOLD_MS = 500
 
+/** A voiceover clip to play, in the SAME time base as the playback clock (ms). */
+export interface AudioCue {
+  id: string
+  startMs: number
+  endMs: number
+  url: string
+}
+
 /**
  * Reusable playback surface: a canvas driven by a single rAF that calls
  * `draw(ctx, tMs, w, h)` every frame, plus transport (play/pause/restart/scrub/
@@ -20,6 +28,7 @@ export function PlaybackCanvas({
   draw,
   speed,
   onSpeedChange,
+  audioCues,
   autoPlay = false,
   notReadyHint = 'extracting…',
   emptyHint,
@@ -32,6 +41,8 @@ export function PlaybackCanvas({
   /** Playback/export speed multiplier (project-level). */
   speed: number
   onSpeedChange: (v: number) => void
+  /** Voiceover clips to play in sync (same time base as the clock). */
+  audioCues?: AudioCue[]
   /** Start playing automatically once content is ready (resets per `resetKey`). */
   autoPlay?: boolean
   notReadyHint?: string
@@ -49,11 +60,42 @@ export function PlaybackCanvas({
   const playingRef = useRef(false)
   const loopRef = useRef(true)
 
+  const audioRef = useRef<AudioCue[]>(audioCues ?? [])
+  const audioElsRef = useRef<Map<string, { el: HTMLAudioElement; url: string }>>(new Map())
+
   drawRef.current = draw
   totalRef.current = totalMs
   aspectRef.current = aspect
   playingRef.current = isPlaying
   loopRef.current = loop
+  audioRef.current = audioCues ?? []
+
+  // Keep one <audio> per cue, src in sync. Pause + drop removed cues.
+  useEffect(() => {
+    const els = audioElsRef.current
+    const ids = new Set((audioCues ?? []).map((c) => c.id))
+    for (const [id, entry] of els) {
+      if (!ids.has(id)) {
+        entry.el.pause()
+        els.delete(id)
+      }
+    }
+    for (const c of audioCues ?? []) {
+      let entry = els.get(c.id)
+      if (!entry) {
+        const el = new Audio()
+        el.preload = 'auto'
+        entry = { el, url: '' }
+        els.set(c.id, entry)
+      }
+      if (entry.url !== c.url) {
+        entry.el.src = c.url
+        entry.url = c.url
+      }
+    }
+  }, [audioCues])
+  // Pause all audio on unmount.
+  useEffect(() => () => audioElsRef.current.forEach(({ el }) => el.pause()), [])
 
   // Tracks whether we've auto-started for the current `resetKey`, so a manual
   // pause isn't overridden and we don't loop-restart on every re-render.
@@ -105,6 +147,32 @@ export function PlaybackCanvas({
         if (canvas.height !== h) canvas.height = h
         const ctx = canvas.getContext('2d')
         if (ctx) drawRef.current(ctx, tRef.current, w, h)
+        // schedule voiceover audio against the playback clock
+        const t = tRef.current
+        for (const c of audioRef.current) {
+          const entry = audioElsRef.current.get(c.id)
+          if (!entry) continue
+          const el = entry.el
+          if (playingRef.current && t >= c.startMs && t < c.endMs) {
+            const target = (t - c.startMs) / 1000
+            if (el.paused) {
+              try {
+                el.currentTime = Math.max(0, target)
+              } catch {
+                /* not seekable yet */
+              }
+              void el.play().catch(() => {})
+            } else if (Math.abs(el.currentTime - target) > 0.35) {
+              try {
+                el.currentTime = Math.max(0, target)
+              } catch {
+                /* ignore */
+              }
+            }
+          } else if (!el.paused) {
+            el.pause()
+          }
+        }
         if (now - lastProg > 80) {
           lastProg = now
           setProgress(tRef.current)

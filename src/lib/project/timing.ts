@@ -86,3 +86,23 @@ export function computeProjectTiming(
   const totalMs = last ? last.startMs + last.timing.totalMs : 0
   return { slides, totalMs }
 }
+
+export interface SlideWindow {
+  slideId: string
+  startMs: number
+  /** end of this slide's range — the next slide's start (its transition overlaps), or project end for the last. */
+  endMs: number
+}
+
+/**
+ * Each slide's [start, end) range in project time. A slide owns the interval up
+ * to where the next slide begins (its own closing transition overlaps the next);
+ * the last slide runs to the project end.
+ */
+export function slideTimeWindows(timing: ProjectTiming): SlideWindow[] {
+  return timing.slides.map((s, i) => ({
+    slideId: s.slideId,
+    startMs: s.startMs,
+    endMs: i + 1 < timing.slides.length ? timing.slides[i + 1].startMs : timing.totalMs,
+  }))
+}

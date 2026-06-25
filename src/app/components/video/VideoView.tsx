@@ -11,9 +11,18 @@ import { useEditorStore } from '../../state/store'
 import { SlidePanel } from './SlidePanel'
 import { SlideCanvas } from './SlideCanvas'
 import { Inspector } from './Inspector'
+import { TimelineView } from './TimelineView'
+import { VttView } from './VttView'
 
 const ASPECTS: Aspect[] = ['16:9', '9:16']
 const BRUSH_STYLES: BrushStyle[] = ['chalk', 'ink', 'marker']
+const VIEWS = [
+  { id: 'layout', label: 'Layout' },
+  { id: 'order', label: 'Order' },
+  { id: 'play', label: '▶ Play' },
+  { id: 'timeline', label: 'Timeline' },
+  { id: 'vtt', label: 'VTT' },
+] as const
 
 export function VideoView({
   font,
@@ -33,12 +42,24 @@ export function VideoView({
   const setAspect = useVideoStore((s) => s.setAspect)
   const setBaseEmFraction = useVideoStore((s) => s.setBaseEmFraction)
   const setBrush = useVideoStore((s) => s.setBrush)
+  const slideView = useVideoStore((s) => s.slideView)
+  const setSlideView = useVideoStore((s) => s.setSlideView)
 
   const [status, setStatus] = useState<string | null>(null)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [exporting, setExporting] = useState(false)
   const [exportResult, setExportResult] = useState<
-    { file: string; bytes: number; w: number; h: number; durationMs: number; frames: number } | null
+    {
+      file: string
+      bytes: number
+      w: number
+      h: number
+      durationMs: number
+      frames: number
+      audioMuxed?: boolean
+      audioCues?: number
+      audioWarning?: string | null
+    } | null
   >(null)
 
   // The shared font manifest drives glyph geometry; gate derivation on it
@@ -69,6 +90,11 @@ export function VideoView({
         : { unitsPerEm: font.unitsPerEm, ascender: font.font.ascender, descender: font.font.descender },
     [manifestMeta, font],
   )
+  const safeMetrics: FontMetrics = metrics ?? {
+    unitsPerEm: font.unitsPerEm,
+    ascender: font.font.ascender,
+    descender: font.font.descender,
+  }
 
   // Bootstrap a project on first entry.
   useEffect(() => {
@@ -214,7 +240,9 @@ export function VideoView({
         <div className="exportresult">
           <div className="exportresult-info">
             Exported <code>exports/{exportResult.file}</code> — {(exportResult.bytes / 1048576).toFixed(2)} MB ·{' '}
-            {exportResult.w}×{exportResult.h} · {(exportResult.durationMs / 1000).toFixed(1)}s · {exportResult.frames} frames{' '}
+            {exportResult.w}×{exportResult.h} · {(exportResult.durationMs / 1000).toFixed(1)}s · {exportResult.frames} frames
+            {exportResult.audioMuxed ? ` · 🔊 ${exportResult.audioCues} voiceover clip(s)` : ''}
+            {exportResult.audioWarning ? ` · ⚠ ${exportResult.audioWarning}` : ''}{' '}
             <a href={`/api/export/${exportResult.file}`} target="_blank" rel="noreferrer" download>
               ↓ download
             </a>
@@ -223,16 +251,37 @@ export function VideoView({
         </div>
       )}
 
-      <div className="video-body">
-        <SlidePanel glyphs={glyphs} metrics={metrics} />
-        <SlideCanvas glyphs={glyphs} metrics={metrics ?? { unitsPerEm: font.unitsPerEm, ascender: font.font.ascender, descender: font.font.descender }} />
-        <Inspector />
+      <div className="slideview-toggle seg">
+        {VIEWS.map((v) => (
+          <button
+            key={v.id}
+            className={slideView === v.id ? 'tool tool-on' : 'tool'}
+            onClick={() => setSlideView(v.id)}
+          >
+            {v.label}
+          </button>
+        ))}
+        <span className="slideview-hint">
+          {slideView === 'layout' ? 'drag to move · click empty space to add a textbox' : ''}
+        </span>
       </div>
 
+      {slideView === 'timeline' ? (
+        <TimelineView glyphs={glyphs} metrics={safeMetrics} />
+      ) : slideView === 'vtt' ? (
+        <VttView />
+      ) : (
+        <div className="video-body">
+          <SlidePanel glyphs={glyphs} metrics={metrics} />
+          <SlideCanvas glyphs={glyphs} metrics={safeMetrics} />
+          <Inspector />
+        </div>
+      )}
+
       <p className="hint">
-        Video editor — layout view: click empty space to add a textbox, drag to move (one undo per
-        drag). Select a textbox to edit its text, per-selection styling, alignment, wrap width and
-        timing in the inspector. Animated playback comes next.
+        Video editor — Layout/Order/Play tune the animation; <b>VTT</b> edits the voiceover script and
+        <b> Timeline</b> aligns voiceover to the animation. The slide view shows the voiceover in range
+        beneath the canvas.
       </p>
     </div>
   )

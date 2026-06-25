@@ -12,13 +12,16 @@ import {
   type Slide,
   type TextBox,
   type TextRun,
+  type TtsSettings,
   type VideoProject,
+  type VoiceoverAudio,
+  type VoiceoverCue,
 } from '@lib/project/schema'
 import type { BrushSettings } from '@lib/manifest/schema'
 import * as E from './videoEdit'
 
 const nowIso = () => new Date().toISOString()
-type SlideView = 'layout' | 'order' | 'play'
+type SlideView = 'layout' | 'order' | 'play' | 'timeline' | 'vtt'
 
 interface VideoState {
   project: VideoProject | null
@@ -54,6 +57,14 @@ interface VideoState {
   setBaseEmFraction: (v: number) => void
   setPlaybackRate: (v: number) => void
   setBrush: (b: BrushSettings) => void
+
+  setTts: (patch: Partial<TtsSettings>) => void
+
+  setVoiceover: (cues: VoiceoverCue[]) => void
+  addCue: (startMs: number, text?: string) => string
+  updateCue: (id: string, patch: Partial<VoiceoverCue>) => void
+  removeCue: (id: string) => void
+  setCueAudio: (id: string, audio: VoiceoverAudio | undefined) => void
 
   newProject: (fontId: string, brush: BrushSettings) => void
   loadProject: (id: string) => Promise<void>
@@ -148,6 +159,19 @@ export const useVideoStore = create<VideoState>()(
       setPlaybackRate: (v) =>
         set((s) => (s.project ? { project: E.setPlaybackRate(s.project, v) } : s)),
       setBrush: (b) => set((s) => (s.project ? { project: E.setBrush(s.project, b) } : s)),
+      setTts: (patch) => set((s) => (s.project ? { project: E.setTts(s.project, patch) } : s)),
+
+      setVoiceover: (cues) => set((s) => (s.project ? { project: E.setVoiceover(s.project, cues) } : s)),
+      addCue: (startMs, text) => {
+        const s = get()
+        if (!s.project) return ''
+        const { project, cueId } = E.addCue(s.project, startMs, text)
+        set({ project })
+        return cueId
+      },
+      updateCue: (id, patch) => set((s) => (s.project ? { project: E.updateCue(s.project, id, patch) } : s)),
+      removeCue: (id) => set((s) => (s.project ? { project: E.removeCue(s.project, id) } : s)),
+      setCueAudio: (id, audio) => set((s) => (s.project ? { project: E.setCueAudio(s.project, id, audio) } : s)),
 
       newProject: (fontId, brush) => {
         const p = newVideoProject(fontId, brush, nowIso())

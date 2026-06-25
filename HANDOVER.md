@@ -1,9 +1,22 @@
 # Handover — continue here
 
-Read `CLAUDE.md` first for the project overview/architecture. This doc captures **current status**
-and the **design for the remaining Video-editor phases (VP2–VP5)** so you can continue without
-re-deriving anything. (The original approved plan + design notes lived under the old repo path's
-`~/.claude/plans/` and did **not** move with the repo — the relevant content is reproduced below.)
+Read `CLAUDE.md` first for the project overview/architecture. This doc captures **current status** and
+designs so you can continue without re-deriving anything.
+
+> ## 👉 CURRENT IN-FLIGHT WORK (start here)
+>
+> The **Video editor (VP1–VP5)** and all post-VP5 polish are **done & verified**. The **Voiceover**
+> feature — a project-wide WebVTT track synced to the animation, with TTS audio — is now **complete**:
+> P1 (VTT model + editor + slide extract), P2 (TTS pipeline + audio-exists + synced playback), **P3 (the
+> full-width Timeline view) and P4 (draggable voiceover leader lines)** are all done & verified.
+> Voiceover audio is also now **muxed into the MP4 export**. **Next: the remaining "later" items**
+> (image/photo slide backgrounds; batch "extract all glyphs"; mid-stroke pause UI; scope MP4 export to
+> the play selection). Jump to the **"Voiceover feature"** section near the bottom for decisions, what's
+> built, and integration points.
+>
+> Run `npm run dev`, open **Video → VTT** for the editor and **Video → Timeline** for the new timeline;
+> `node tools/vtt.test.mjs` (24) covers the pure engine. The dev server has routes: `POST /api/tts`,
+> `GET /api/voiceover/<project>/<file>`.
 
 ## Status
 
@@ -253,4 +266,120 @@ reload → **Load** restores it. `tsc --noEmit` clean; check `preview_console_lo
 - [x] Per-slide background colour; human-style underline (drawn after the word); **MP4 export** (`tools/videoExport.mjs` + `@napi-rs/canvas` + ffmpeg, `/api/export`, toolbar button).
 - [x] Project **playback speed** (`VideoProject.playbackRate`, ×0.25–6) on its own transport row. Speed scales **only the writing animation** (per-glyph reveal + inter-char cadence + underline): `computeSlideTiming` gives each box a real-time window of `contentMs / speed` and `boxStart = cursor + delayBeforeMs` (**delay invariant**); `holdBeforeTransitionMs` + `transition.durationMs` are **invariant** and anchored to the real writing-end. The reveal is scaled at render time — `renderSlideContent` samples each box at writing time `(tLocalMs − boxStart) × rc.speed`, so the box finishes drawing exactly at `boxEnd` (= `boxStart + contentMs/speed`), before the hold/transition. Preview rAF + export both advance at **real time** and read `rc.speed` (built via `buildRenderContext(…, playbackRate)`); the static Layout view/thumbnails use `Infinity` and are unaffected. Per-**textbox brush** (`TextBox.brush`) with an Inspector "custom brush" toggle (style/colour/size/opacity); render uses `box.brush ?? project.brush` everywhere (canvas, thumbnail, export).
 - [x] **Hold-before-transition** is a number input (step 500ms, min 0, arbitrarily large) instead of a slider. (`/api/export` cache-busts the `tools/videoExport.mjs` import so edits load without a server restart.)
-- [ ] (later) image/photo slide backgrounds; batch "extract all glyphs"; mid-stroke pause UI; scope MP4 export to the play selection.
+
+### Voiceover feature (in progress)
+
+Decisions: project-wide list of **absolute-time WebVTT cues** with **no explicit box/slide link**
+(`VideoProject.voiceover: VoiceoverCue[]` = `{id, startMs, endMs, text, audio?}`), TTS in scope,
+new views are **Video sub-views** (the Layout/Order/Play switch now also has **Timeline** + **VTT**;
+the toggle was lifted from SlideCanvas to VideoView).
+
+- [x] **P1** — `src/lib/project/vtt.ts` (parse/serialize/format/estimate/reconcile/`cuesInRange`/staleness, + `tools/vtt.test.mjs` 24 tests); `timing.ts` `slideTimeWindows`; store cue actions (`setVoiceover/addCue/updateCue/removeCue/setCueAudio`); **VttView** (editable raw WebVTT, live parse, reconcile preserving audio by id); read-only **SlideVttExtract** beneath the Layout canvas (highlights in-range cues).
+- [x] **P2** — TTS: `tools/tts.mjs` (**Gemini 2.5 TTS on Vertex AI** → ffmpeg → `.m4a` + duration; see "Voice synthesis" below); `ttsPlugin` in `vite.config.ts` (`POST /api/tts`, `GET /api/voiceover/<project>/<file>` range-aware); VttView cue list with Generate/Generate-all/Play/regenerate + audio shading; generating sets `cue.endMs = startMs + durationMs` and `cue.audio.textHash` (staleness). Synced playback: `PlaybackCanvas` takes `audioCues` and schedules `<audio>` against the clock; `ProjectPlayer` supplies them for the **All-slides** scope (clock == project time).
+- [x] **P3 — Timeline view** done & verified — `TimelineView.tsx` is now a full-width, real-time-scaled
+  track (DOM divs, not canvas) with horizontal scroll + zoom (`pxPerSec`, −/＋/Fit). Built off
+  `buildRenderContext` + `slideTimeWindows`: **slide sections** cleanly partition `[projStart, nextStart)`
+  (alternating tint, numbered, click→select); **numbered textbox writing sub-bars**; the **hold** region
+  (striped) and the closing **transition** drawn as a semi-transparent overlay on top that *bleeds into
+  the next section* (the real overlap); a **time ruler** with nice ticks; and floating **slide
+  thumbnails** (reused `SlideThumbnail`, aspect-aware width gate) below wide-enough sections. New `.tl-*`
+  CSS in `styles.css`. Verified in-browser: section geometry is arithmetically exact (clean partition,
+  hold = xOf(holdMs), transition bleed starts at the boundary), thumbnails render, zoom/Fit work.
+- [x] **P4 — leader lines** done & verified — one labelled vertical line per cue (`LeaderLine`) on a
+  staircase (`level = sortedIndex % 4`) so neighbours don't collide; hover brings to front; **drag** the
+  label/handle to re-time the cue live — **preserving its duration and id** (so audio survives), clamped
+  ≥0, propagated to the VTT model, as **one atomic undo** (`videoHistory.pause()/resume()`).
+  Audio-bearing cues are shaded; **double-click empty band space adds a cue** at that time. Hardened
+  against the zundo *stranded-pause* trap found in review: an unmount-cleanup effect + `onPointerCancel`
+  guarantee `resume()` always fires even if `pointerup` never does (verified: history survives a mid-drag
+  view switch). `tsc` + `npm run build` clean.
+- [x] **Mux voiceover audio into the MP4 export** done & verified — `tools/videoExport.mjs` renders the
+  silent video to a temp file, then a second ffmpeg pass mixes each cue's clip in at its absolute
+  `startMs` (`adelay` per clip → `amix=normalize=0` → `apad`, with `-shortest` clamping to the video
+  length; video stream copied, audio AAC). Resolves clips from `voiceover/<safeSeg(projectId)>/`; skipped
+  when the export is slide-scoped (`slideIds`) since cue times are project-wide, and falls back to the
+  silent video if a mux fails (returns `audioMuxed`/`audioCues`/`audioWarning`). `includeAudio` plumbs
+  through `/api/export`; the toolbar result shows "🔊 N voiceover clip(s)". Verified end-to-end (API +
+  CLI): `silencedetect` confirms audio lands exactly at each cue's start (e.g. 0.5s, 4.0s).
+- [ ] (later) image/photo slide backgrounds; batch "extract all glyphs"; mid-stroke pause UI; scope MP4
+  export to the play selection.
+
+#### Voiceover — files & integration map (what exists)
+
+- **Model**: `src/lib/project/schema.ts` `VoiceoverCue {id,startMs,endMs,text,audio?}` + `VoiceoverAudio
+  {file,durationMs,voice?,textHash?}`; `VideoProject.voiceover: VoiceoverCue[]` (newVideoProject → `[]`;
+  read everywhere as `project.voiceover ?? []`). Times are **absolute project real-time ms**.
+- **Pure engine**: `src/lib/project/vtt.ts` — `parseVtt`/`serializeVtt` (cue id is the WebVTT identifier,
+  used to keep audio across text edits), `formatTimestamp`/`parseTimestamp`, `reconcileParsed(prev,parsed,
+  makeId)`, `estimateDurationMs`, `cuesInRange`, `hashText`, `isAudioStale`. `src/lib/project/timing.ts`
+  `slideTimeWindows(timing)` → `{slideId,startMs,endMs}[]` (a slide owns `[start, nextStart)`; last → total).
+- **Store** (`videoStore`/`videoEdit`): `setVoiceover/addCue(startMs,text?)/updateCue(id,patch)/removeCue/
+  setCueAudio`. `slideView` now `'layout'|'order'|'play'|'timeline'|'vtt'`.
+- **UI**: `VttView.tsx` (raw WebVTT textarea bound to `serializeVtt`, re-syncs from the model when not
+  focused; typing → `parseVtt`→`reconcileParsed`→`setVoiceover`; a cue list with Generate/Generate-all/
+  Play/regenerate/delete; **exports `cueAudioUrl(projectId,cue)`**). `SlideVttExtract.tsx` (read-only,
+  beneath the Layout canvas — `SlideCanvas` computes the selected slide's window via `buildRenderContext`
+  + `slideTimeWindows`). View toggle lives in `VideoView` (lifted out of `SlideCanvas`).
+- **TTS (Gemini on Vertex AI)**: `tools/tts.mjs` `generateTts({text,voice,prompt,outPath})` → returns
+  `{durationMs,voice}`. Calls `gemini-2.5-flash-preview-tts` via the Vertex REST `:generateContent`
+  endpoint (`responseModalities:['AUDIO']`, `speechConfig.voiceConfig.prebuiltVoiceConfig.voiceName`),
+  prepends the accent (`Speak with a <accent> accent.`) + style `prompt` to the text as natural-language
+  directives, decodes the returned L16 PCM and ffmpeg-encodes it to `.m4a`.
+  **Auth = ADC** (shells out to `gcloud auth application-default print-access-token`, token cached on
+  `globalThis` to survive the plugin's per-request module cache-busting). Config via env (`GOOGLE_CLOUD_PROJECT`
+  / `gcloud config`, `GOOGLE_CLOUD_LOCATION` default `us-central1` — note `global` 500s for this preview
+  model, `GEMINI_TTS_MODEL`). `vite.config.ts` `ttsPlugin` — `POST /api/tts {projectId,cueId,text,voice,prompt}`
+  writes `voiceover/<projectId>/<cueId>.m4a`; `GET /api/voiceover/<projectId>/<file>` streams it (ignores
+  the `?v=` cache-bust). Generate stores `audio.{voice,accent,prompt,textHash,version}` (version =
+  `Date.now()`, appended to the audio URL by `cueAudioUrl` so regenerated clips reload), and sets
+  `cue.endMs = startMs + durationMs`. Blank cue text is rejected (no Vertex call). A 401/403 clears the
+  cached ADC token and retries once.
+- **Voice settings**: `VideoProject.tts: { voice, accent, prompt }` (default `{ voice:'Kore',
+  accent:'British', prompt:'' }`); store action `setTts(patch)` / `videoEdit.setTts`. The VTT view's
+  **Voice panel** sets it: a voice `<select>` (30 prebuilt Gemini voices), a free-text **accent** input
+  (with a `<datalist>` of suggestions — "as specific as you like"), and a style-prompt `<textarea>`, all
+  commit on change. `isAudioStale(cue, {voice,accent,prompt})` flags a clip stale when the text, voice,
+  accent, or prompt changed. The MP4 export already muxes whatever clips exist, so Gemini audio flows into
+  exports unchanged.
+- **Synced audio**: `PlaybackCanvas` accepts `audioCues: AudioCue[] {id,startMs,endMs,url}` and schedules
+  `<audio>` against `tRef` in the rAF tick (play when `t∈[start,end)`, pause otherwise, resync on >0.35s
+  drift). `ProjectPlayer` builds them from `project.voiceover` **only for the `all` scope** (clock ==
+  project time); per-slide/`selected` get none.
+
+#### P3 — Timeline view (design)  ✅ implemented in `TimelineView.tsx` (this is the design it was built to)
+
+Full-width, **scaled to real project time**, scroll + zoom (a `pxPerSec` state; horizontal `overflow-x:auto`
+track of width `totalMs/1000·pxPerSec`). Build `rc = buildRenderContext(project, glyphs, BACKING_W, metrics,
+playbackRate)`; `totalMs = rc.timing.totalMs`; per slide `i`: `projStart = rc.timing.slides[i].startMs`,
+`st = rc.timing.slides[i].timing` (has `boxes[{boxId,startMs,endMs}]` slide-local, `contentEndMs`,
+`holdEndMs`, `transitionMs`, `totalMs`); windows via `slideTimeWindows`. `xOf(ms)=ms/1000·pxPerSec`.
+
+- **Slide sections** = a clean partition at `[projStart, nextStart)` (the non-overlapping window). Label
+  each with its slide number; alternate a subtle tint.
+- **Textbox writing sub-bars** inside each section: box `b` spans `[projStart + b.startMs, projStart +
+  b.endMs]` (project time). Thin labelled bars (sequential, so side-by-side).
+- **Zoomed-in colours** (only when a section is wide enough to read): the **hold / "end-delay"** region
+  `[projStart+contentEndMs, projStart+holdEndMs]`; the **transition** region `[projStart+holdEndMs,
+  projStart+totalMs]` — note this **overlaps the next slide** (real overlap), so draw it as a
+  **semi-transparent overlay on top**, bleeding over the next section's start. Last slide's transition
+  runs to project end.
+- **Time axis** with nice tick spacing chosen from `pxPerSec`.
+- **Slide screenshots** floating *below* each section when its width exceeds a threshold — reuse
+  `SlideThumbnail` (takes `slide` + `glyphs` + `metrics`) absolutely-positioned under the section.
+- Render with **DOM divs + maybe SVG** (NOT canvas) for crisp text/hover/drag. Keep it visually polished
+  (the user explicitly wants a satisfying tool).
+
+#### P4 — Leader lines (design)  ✅ implemented in `TimelineView.tsx` `LeaderLine` (drag preserves cue duration + id)
+
+Above the timeline bar, one **vertical line per cue** rising from `xOf(cue.startMs)` up to a **voiceover
+label** showing the cue text. Use a **repeating staircase of heights** so many close cues don't overlap
+(e.g. height = base + (index mod N)·step). **Hover a line/label → bring to front** (raise z-index). A
+**drag handle** appears on hover where the line meets the timeline; dragging left/right sets
+`cue.startMs` live via `updateCue(id,{startMs})` (clamp ≥0; convert px→ms with `pxPerSec`; one undo per
+drag via `videoHistory.pause()/resume()`). Shade labels of cues that **have audio** (`cue.audio`) — the
+"audio exists" indicator (no textbox link, so it lives on the cue/label, per the chosen model).
+Re-serialised VTT/extract update automatically since they read `project.voiceover`.
+
+Pitfalls: cue times are absolute, so changing **speed** reflows the section widths but leaves leader
+lines put — that's intended ("Fixed timeline time"). The dual-module-instance gotcha (eval-imported
+store ≠ app store) bites verification — drive the **real DOM**, not an `import()`ed `useVideoStore`.

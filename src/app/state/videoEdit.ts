@@ -7,9 +7,14 @@ import {
   type Slide,
   type TextBox,
   type TextRun,
+  type TtsSettings,
   type VideoProject,
+  type VoiceoverAudio,
+  type VoiceoverCue,
 } from '@lib/project/schema'
+import { DEFAULT_TTS } from '@lib/project/schema'
 import type { BrushSettings } from '@lib/manifest/schema'
+import { estimateDurationMs } from '@lib/project/vtt'
 
 function mapSlide(p: VideoProject, slideId: string, fn: (s: Slide) => Slide): VideoProject {
   return { ...p, slides: p.slides.map((s) => (s.id === slideId ? fn(s) : s)) }
@@ -147,6 +152,37 @@ export function setBaseEmFraction(p: VideoProject, baseEmFraction: number): Vide
 export function setPlaybackRate(p: VideoProject, playbackRate: number): VideoProject {
   return { ...p, playbackRate }
 }
+
+// --- voiceover ------------------------------------------------------------
+
+const cues = (p: VideoProject): VoiceoverCue[] => p.voiceover ?? []
+
+export function setVoiceover(p: VideoProject, voiceover: VoiceoverCue[]): VideoProject {
+  return { ...p, voiceover }
+}
+
+export function addCue(p: VideoProject, startMs: number, text = 'Voiceover…'): { project: VideoProject; cueId: string } {
+  const id = makeId()
+  const cue: VoiceoverCue = { id, startMs: Math.max(0, Math.round(startMs)), endMs: 0, text }
+  cue.endMs = cue.startMs + estimateDurationMs(text)
+  return { project: { ...p, voiceover: [...cues(p), cue] }, cueId: id }
+}
+
+export function updateCue(p: VideoProject, id: string, patch: Partial<VoiceoverCue>): VideoProject {
+  return { ...p, voiceover: cues(p).map((c) => (c.id === id ? { ...c, ...patch } : c)) }
+}
+
+export function removeCue(p: VideoProject, id: string): VideoProject {
+  return { ...p, voiceover: cues(p).filter((c) => c.id !== id) }
+}
+
+export function setCueAudio(p: VideoProject, id: string, audio: VoiceoverAudio | undefined): VideoProject {
+  return { ...p, voiceover: cues(p).map((c) => (c.id === id ? { ...c, audio } : c)) }
+}
 export function setBrush(p: VideoProject, brush: BrushSettings): VideoProject {
   return { ...p, brush }
+}
+
+export function setTts(p: VideoProject, patch: Partial<TtsSettings>): VideoProject {
+  return { ...p, tts: { ...DEFAULT_TTS, ...(p.tts ?? {}), ...patch } }
 }

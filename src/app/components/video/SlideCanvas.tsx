@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, type PointerEvent } from 'react'
 import type { PreparedGlyph } from '@lib/animation/timeline'
 import { canvasSize } from '@lib/project/coords'
 import { layoutTextBox, type FontMetrics, type TextBoxLayout } from '@lib/project/layout'
-import { renderTextBox } from '@lib/project/render'
+import { buildRenderContext, renderTextBox } from '@lib/project/render'
+import { slideTimeWindows } from '@lib/project/timing'
 import { useVideoStore, videoHistory } from '../../state/videoStore'
 import { BACKING_W, boxOriginPx, clientToNorm, drawSelection, hitTest, type NormPoint } from './layoutCanvas'
 import { SlideOrderView } from './SlideOrderView'
 import { ProjectPlayer } from './ProjectPlayer'
+import { SlideVttExtract } from './SlideVttExtract'
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
 
@@ -21,7 +23,6 @@ export function SlideCanvas({
   const selectedSlideId = useVideoStore((s) => s.selectedSlideId)
   const selectedTextBoxId = useVideoStore((s) => s.selectedTextBoxId)
   const slideView = useVideoStore((s) => s.slideView)
-  const setSlideView = useVideoStore((s) => s.setSlideView)
   const selectTextBox = useVideoStore((s) => s.selectTextBox)
   const addTextBox = useVideoStore((s) => s.addTextBox)
   const updateTextBoxFrame = useVideoStore((s) => s.updateTextBoxFrame)
@@ -45,6 +46,13 @@ export function SlideCanvas({
     }
     return m
   }, [slide, glyphs, metrics, baseEmFraction])
+
+  // The selected slide's project-time window, for the read-only voiceover extract.
+  const slideWindow = useMemo(() => {
+    if (!project || !slide || slideView !== 'layout') return null
+    const rc = buildRenderContext(project, glyphs, BACKING_W, metrics, project.playbackRate ?? 1)
+    return slideTimeWindows(rc.timing).find((x) => x.slideId === slide.id) ?? null
+  }, [project, slide, glyphs, metrics, slideView])
 
   // Static draw whenever the slide, its layouts, or the selection change.
   useEffect(() => {
@@ -123,46 +131,27 @@ export function SlideCanvas({
 
   return (
     <div className="slidecanvas">
-      <div className="slideview-toggle seg">
-        <button
-          className={slideView === 'layout' ? 'tool tool-on' : 'tool'}
-          onClick={() => setSlideView('layout')}
-        >
-          Layout
-        </button>
-        <button
-          className={slideView === 'order' ? 'tool tool-on' : 'tool'}
-          onClick={() => setSlideView('order')}
-        >
-          Order
-        </button>
-        <button
-          className={slideView === 'play' ? 'tool tool-on' : 'tool'}
-          onClick={() => setSlideView('play')}
-        >
-          ▶ Play
-        </button>
-        <span className="slideview-hint">
-          {slideView === 'layout' ? 'drag to move · click empty space to add a textbox' : ''}
-        </span>
-      </div>
-
-      {slideView === 'layout' ? (
-        <div className="stage stage-overlay video-stage">
-          <canvas
-            ref={canvasRef}
-            className="slide-canvas-el"
-            width={canvasSize(project.aspect, BACKING_W).w}
-            height={canvasSize(project.aspect, BACKING_W).h}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-          />
-        </div>
-      ) : slideView === 'order' ? (
+      {slideView === 'order' ? (
         <SlideOrderView glyphs={glyphs} metrics={metrics} />
-      ) : (
+      ) : slideView === 'play' ? (
         <ProjectPlayer glyphs={glyphs} metrics={metrics} />
+      ) : (
+        <>
+          <div className="stage stage-overlay video-stage">
+            <canvas
+              ref={canvasRef}
+              className="slide-canvas-el"
+              width={canvasSize(project.aspect, BACKING_W).w}
+              height={canvasSize(project.aspect, BACKING_W).h}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+            />
+          </div>
+          {slideWindow && (
+            <SlideVttExtract cues={project.voiceover ?? []} startMs={slideWindow.startMs} endMs={slideWindow.endMs} />
+          )}
+        </>
       )}
     </div>
   )

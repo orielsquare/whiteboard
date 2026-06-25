@@ -58,15 +58,23 @@ src/lib/
   render/       ribbon.ts (Transform/toCanvas + variable-width ribbon), brush.ts (paintStroke: chalk/ink/marker).
   font/         load.ts (opentype.js LoadedFont {font, buffer, family, unitsPerEm, hash}).
   persistence/  FontStore.ts + ProjectStore.ts (fetch clients for the dev-server endpoints).
-  project/      schema.ts (VideoProject/Slide/TextBox/TextRun), coords.ts. (layout/timing/render/
-                transitions/runs to be added in VP2–VP4 — see HANDOVER.md.)
+  project/      schema.ts (VideoProject/Slide/TextBox/TextRun + VoiceoverCue), coords.ts, layout.ts,
+                timing.ts (computeSlide/ProjectTiming + slideTimeWindows), render.ts (buildRenderContext/
+                renderProject/renderSlide), transitions.ts, runs.ts, vtt.ts (WebVTT parse/serialize/etc).
+                Pure engines unit-tested in tools/{layout,runs,timing,vtt}.test.mjs (esbuild standalone).
 src/app/
   App.tsx       shell: owns font, single shared GlyphExtractor, params, selectedChar, brush; 4 tabs.
   state/        store.ts (useEditorStore — font manifest, zundo, ensureGlyphDerived/commitDerivedGlyph),
                 videoStore.ts (useVideoStore — video project, zundo) + videoEdit.ts (pure helpers).
-  components/   EditorView, ExtractionView, PreviewView, editorCanvas, overlay; video/ (VideoView, SlidePanel, …).
-vite.config.ts  React plugin + fontStorePlugin (/api/fonts) + projectStorePlugin (/api/projects).
+  components/   EditorView, ExtractionView, PreviewView, editorCanvas, overlay; video/ (VideoView owns the
+                Layout/Order/Play/Timeline/VTT switch; SlideCanvas, SlidePanel, Inspector, RunEditor,
+                SlideOrderView/ProjectPlayer/PlaybackCanvas, AnimationOrderList, VttView, SlideVttExtract,
+                TimelineView [placeholder]).
+vite.config.ts  React + fontStorePlugin (/api/fonts) + projectStorePlugin (/api/projects) +
+                exportPlugin (/api/export → MP4) + ttsPlugin (/api/tts, /api/voiceover/<project>/<file>).
+tools/          videoExport.mjs (headless MP4), tts.mjs (Gemini TTS on Vertex AI→ffmpeg), *.test.mjs (pure-engine tests).
 fonts/<id>/     saved font manifests (manifest.json + font.ttf).   projects/<id>.json  saved videos.
+exports/<name>.mp4  rendered videos.   voiceover/<projectId>/<cueId>.m4a  generated TTS clips.
 public/fonts/   bundled OFL samples: Patrick Hand (handwriting), Fira Sans (sans).
 ```
 
@@ -88,7 +96,10 @@ public/fonts/   bundled OFL samples: Patrick Hand (handwriting), Fira Sans (sans
    timing; brush-less neutral-pen play preview; Save font / Reload / Undo / Redo.
 2. **Stroke extraction** — read-only debug overlay of the automatic extraction; tune params (live).
 3. **Animation preview** — animate holding text with the chosen brush; reflects per-glyph edits.
-4. **Video** — slide-based animated-text editor (in progress; see HANDOVER.md).
+4. **Video** — slide-based animated-text editor. Its own view switch (in `VideoView`):
+   **Layout** (drag/select/add textboxes + voiceover-in-range extract), **Order** (animation order +
+   per-slide Play), **▶ Play** (project play-all + synced voiceover), **Timeline** (real-time voiceover
+   timeline — WIP), **VTT** (editable WebVTT script + TTS). See HANDOVER.md for the in-flight voiceover work.
 
 **Shared across tabs** (in App): `selectedChar`, extraction `params`, `brush`, and a single
 `GlyphExtractor` (one Web Worker per font). Tuning params re-derives the active glyph centrally,
@@ -118,7 +129,22 @@ transition are **invariant** (preview + export both run at real time off `rc.spe
 per-**textbox brush** overrides (`TextBox.brush`, falling back to the project brush; a run's colour
 still wins). **MP4 export** is done: the pure render seam
 (`src/lib/project/` `buildRenderContext` + `renderProject`/`renderSlide`/`projectDurationMs`, with
-`tools/{layout,runs,timing}.test.mjs` covering the pure engines) is driven headlessly by
+`tools/{layout,runs,timing,vtt}.test.mjs` covering the pure engines) is driven headlessly by
 `tools/videoExport.mjs` (`@napi-rs/canvas` → ffmpeg) behind `POST /api/export` and a toolbar button.
-See `HANDOVER.md` for the remaining "later" items (image/photo backgrounds, batch "extract all glyphs",
-mid-stroke pause UI).
+Voiceover audio is muxed in a second ffmpeg pass (silent video → mix each cue's clip at its absolute
+`startMs` via `adelay`/`amix`/`apad` + `-shortest`); skipped when slide-scoped, falls back to silent on
+failure.
+
+**Voiceover — complete** (a project-wide WebVTT track synced to the animation; see `HANDOVER.md` →
+"Voiceover feature" for decisions + design). **P1–P4 done & verified:** the data model
+(`VideoProject.voiceover: VoiceoverCue[]`, absolute-time cues, no box/slide link), the pure `vtt.ts`
+engine, the editable **VTT** sub-view + read-only slide extract, **TTS** (Gemini 2.5 TTS on **Vertex AI**
+— ADC auth; a project-wide voice, accent (default British) + style-prompt set in the VTT view's Voice
+panel, woven into the synthesis instruction — → ffmpeg via `/api/tts`, with audio-exists/stale shading and
+clock-synced `<audio>` playback), the full-width **Timeline**
+view (`TimelineView.tsx` — real-time-scaled DOM track: slide sections + numbered writing sub-bars + hold
++ bleeding transition overlays + ruler + floating thumbnails, with zoom/Fit), and draggable voiceover
+**leader lines** (re-time a cue live, preserving its duration + id, as one atomic undo; double-click to
+add). Voiceover audio is now **muxed into the MP4 export** too (a second ffmpeg pass places each cue's
+clip at its absolute `startMs`). **Next — "later" items:** image/photo backgrounds, batch "extract all
+glyphs", mid-stroke pause UI, scope MP4 export to the play selection.

@@ -5,7 +5,8 @@ import { buildRenderContext, projectDurationMs, renderProject } from '@lib/proje
 import type { VideoProject } from '@lib/project/schema'
 import { useVideoStore } from '../../state/videoStore'
 import { BACKING_W } from './layoutCanvas'
-import { PlaybackCanvas } from './PlaybackCanvas'
+import { PlaybackCanvas, type AudioCue } from './PlaybackCanvas'
+import { cueAudioUrl } from './VttView'
 
 type Scope = 'all' | 'selected'
 
@@ -54,6 +55,17 @@ export function ProjectPlayer({ glyphs, metrics }: { glyphs: Map<string, Prepare
     [rc, subProject],
   )
 
+  // Voiceover plays only in the full-project scope, where the clock = project time.
+  const audioCues = useMemo<AudioCue[] | undefined>(() => {
+    if (!project || scope !== 'all') return undefined
+    const list: AudioCue[] = []
+    for (const c of project.voiceover ?? []) {
+      const url = cueAudioUrl(project.id, c)
+      if (url) list.push({ id: c.id, startMs: c.startMs, endMs: c.endMs, url })
+    }
+    return list
+  }, [project, scope])
+
   if (!project) return null
 
   const playedCount = subProject ? subProject.slides.length : 0
@@ -89,6 +101,7 @@ export function ProjectPlayer({ glyphs, metrics }: { glyphs: Map<string, Prepare
         draw={draw}
         speed={playbackRate}
         onSpeedChange={setPlaybackRate}
+        audioCues={audioCues}
         autoPlay
         emptyHint={scope === 'selected' ? 'tick one or more slides in the panel' : 'no slides'}
       />

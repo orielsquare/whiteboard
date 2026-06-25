@@ -732,6 +732,479 @@ body {
   cursor: default;
 }
 
+/* VTT editor view */
+.vttview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.vtt-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.vtt-head h3 {
+  margin: 0;
+  font-size: 13px;
+}
+.vtt-head button {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.vtt-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 320px;
+  resize: vertical;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 12px 14px;
+}
+.vtt-errors {
+  font-size: 12px;
+  color: #ffb4a8;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.vtt-ok {
+  font-size: 12px;
+  color: #7fd6a3;
+}
+
+/* voice-synthesis (Gemini) settings panel */
+.vtt-voice {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.vtt-voice-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.vtt-voice-field > span {
+  font-weight: 600;
+}
+.vtt-voice-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.vtt-voice-field select,
+.vtt-voice-field input,
+.vtt-voice-field textarea {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 8px;
+}
+.vtt-voice-field select {
+  max-width: 220px;
+}
+.vtt-voice-accent {
+  flex: 1;
+  min-width: 180px;
+}
+.vtt-voice-accent input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.vtt-voice-prompt textarea {
+  resize: vertical;
+  min-height: 44px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.vtt-voice-hint {
+  margin: 0;
+  font-size: 11px;
+}
+.vtt-gen-error {
+  margin-top: 4px;
+}
+
+/* read-only voiceover extract beneath the slide */
+.vtt-extract {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 8px 10px;
+}
+.vtt-extract-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.vtt-extract-empty {
+  font-size: 12px;
+  color: var(--muted);
+}
+.vtt-extract-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.vtt-cue {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border-left: 2px solid transparent;
+}
+.vtt-cue.active {
+  background: rgba(91, 157, 255, 0.12);
+  border-left-color: var(--accent);
+  color: var(--text);
+}
+.vtt-cue.dim {
+  opacity: 0.5;
+}
+.vtt-cue-time {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.vtt-cue-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.vtt-cue-audio {
+  color: #7fd6a3;
+  flex: 0 0 auto;
+}
+
+.timelineview {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tl-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tl-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+.tl-zoom-label {
+  font-size: 12px;
+}
+.tl-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 8px 0;
+}
+.tl-track {
+  position: relative;
+}
+
+/* time ruler */
+.tl-axis {
+  position: absolute;
+  left: 0;
+}
+.tl-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--line);
+}
+.tl-tick-label {
+  position: absolute;
+  top: 3px;
+  left: 4px;
+  font-size: 10px;
+  color: var(--muted);
+  font-family: ui-monospace, Menlo, monospace;
+  white-space: nowrap;
+}
+
+/* slide sections */
+.tl-sections {
+  position: absolute;
+  left: 0;
+}
+.tl-section {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  overflow: visible;
+}
+.tl-section.even {
+  background: rgba(122, 162, 255, 0.06);
+}
+.tl-section.odd {
+  background: rgba(255, 212, 121, 0.05);
+}
+.tl-section:hover {
+  background: rgba(122, 162, 255, 0.13);
+}
+.tl-section-label {
+  position: absolute;
+  top: 3px;
+  left: 7px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.tl-hold {
+  position: absolute;
+  top: 20px;
+  bottom: 7px;
+  background: repeating-linear-gradient(
+    45deg,
+    rgba(255, 212, 121, 0.22) 0 6px,
+    transparent 6px 12px
+  );
+  border-radius: 4px;
+  pointer-events: none;
+}
+.tl-box {
+  position: absolute;
+  bottom: 7px;
+  height: 30px;
+  background: var(--accent);
+  opacity: 0.85;
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  /* hoverable so its title (box number + text) shows for narrow bars; it has no
+     onClick, so clicks still bubble to the section (select slide). */
+}
+.tl-box-label {
+  font-size: 10px;
+  color: #0b0d11;
+  padding: 0 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+}
+
+/* closing transition overlays (sit on top, bleed into next section) */
+.tl-transitions {
+  position: absolute;
+  left: 0;
+  pointer-events: none;
+}
+.tl-transition {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  background: rgba(255, 107, 107, 0.2);
+  border: 1px dashed rgba(255, 107, 107, 0.6);
+  border-radius: 4px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.tl-transition-label {
+  font-size: 9px;
+  color: #ffb4a8;
+  padding-bottom: 2px;
+  white-space: nowrap;
+}
+
+/* floating slide screenshots */
+.tl-thumbs {
+  position: absolute;
+  left: 0;
+}
+.tl-thumb {
+  position: absolute;
+  top: 6px;
+}
+.tl-thumb .slide-thumb {
+  height: auto;
+  padding: 0;
+  overflow: visible;
+  display: block;
+  flex: none;
+}
+.tl-thumb .slide-thumb-canvas {
+  height: 62px;
+  width: auto;
+  max-width: none;
+  border: 1px solid var(--line);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+/* voiceover leader lines (P4) */
+.tl-leaders {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+.tl-leader {
+  position: absolute;
+  top: 0;
+  width: 0;
+}
+.tl-leader:hover,
+.tl-leader.dragging {
+  z-index: 40;
+}
+.tl-leader-line {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent-2);
+}
+.tl-leader-handle {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent-2);
+  border: 2px solid var(--panel);
+  transform: translate(-50%, 50%);
+  opacity: 0;
+  cursor: ew-resize;
+}
+.tl-leader:hover .tl-leader-handle,
+.tl-leader.dragging .tl-leader-handle {
+  opacity: 1;
+}
+.tl-leader-label {
+  position: absolute;
+  left: 0;
+  transform: translateX(-2px);
+  max-width: 180px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent-2);
+  border-radius: 6px;
+  padding: 3px 7px;
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: grab;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.tl-leader.dragging .tl-leader-label {
+  cursor: grabbing;
+}
+.tl-leader-label.has-audio {
+  border-left-color: #7fd6a3;
+  background: rgba(127, 214, 163, 0.14);
+}
+.tl-leader-note {
+  color: #7fd6a3;
+  flex: 0 0 auto;
+}
+.tl-leader-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* VTT cue list (audio generation) */
+.cue-list {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cue-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+.cue-row.has-audio {
+  background: rgba(127, 214, 163, 0.1);
+  border-color: rgba(127, 214, 163, 0.4);
+}
+.cue-row-time {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+.cue-row-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+.cue-audio-state {
+  font-size: 11px;
+  flex: 0 0 auto;
+  min-width: 56px;
+  text-align: right;
+}
+.cue-audio-state.ok {
+  color: #7fd6a3;
+}
+.cue-audio-state.stale {
+  color: #ffd166;
+}
+.cue-audio-state.none {
+  color: var(--muted);
+}
+.cue-row .tool {
+  padding: 4px 8px;
+}
+
 /* animation-order / play view */
 .orderview {
   display: flex;

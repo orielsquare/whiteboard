@@ -10,6 +10,9 @@ const rootDir = fileURLToPath(new URL('.', import.meta.url))
 const fontsDir = path.join(rootDir, 'fonts')
 const projectsDir = path.join(rootDir, 'projects')
 const exportsDir = path.join(rootDir, 'exports')
+const voiceoverDir = path.join(rootDir, 'voiceover')
+
+const safeSeg = (s: string) => String(s).replace(/[^a-z0-9-_]+/gi, '_').slice(0, 80)
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -195,7 +198,7 @@ function exportPlugin(): Plugin {
         try {
           if (req.method === 'POST' && !rest) {
             const body = JSON.parse((await readBody(req)).toString('utf8'))
-            const { project, glyphs, metrics, fps, width, speed, slideIds, name } = body
+            const { project, glyphs, metrics, fps, width, speed, slideIds, name, includeAudio } = body
             const safe =
               (String(name || project?.name || 'video')
                 .replace(/[^a-z0-9-_]+/gi, '_')
@@ -205,7 +208,7 @@ function exportPlugin(): Plugin {
             // Cache-bust so edits to the exporter are picked up without a restart.
             const spec = pathToFileURL(path.join(rootDir, 'tools/videoExport.mjs')).href + '?v=' + Date.now()
             const mod = await import(spec)
-            const info = await mod.renderProjectToMp4({ project, glyphs, metrics, fps, width, speed, slideIds, outPath })
+            const info = await mod.renderProjectToMp4({ project, glyphs, metrics, fps, width, speed, slideIds, includeAudio, outPath })
             const bytes = (await fs.stat(outPath)).size
             return sendJson(res, 200, { ok: true, file: safe + '.mp4', bytes, ...info })
           }
@@ -242,8 +245,67 @@ function exportPlugin(): Plugin {
   }
 }
 
+/**
+ * Voiceover TTS: POST /api/tts {projectId, cueId, text, voice?} generates a clip
+ * with macOS `say` + ffmpeg into ./voiceover/<projectId>/<cueId>.m4a and returns
+ * {file, durationMs}; GET /api/voiceover/<projectId>/<file> streams it (range-aware).
+ */
+function ttsPlugin(): Plugin {
+  return {
+    name: 'voiceover-tts',
+    configureServer(server) {
+      server.middlewares.use(async (req: IncomingMessage, res: ServerResponse, next) => {
+        const url = req.url ?? ''
+        try {
+          if (req.method === 'POST' && url.split('?')[0] === '/api/tts') {
+            const body = JSON.parse((await readBody(req)).toString('utf8'))
+            const { projectId, cueId, text, voice, accent, prompt } = body
+            if (!projectId || !cueId) return sendJson(res, 400, { error: 'projectId and cueId required' })
+            const dir = path.join(voiceoverDir, safeSeg(projectId))
+            await fs.mkdir(dir, { recursive: true })
+            const file = `${safeSeg(cueId)}.m4a`
+            const outPath = path.join(dir, file)
+            const spec = pathToFileURL(path.join(rootDir, 'tools/tts.mjs')).href + '?v=' + Date.now()
+            const mod = await import(spec)
+            const { durationMs, voice: usedVoice } = await mod.generateTts({ text, voice, accent, prompt, outPath })
+            return sendJson(res, 200, { ok: true, file, durationMs, voice: usedVoice ?? voice ?? null })
+          }
+          if (req.method === 'GET' && url.startsWith('/api/voiceover/')) {
+            const rel = url.split('?')[0].slice('/api/voiceover/'.length).split('/')
+            const file = path.join(voiceoverDir, safeSeg(decodeURIComponent(rel[0] ?? '')), path.basename(decodeURIComponent(rel[1] ?? '')))
+            let stat
+            try {
+              stat = await fs.stat(file)
+            } catch {
+              return sendJson(res, 404, { error: 'not found' })
+            }
+            res.setHeader('content-type', 'audio/mp4')
+            res.setHeader('accept-ranges', 'bytes')
+            const range = req.headers.range
+            const m = range ? /bytes=(\d*)-(\d*)/.exec(range) : null
+            if (m) {
+              const start = m[1] ? parseInt(m[1], 10) : 0
+              const end = m[2] ? parseInt(m[2], 10) : stat.size - 1
+              res.statusCode = 206
+              res.setHeader('content-range', `bytes ${start}-${end}/${stat.size}`)
+              res.setHeader('content-length', String(end - start + 1))
+              return createReadStream(file, { start, end }).pipe(res)
+            }
+            res.statusCode = 200
+            res.setHeader('content-length', String(stat.size))
+            return createReadStream(file).pipe(res)
+          }
+          return next()
+        } catch (err) {
+          return sendJson(res, 500, { error: String((err as Error)?.stack ?? err) })
+        }
+      })
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), fontStorePlugin(), projectStorePlugin(), exportPlugin()],
+  plugins: [react(), fontStorePlugin(), projectStorePlugin(), exportPlugin(), ttsPlugin()],
   resolve: {
     alias: {
       '@lib': fileURLToPath(new URL('./src/lib', import.meta.url)),

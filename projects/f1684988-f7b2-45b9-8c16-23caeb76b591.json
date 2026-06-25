@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "id": "f1684988-f7b2-45b9-8c16-23caeb76b591",
+  "name": "Untitled video",
+  "fontId": "0f173b3e6cb6d1af",
+  "aspect": "16:9",
+  "brush": {
+    "style": "ink",
+    "color": "#f4f4f5",
+    "sizeScale": 1,
+    "opacity": 1,
+    "jitter": 0,
+    "nibModel": "round",
+    "cap": "round",
+    "seed": 1337
+  },
+  "playbackRate": 1,
+  "baseEmFraction": 0.085,
+  "defaults": {
+    "sizeScale": 1,
+    "interCharDelayMs": 55,
+    "lineHeightScale": 1.2,
+    "delayBeforeMs": 300,
+    "holdBeforeTransitionMs": 1000,
+    "transition": {
+      "kind": "fade",
+      "durationMs": 600
+    }
+  },
+  "slides": [
+    {
+      "id": "476917f1-16d7-4b05-ae0e-6abb3bfca45c",
+      "background": "#0b0d11",
+      "textBoxes": [
+        {
+          "id": "3b9d9b76-9007-40f9-ba9d-578a4d5ce776",
+          "frame": {
+            "x": 0.12,
+            "y": 0.22,
+            "w": 0.7
+          },
+          "align": "left",
+          "runs": [
+            {
+              "text": "Text"
+            }
+          ],
+          "lineHeightScale": 1.2,
+          "animOrder": 0,
+          "delayBeforeMs": 300,
+          "interCharDelayMs": 55
+        }
+      ],
+      "holdBeforeTransitionMs": 1000,
+      "transition": {
+        "kind": "fade",
+        "durationMs": 600
+      }
+    },
+    {
+      "id": "33bbf21a-0b8b-48a5-b799-4c1679ca1e7a",
+      "background": "#0b0d11",
+      "textBoxes": [
+        {
+          "id": "e9131d08-d4f8-4a4b-9359-573f739c3332",
+          "frame": {
+            "x": 0.12,
+            "y": 0.22,
+            "w": 0.7
+          },
+          "align": "left",
+          "runs": [
+            {
+              "text": "Text"
+            }
+          ],
+          "lineHeightScale": 1.2,
+          "animOrder": 0,
+          "delayBeforeMs": 300,
+          "interCharDelayMs": 55
+        }
+      ],
+      "holdBeforeTransitionMs": 1000,
+      "transition": {
+        "kind": "fade",
+        "durationMs": 600
+      }
+    }
+  ],
+  "voiceover": [
+    {
+      "id": "cue-1",
+      "startMs": 500,
+      "endMs": 1636,
+      "text": "Welcome to the lesson.",
+      "audio": {
+        "file": "cue-1.m4a",
+        "durationMs": 1136,
+        "textHash": "blt81t"
+      }
+    },
+    {
+      "id": "cue-2",
+      "startMs": 4000,
+      "endMs": 5109,
+      "text": "Let us begin now.",
+      "audio": {
+        "file": "cue-2.m4a",
+        "durationMs": 1109,
+        "textHash": "4i4nuj"
+      }
+    }
+  ],
+  "createdAt": "2026-06-24T22:35:25.262Z",
+  "updatedAt": "2026-06-24T22:36:20.145Z"
+}

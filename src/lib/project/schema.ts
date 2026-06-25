@@ -70,6 +70,46 @@ export interface ProjectDefaults {
   transition: ClosingTransition
 }
 
+/** Generated/recorded audio for a voiceover cue. */
+export interface VoiceoverAudio {
+  /** file name under the project's voiceover dir (served via /api/voiceover). */
+  file: string
+  durationMs: number
+  voice?: string
+  /** the spoken accent this clip was generated with — detects staleness when it changes. */
+  accent?: string
+  /** the style prompt this clip was generated with — detects staleness when it changes. */
+  prompt?: string
+  /** hash of the text the audio was generated from — detects staleness after edits. */
+  textHash?: string
+  /** bumped each (re)generation; appended to the audio URL so players reload the new clip. */
+  version?: number
+}
+
+/** Project-wide voice-synthesis settings (Gemini TTS on Vertex AI). */
+export interface TtsSettings {
+  /** prebuilt Gemini voice name (e.g. "Kore"). */
+  voice: string
+  /** spoken accent, woven into the synthesis instruction (e.g. "British", "Received Pronunciation"). */
+  accent: string
+  /** natural-language style instruction prepended to each cue's text (may be empty). */
+  prompt: string
+}
+
+export const DEFAULT_TTS: TtsSettings = { voice: 'Kore', accent: 'British', prompt: '' }
+
+/**
+ * A timed voiceover snippet (WebVTT cue). Times are ABSOLUTE project real-time
+ * (ms) and not linked to any slide/textbox — association is purely positional.
+ */
+export interface VoiceoverCue {
+  id: string
+  startMs: number
+  endMs: number
+  text: string
+  audio?: VoiceoverAudio
+}
+
 export interface VideoProject {
   version: number
   id: string
@@ -85,6 +125,10 @@ export interface VideoProject {
   baseEmFraction: number
   defaults: ProjectDefaults
   slides: Slide[]
+  /** project-wide voiceover track (absolute-time WebVTT cues). */
+  voiceover: VoiceoverCue[]
+  /** voice-synthesis settings for generating cue audio. */
+  tts?: TtsSettings
   createdAt: string
   updatedAt: string
 }
@@ -144,6 +188,8 @@ export function newVideoProject(fontId: string, brush: BrushSettings, isoNow: st
     baseEmFraction: 0.085,
     defaults,
     slides: [newSlide(defaults)],
+    voiceover: [],
+    tts: { ...DEFAULT_TTS },
     createdAt: isoNow,
     updatedAt: isoNow,
   }
