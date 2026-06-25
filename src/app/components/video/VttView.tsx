@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { DEFAULT_TTS, makeId, type VoiceoverCue } from '@lib/project/schema'
-import { formatTimestamp, hashText, isAudioStale, parseVtt, reconcileParsed, serializeVtt, ttsEngineKey } from '@lib/project/vtt'
+import { DEFAULT_TTS, makeId, type TtsSettings, type VoiceoverCue } from '@lib/project/schema'
+import { formatTimestamp, hashText, isAudioStale, parseVtt, reconcileParsed, serializeVtt } from '@lib/project/vtt'
 import { useVideoStore, videoHistory } from '../../state/videoStore'
 
 const EMPTY: never[] = []
@@ -19,6 +19,7 @@ interface Voice {
   accent: string
   description: string
   category: string
+  previewUrl: string
 }
 
 const isBritish = (v: Voice) => /british|england|english \(uk|^uk\b|\buk\b|received pronunciation/i.test(`${v.accent} ${v.description}`)
@@ -33,12 +34,12 @@ export function cueAudioUrl(projectId: string, cue: VoiceoverCue): string | null
 }
 
 /**
- * Editable WebVTT view of the project voiceover. The raw WebVTT text is the
- * editing surface (parsed live, reconciled into the cue model, preserving audio
- * by id). A Voice panel picks the **ElevenLabs** voice (its accent), model, and
- * delivery controls (v3: a free-text direction; otherwise voice-settings sliders),
- * all project-wide. The cue list generates/plays audio; cues are shaded and flagged
- * stale when the text or any synthesis setting no longer matches the clip.
+ * Editable WebVTT view of the project voiceover. The raw WebVTT text is the editing
+ * surface (parsed live, reconciled into the cue model, preserving audio by id). The
+ * Voice panel (below the script) picks the **ElevenLabs** voice, model, and delivery
+ * controls — and can preview a voice with its free hosted sample. Each cue chip shows
+ * the voice used and is a button to reuse that clip's exact settings. A clip is flagged
+ * **stale only when its text changed** (different voice/settings ≠ stale).
  */
 export function VttView() {
   const project = useVideoStore((s) => s.project)
@@ -63,9 +64,9 @@ export function VttView() {
   const [voicesLoading, setVoicesLoading] = useState(true)
 
   const isV3 = tts.model === 'eleven_v3'
-  const engineKey = ttsEngineKey(tts)
+  const selectedPreviewUrl = voices.find((v) => v.voiceId === tts.voiceId)?.previewUrl ?? ''
 
-  // Load the account's voices once (carries the accents).
+  // Load the account's voices once (carries the accents + preview samples).
   useEffect(() => {
     let alive = true
     setVoicesLoading(true)
@@ -119,6 +120,28 @@ export function VttView() {
 
   const setSetting = (patch: Partial<typeof tts.settings>) => setTts({ settings: { ...tts.settings, ...patch } })
 
+  /** Play a free hosted sample of the given voice (no TTS call). */
+  const previewVoice = (url: string) => {
+    if (!url) return
+    if (!audioRef.current) audioRef.current = new Audio()
+    audioRef.current.src = url
+    audioRef.current.currentTime = 0
+    audioRef.current.play().catch(() => {})
+  }
+
+  /** Adopt the voice/model/settings a clip was generated with (after a confirm). */
+  const useClipSettings = (cue: VoiceoverCue) => {
+    const t = cue.audio?.tts
+    if (!t) return
+    const summary =
+      t.model === 'eleven_v3'
+        ? `Direction: ${t.direction || '—'}`
+        : `Stability ${t.settings.stability}, Similarity ${t.settings.similarityBoost}, Style ${t.settings.style}, Speed ${t.settings.speed}`
+    if (window.confirm(`Use these settings?\n\nVoice: ${t.voiceName || t.voiceId}\nModel: ${t.model}\n${summary}`)) {
+      setTts(t)
+    }
+  }
+
   const generate = async (cue: VoiceoverCue): Promise<boolean> => {
     const p = useVideoStore.getState().project
     if (!p) return false
@@ -126,7 +149,12 @@ export function VttView() {
       setGenError('This cue has no text to synthesize — add narration first.')
       return false
     }
-    const cur = { ...DEFAULT_TTS, ...(p.tts ?? {}) }
+    // the exact settings this clip is being made with (deep-merged, complete)
+    const cur: TtsSettings = {
+      ...DEFAULT_TTS,
+      ...(p.tts ?? {}),
+      settings: { ...DEFAULT_TTS.settings, ...(p.tts?.settings ?? {}) },
+    }
     if (!cur.voiceId) {
       setGenError('Pick a voice first (set ELEVENLABS_API_KEY if the list is empty).')
       return false
@@ -153,9 +181,7 @@ export function VttView() {
           audio: {
             file: data.file,
             durationMs: data.durationMs,
-            voiceId: data.voiceId ?? cur.voiceId,
-            model: data.model ?? cur.model,
-            engineKey: ttsEngineKey(cur),
+            tts: cur,
             textHash: hashText(cue.text),
             version: Date.now(),
           },
@@ -195,22 +221,22 @@ export function VttView() {
   const anyGenerating = Object.values(busy).some(Boolean)
   const noVoice = !tts.voiceId
 
-  return (
-    <div className="vttview">
-      <div className="vtt-voice">
-        <div className="vtt-voice-row">
-          <label className="vtt-voice-field">
-            <span>Model</span>
-            <select value={tts.model} onChange={(e) => setTts({ model: e.target.value })}>
-              {MODELS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="vtt-voice-field vtt-voice-pick">
-            <span>Voice {tts.voiceName && <span className="muted">· {tts.voiceName}</span>}</span>
+  const voicePanel = (
+    <div className="vtt-voice">
+      <div className="vtt-voice-row">
+        <label className="vtt-voice-field">
+          <span>Model</span>
+          <select value={tts.model} onChange={(e) => setTts({ model: e.target.value })}>
+            {MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="vtt-voice-field vtt-voice-pick">
+          <span>Voice {tts.voiceName && <span className="muted">· {tts.voiceName}</span>}</span>
+          <div className="vtt-voice-pick-row">
             <select
               value={tts.voiceId}
               disabled={voices.length === 0}
@@ -227,37 +253,50 @@ export function VttView() {
                 </option>
               ))}
             </select>
-          </label>
-        </div>
-
-        {isV3 ? (
-          <label className="vtt-voice-field vtt-voice-prompt">
-            <span>Direction</span>
-            <textarea
-              rows={2}
-              spellCheck
-              placeholder="e.g. [warmly] [slowly] — audio-tag delivery cues for the v3 model."
-              value={tts.direction}
-              onChange={(e) => setTts({ direction: e.target.value })}
-            />
-          </label>
-        ) : (
-          <div className="vtt-voice-sliders">
-            <Slider label="Stability" value={tts.settings.stability} min={0} max={1} step={0.05} onChange={(v) => setSetting({ stability: v })} />
-            <Slider label="Similarity" value={tts.settings.similarityBoost} min={0} max={1} step={0.05} onChange={(v) => setSetting({ similarityBoost: v })} />
-            <Slider label="Style" value={tts.settings.style} min={0} max={1} step={0.05} onChange={(v) => setSetting({ style: v })} />
-            <Slider label="Speed" value={tts.settings.speed} min={0.7} max={1.2} step={0.01} onChange={(v) => setSetting({ speed: v })} />
+            <button
+              type="button"
+              className="tool"
+              title="preview this voice (free sample)"
+              disabled={!selectedPreviewUrl}
+              onClick={() => previewVoice(selectedPreviewUrl)}
+            >
+              ▶
+            </button>
           </div>
-        )}
-
-        <p className="vtt-voice-hint muted">
-          Synthesized with <b>ElevenLabs</b> — the accent comes from the voice. {isV3
-            ? 'v3 takes a free-text direction (audio-tag cues like [whispering]).'
-            : 'Stability lower = more expressive; Style adds emphasis; Speed bakes in the pace.'}{' '}
-          {voicesError && <span className="vtt-voice-warn">⚠ {voicesError}</span>}
-        </p>
+        </label>
       </div>
 
+      {isV3 ? (
+        <label className="vtt-voice-field vtt-voice-prompt">
+          <span>Direction</span>
+          <textarea
+            rows={2}
+            spellCheck
+            placeholder="e.g. [warmly] [slowly] — audio-tag delivery cues for the v3 model."
+            value={tts.direction}
+            onChange={(e) => setTts({ direction: e.target.value })}
+          />
+        </label>
+      ) : (
+        <div className="vtt-voice-sliders">
+          <Slider label="Stability" value={tts.settings.stability} min={0} max={1} step={0.05} onChange={(v) => setSetting({ stability: v })} />
+          <Slider label="Similarity" value={tts.settings.similarityBoost} min={0} max={1} step={0.05} onChange={(v) => setSetting({ similarityBoost: v })} />
+          <Slider label="Style" value={tts.settings.style} min={0} max={1} step={0.05} onChange={(v) => setSetting({ style: v })} />
+          <Slider label="Speed" value={tts.settings.speed} min={0.7} max={1.2} step={0.01} onChange={(v) => setSetting({ speed: v })} />
+        </div>
+      )}
+
+      <p className="vtt-voice-hint muted">
+        Synthesized with <b>ElevenLabs</b> — the accent comes from the voice (▶ previews it, free). {isV3
+          ? 'v3 takes a free-text direction (audio-tag cues like [whispering]).'
+          : 'Stability lower = more expressive; Style adds emphasis; Speed bakes in the pace.'}{' '}
+        {voicesError && <span className="vtt-voice-warn">⚠ {voicesError}</span>}
+      </p>
+    </div>
+  )
+
+  return (
+    <div className="vttview">
       <div className="vtt-head">
         <h3>Voiceover script (WebVTT)</h3>
         <div className="spacer" />
@@ -289,16 +328,29 @@ export function VttView() {
 
       {genError && <div className="vtt-errors vtt-gen-error">⚠ {genError}</div>}
 
+      {voicePanel}
+
       {sorted.length > 0 && (
         <ul className="cue-list">
           {sorted.map((c) => {
-            const stale = isAudioStale(c, { engineKey })
+            const stale = isAudioStale(c)
+            const voiceName = c.audio?.tts?.voiceName
             return (
               <li key={c.id} className={c.audio ? 'cue-row has-audio' : 'cue-row'}>
                 <span className="cue-row-time">{formatTimestamp(c.startMs)}</span>
                 <span className="cue-row-text" title={c.text}>
                   {c.text.replace(/\n/g, ' ') || '(empty)'}
                 </span>
+                {voiceName && (
+                  <button
+                    type="button"
+                    className="tool cue-voice-btn"
+                    title={`made with “${voiceName}” — click to use this clip's settings`}
+                    onClick={() => useClipSettings(c)}
+                  >
+                    {voiceName.split(/\s[-–·]\s/)[0]}
+                  </button>
+                )}
                 <span className={stale ? 'cue-audio-state stale' : c.audio ? 'cue-audio-state ok' : 'cue-audio-state none'}>
                   {busy[c.id] ? '…' : stale ? '♪ stale' : c.audio ? `♪ ${(c.audio.durationMs / 1000).toFixed(1)}s` : 'no audio'}
                 </span>
@@ -319,7 +371,8 @@ export function VttView() {
 
       <p className="hint">
         Cues are absolute project-time. The line above each timestamp is the cue id — keep it to retain a
-        cue's generated audio across edits. Generating sets the cue's end time to the spoken length.
+        cue's generated audio across edits. Generating sets the cue's end time to the spoken length; the
+        voice name on a clip is a button to reuse its exact settings.
       </p>
     </div>
   )

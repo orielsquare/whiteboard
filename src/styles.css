@@ -826,9 +826,19 @@ body {
   flex: 1;
   min-width: 200px;
 }
-.vtt-voice-pick select {
+.vtt-voice-pick-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.vtt-voice-pick-row select {
+  flex: 1;
+  min-width: 0;
   max-width: none;
-  width: 100%;
+}
+.vtt-voice-pick-row .tool {
+  flex: 0 0 auto;
+  padding: 0 10px;
 }
 .vtt-voice-sliders {
   display: grid;
@@ -1249,6 +1259,20 @@ body {
 }
 .cue-row .tool {
   padding: 4px 8px;
+}
+/* the voice-name chip — a button that reuses the clip's settings */
+.cue-voice-btn {
+  flex: 0 0 auto;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+.cue-voice-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
 }
 
 /* animation-order / play view */

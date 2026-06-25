@@ -77,8 +77,11 @@ export function drawSelection(
   layout: TextBoxLayout,
   canvasW: number,
   color = '#5b9dff',
+  // While a box is being dragged its model position is unchanged, so callers
+  // pass the transient origin to draw the ring at the box's live spot.
+  origin?: { x: number; y: number },
 ): void {
-  const o = boxOriginPx(box, canvasW)
+  const o = origin ?? boxOriginPx(box, canvasW)
   const w = layout.widthPx
   const h = layout.heightPx
   const pad = 4

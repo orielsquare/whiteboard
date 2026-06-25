@@ -5,9 +5,9 @@ import type { FontMetrics } from '@lib/project/layout'
 import { buildRenderContext } from '@lib/project/render'
 import { slideTimeWindows } from '@lib/project/timing'
 import { runsToPlainText } from '@lib/project/runs'
-import { isAudioStale, ttsEngineKey } from '@lib/project/vtt'
-import { DEFAULT_TTS, type VoiceoverCue } from '@lib/project/schema'
-import { useVideoStore, videoHistory } from '../../state/videoStore'
+import { isAudioStale } from '@lib/project/vtt'
+import type { VoiceoverCue } from '@lib/project/schema'
+import { useVideoStore } from '../../state/videoStore'
 import { BACKING_W } from './layoutCanvas'
 import { SlideThumbnail } from './SlideThumbnail'
 
@@ -81,9 +81,13 @@ export function TimelineView({ glyphs, metrics }: { glyphs: Map<string, Prepared
   pxPerSecRef.current = pxPerSec
 
   const playbackRate = project?.playbackRate ?? 1
+  // rc (slide layout + timing) depends only on the SLIDES, not the voiceover — so
+  // dragging/adding/removing a cue doesn't re-lay-out the whole timeline. `slides`
+  // stays referentially equal across voiceover edits (updateCue spreads the project).
   const rc = useMemo(
     () => (project ? buildRenderContext(project, glyphs, BACKING_W, metrics, playbackRate) : null),
-    [project, glyphs, metrics, playbackRate],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [project?.slides, project?.baseEmFraction, glyphs, metrics, playbackRate],
   )
   const windows = useMemo(() => (rc ? slideTimeWindows(rc.timing) : []), [rc])
   const sortedCues = useMemo(() => [...cues].sort((a, b) => a.startMs - b.startMs), [cues])
@@ -170,9 +174,6 @@ export function TimelineView({ glyphs, metrics }: { glyphs: Map<string, Prepared
 
   const trackWidth = Math.max(360, xOf(totalMs) + END_PAD)
   const thumbW = THUMB_DISP_H / aspectHeightUnits(project.aspect) // rendered thumbnail width (aspect-aware)
-  // Current synthesis key, so a cue whose audio is stale doesn't show fresh-audio affordances.
-  const ttsForKey = { ...DEFAULT_TTS, ...(project.tts ?? {}), settings: { ...DEFAULT_TTS.settings, ...(project.tts?.settings ?? {}) } }
-  const engineKey = ttsEngineKey(ttsForKey)
   const stepSec = niceStepSec(pxPerSec)
   const ticks: number[] = []
   for (let t = 0; t <= totalMs / 1000 + 1e-6; t += stepSec) ticks.push(t)
@@ -212,7 +213,6 @@ export function TimelineView({ glyphs, metrics }: { glyphs: Map<string, Prepared
                 level={i % LEADER_LEVELS}
                 leftPx={xOf(c.startMs)}
                 pxPerSec={pxPerSec}
-                engineKey={engineKey}
                 onMove={updateCue}
               />
             ))}
@@ -336,38 +336,33 @@ function LeaderLine({
   level,
   leftPx,
   pxPerSec,
-  engineKey,
   onMove,
 }: {
   cue: VoiceoverCue
   level: number
   leftPx: number
   pxPerSec: number
-  engineKey: string
   onMove: (id: string, patch: Partial<VoiceoverCue>) => void
 }) {
   const lineLen = LEADER_BASE + level * LEADER_STEP
   // Audio state, mirrored from the VTT view: fresh = green tint + bright bar;
-  // stale = amber tint + hatched bar (regenerate); none = nothing.
-  const stale = !!cue.audio && isAudioStale(cue, { engineKey })
+  // stale (text changed) = amber tint + hatched bar (regenerate); none = nothing.
+  const stale = !!cue.audio && isAudioStale(cue)
   const fresh = !!cue.audio && !stale
   const dur = cue.audio ? (cue.audio.durationMs / 1000).toFixed(1) : '0'
   const dragRef = useRef<{ x0: number; start0: number; dur: number } | null>(null)
   const [dragging, setDragging] = useState(false)
+  const [dragDeltaPx, setDragDeltaPx] = useState(0)
 
-  // Safety net: if this leader unmounts mid-drag (e.g. the user switches views
-  // while dragging), pointerup never fires — make sure we don't leave zundo's
-  // history tracking paused for the rest of the session (it's a plain flag).
-  useEffect(
-    () => () => {
-      if (dragRef.current) {
-        dragRef.current = null
-        videoHistory.resume()
-      }
-    },
-    [],
-  )
-
+  // Dragging manipulates ONLY this line (a cheap CSS transform); the cue model
+  // (and therefore the VTT + the whole timeline layout) is written exactly once on
+  // release — so the timeline isn't re-laid-out on every pointermove. A single
+  // commit is also one natural undo step, so no history pause/resume is needed.
+  const clampDelta = (clientX: number, d: { x0: number; start0: number }) => {
+    const delta = clientX - d.x0
+    const minDelta = -(d.start0 / 1000) * pxPerSec // can't drag earlier than t=0
+    return delta < minDelta ? minDelta : delta
+  }
   const onPointerDown = (e: PointerEvent<HTMLElement>) => {
     e.stopPropagation()
     try {
@@ -377,34 +372,42 @@ function LeaderLine({
     }
     dragRef.current = { x0: e.clientX, start0: cue.startMs, dur: Math.max(0, cue.endMs - cue.startMs) }
     setDragging(true)
-    videoHistory.pause()
+    setDragDeltaPx(0)
   }
   const onPointerMove = (e: PointerEvent<HTMLElement>) => {
     const d = dragRef.current
     if (!d) return
-    const deltaMs = ((e.clientX - d.x0) / pxPerSec) * 1000
-    const start = Math.max(0, Math.round(d.start0 + deltaMs))
-    onMove(cue.id, { startMs: start, endMs: start + d.dur })
+    setDragDeltaPx(clampDelta(e.clientX, d)) // local only — no store write
   }
   const onPointerUp = (e: PointerEvent<HTMLElement>) => {
-    if (!dragRef.current) return
+    const d = dragRef.current
+    if (!d) return
+    const delta = clampDelta(e.clientX, d)
     dragRef.current = null
     setDragging(false)
-    videoHistory.resume()
+    setDragDeltaPx(0)
+    if (Math.round(delta) !== 0) {
+      const start = Math.max(0, Math.round(d.start0 + (delta / pxPerSec) * 1000))
+      onMove(cue.id, { startMs: start, endMs: start + d.dur }) // the one write
+    }
     try {
       e.currentTarget.releasePointerCapture(e.pointerId)
     } catch {
       /* never captured */
     }
   }
-  // Treat pointercancel (gesture interruption / capture loss) like pointerup so
-  // the pause/resume pair always balances.
-  const drag = { onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp }
+  // Gesture interrupted → abandon the drag and snap back (no write).
+  const onPointerCancel = () => {
+    dragRef.current = null
+    setDragging(false)
+    setDragDeltaPx(0)
+  }
+  const drag = { onPointerDown, onPointerMove, onPointerUp, onPointerCancel }
 
   return (
     <div
       className={dragging ? 'tl-leader dragging' : 'tl-leader'}
-      style={{ left: leftPx, height: LEADERS_H }}
+      style={{ left: leftPx, height: LEADERS_H, transform: dragDeltaPx ? `translateX(${dragDeltaPx}px)` : undefined }}
       onDoubleClick={(e) => e.stopPropagation()}
     >
       <div

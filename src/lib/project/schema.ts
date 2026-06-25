@@ -75,13 +75,11 @@ export interface VoiceoverAudio {
   /** file name under the project's voiceover dir (served via /api/voiceover). */
   file: string
   durationMs: number
-  /** the ElevenLabs voice id this clip was generated with (record/display). */
-  voiceId?: string
-  /** the ElevenLabs model id used. */
-  model?: string
-  /** hash of every synthesis input EXCEPT text (voice/model/direction/settings) — staleness. */
-  engineKey?: string
-  /** hash of the text the audio was generated from — detects staleness after edits. */
+  /** the full synthesis settings this clip was generated with — shown on the cue
+   *  chip and reusable via "use these settings". */
+  tts?: TtsSettings
+  /** hash of the text the audio was generated from — staleness is **text-only**
+   *  (a clip made with different voice/settings is NOT stale, just different). */
   textHash?: string
   /** bumped each (re)generation; appended to the audio URL so players reload the new clip. */
   version?: number

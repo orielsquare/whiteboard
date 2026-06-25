@@ -5,18 +5,22 @@ designs so you can continue without re-deriving anything.
 
 > ## 👉 CURRENT IN-FLIGHT WORK (start here)
 >
-> The **Video editor (VP1–VP5)** and all post-VP5 polish are **done & verified**. The **Voiceover**
-> feature — a project-wide WebVTT track synced to the animation, with TTS audio — is now **complete**:
-> P1 (VTT model + editor + slide extract), P2 (TTS pipeline + audio-exists + synced playback), **P3 (the
-> full-width Timeline view) and P4 (draggable voiceover leader lines)** are all done & verified.
-> Voiceover audio is also now **muxed into the MP4 export**. **Next: the remaining "later" items**
-> (image/photo slide backgrounds; batch "extract all glyphs"; mid-stroke pause UI; scope MP4 export to
-> the play selection). Jump to the **"Voiceover feature"** section near the bottom for decisions, what's
-> built, and integration points.
+> The **Video editor (VP1–VP5)** and all post-VP5 polish are **done & verified**, and the **Voiceover**
+> feature is **complete & verified**: a project-wide WebVTT track synced to the animation, **TTS via
+> ElevenLabs** (P1–P4), audio **muxed into the MP4 export** + **optional captions** on the export preview,
+> and the full-width **Timeline** (sections/zoom/thumbnails, mouse-wheel zoom + Space/Shift scroll, audio-
+> length bars with stale shading, deferred-write leader-line drag). Closing transitions now include
+> scroll-down/right; playback speed goes to ×12. **Next: the remaining "later" items** (image/photo slide
+> backgrounds; batch "extract all glyphs"; mid-stroke pause UI; scope MP4 export to the play selection; and
+> converting `SlideCanvas`'s textbox drag to the deferred-write pattern — see [[zundo-pause-stranding]]).
+> Jump to the **"Voiceover feature"** section near the bottom for decisions, what's built, and integration
+> points.
 >
-> Run `npm run dev`, open **Video → VTT** for the editor and **Video → Timeline** for the new timeline;
-> `node tools/vtt.test.mjs` (24) covers the pure engine. The dev server has routes: `POST /api/tts`,
-> `GET /api/voiceover/<project>/<file>`.
+> **Setup:** TTS needs `ELEVENLABS_API_KEY` in a gitignored `.env` (the key needs the `text_to_speech` +
+> `voices_read` scopes; `vite.config.ts` loads `.env` into `process.env`). Run `npm run dev`, open
+> **Video → VTT** for the editor and **Video → Timeline** for the timeline; `node tools/vtt.test.mjs` (32)
+> covers the pure engine. Dev-server routes: `POST /api/tts`, `GET /api/voices`, `GET /api/voiceover/<project>/<file>`,
+> `POST /api/export`.
 
 ## Status
 
@@ -275,7 +279,7 @@ new views are **Video sub-views** (the Layout/Order/Play switch now also has **T
 the toggle was lifted from SlideCanvas to VideoView).
 
 - [x] **P1** — `src/lib/project/vtt.ts` (parse/serialize/format/estimate/reconcile/`cuesInRange`/staleness, + `tools/vtt.test.mjs` 24 tests); `timing.ts` `slideTimeWindows`; store cue actions (`setVoiceover/addCue/updateCue/removeCue/setCueAudio`); **VttView** (editable raw WebVTT, live parse, reconcile preserving audio by id); read-only **SlideVttExtract** beneath the Layout canvas (highlights in-range cues).
-- [x] **P2** — TTS: `tools/tts.mjs` (**ElevenLabs** → ffmpeg → `.m4a` + duration; see "Voice synthesis" below); `ttsPlugin` in `vite.config.ts` (`POST /api/tts`, `GET /api/voices`, `GET /api/voiceover/<project>/<file>` range-aware); VttView cue list with Generate/Generate-all/Play/regenerate + audio shading; generating sets `cue.endMs = startMs + durationMs` and `cue.audio.{textHash,engineKey}` (staleness). Synced playback: `PlaybackCanvas` takes `audioCues` and schedules `<audio>` against the clock; `ProjectPlayer` supplies them for the **All-slides** scope (clock == project time).
+- [x] **P2** — TTS: `tools/tts.mjs` (**ElevenLabs** → ffmpeg → `.m4a` + duration; see "Voice synthesis" below); `ttsPlugin` in `vite.config.ts` (`POST /api/tts`, `GET /api/voices`, `GET /api/voiceover/<project>/<file>` range-aware); VttView cue list with Generate/Generate-all/Play/regenerate + audio shading; generating sets `cue.endMs = startMs + durationMs` and `cue.audio.{tts,textHash}` (**staleness is text-only**). Synced playback: `PlaybackCanvas` takes `audioCues` and schedules `<audio>` against the clock; `ProjectPlayer` supplies them for the **All-slides** scope (clock == project time).
 - [x] **P3 — Timeline view** done & verified — `TimelineView.tsx` is now a full-width, real-time-scaled
   track (DOM divs, not canvas) with horizontal scroll + zoom (`pxPerSec`, −/＋/Fit). Built off
   `buildRenderContext` + `slideTimeWindows`: **slide sections** cleanly partition `[projStart, nextStart)`
@@ -287,12 +291,14 @@ the toggle was lifted from SlideCanvas to VideoView).
   hold = xOf(holdMs), transition bleed starts at the boundary), thumbnails render, zoom/Fit work.
 - [x] **P4 — leader lines** done & verified — one labelled vertical line per cue (`LeaderLine`) on a
   staircase (`level = sortedIndex % 4`) so neighbours don't collide; hover brings to front; **drag** the
-  label/handle to re-time the cue live — **preserving its duration and id** (so audio survives), clamped
-  ≥0, propagated to the VTT model, as **one atomic undo** (`videoHistory.pause()/resume()`).
-  Audio-bearing cues are shaded; **double-click empty band space adds a cue** at that time. Hardened
-  against the zundo *stranded-pause* trap found in review: an unmount-cleanup effect + `onPointerCancel`
-  guarantee `resume()` always fires even if `pointerup` never does (verified: history survives a mid-drag
-  view switch). `tsc` + `npm run build` clean.
+  label/handle to re-time the cue, **preserving its duration and id** (so audio survives), clamped ≥0.
+  **Drag is deferred-write**: pointermove only updates a local `translateX` transform on the dragged line —
+  the cue model (and so the VTT + the whole timeline re-layout) is written **once on pointerup** via a
+  single `updateCue` (≡ one natural undo step; no `pause()/resume()` needed). So sliding never re-sorts or
+  re-lays-out the timeline mid-gesture; the order/staircase settle once on release. (`rc =
+  buildRenderContext` is also memoized on `project.slides`/`baseEmFraction`, not the whole project, so cue
+  edits don't rebuild slide layout.) Audio-bearing cues are shaded; **double-click empty band space adds a
+  cue**. `tsc` + `npm run build` clean.
 - [x] **Mux voiceover audio into the MP4 export** done & verified — `tools/videoExport.mjs` renders the
   silent video to a temp file, then a second ffmpeg pass mixes each cue's clip in at its absolute
   `startMs` (`adelay` per clip → `amix=normalize=0` → `apad`, with `-shortest` clamping to the video
@@ -334,27 +340,28 @@ the toggle was lifted from SlideCanvas to VideoView).
   beneath the Layout canvas — `SlideCanvas` computes the selected slide's window via `buildRenderContext`
   + `slideTimeWindows`). View toggle lives in `VideoView` (lifted out of `SlideCanvas`).
 - **TTS (ElevenLabs)**: `tools/tts.mjs` `generateTts({text,voiceId,model,direction,settings,outPath})` →
-  `{durationMs,voiceId,model}`, and `listVoices()` → `[{voiceId,name,accent,description,category}]`.
-  **Auth = an `ELEVENLABS_API_KEY` env var** (server-side only; never sent to the browser). POSTs
-  `/v1/text-to-speech/{voiceId}?output_format=mp3_44100_128` with `{text, model_id, voice_settings?}`;
+  `{durationMs,voiceId,model}`, and `listVoices()` → `[{voiceId,name,accent,description,category,previewUrl}]`
+  (`previewUrl` = ElevenLabs' free hosted sample — voice preview costs nothing, no extra key scope beyond
+  `voices_read`). **Auth = an `ELEVENLABS_API_KEY` env var** (server-side only; never sent to the browser).
+  POSTs `/v1/text-to-speech/{voiceId}?output_format=mp3_44100_128` with `{text, model_id, voice_settings?}`;
   ffmpeg encodes the returned audio (mp3, or pcm if `ELEVENLABS_OUTPUT_FORMAT=pcm_*`) to `.m4a`. The
-  **accent is the voice** — there is no accent/prompt instruction. v3 (`eleven_v3`) takes a free-text
-  `direction` prepended to the text (audio-tag cues); other models take `voice_settings`
-  {stability,similarity_boost,style,use_speaker_boost,speed}. Config via env (`ELEVENLABS_API_KEY`,
-  `ELEVENLABS_OUTPUT_FORMAT`, `ELEVENLABS_BASE_URL`). `vite.config.ts` `ttsPlugin` — `POST /api/tts
-  {projectId,cueId,text,voiceId,model,direction,settings}` writes `voiceover/<projectId>/<cueId>.m4a`;
-  `GET /api/voices` proxies the account voice list (returns `{ok:false,error}` cleanly if the key is
-  unset); `GET /api/voiceover/<projectId>/<file>` streams it (ignores the `?v=` cache-bust). Generate
-  stores `audio.{voiceId,model,engineKey,textHash,version}` and sets `cue.endMs = startMs + durationMs`.
-  Blank cue text / no voice are rejected before any call.
+  **accent is the voice**. v3 (`eleven_v3`) takes a free-text `direction` prepended to the text (audio-tag
+  cues); other models take `voice_settings` {stability,similarity_boost,style,use_speaker_boost,speed}.
+  Config via env (`ELEVENLABS_API_KEY`, `ELEVENLABS_OUTPUT_FORMAT`, `ELEVENLABS_BASE_URL`). `vite.config.ts`
+  `ttsPlugin` — `POST /api/tts {projectId,cueId,text,voiceId,model,direction,settings}` writes
+  `voiceover/<projectId>/<cueId>.m4a`; `GET /api/voices` proxies the account voice list + preview urls
+  (returns `{ok:false,error}` cleanly if the key is unset/under-scoped); `GET /api/voiceover/<projectId>/<file>`
+  streams it (ignores the `?v=` cache-bust). Generate stores `audio.{tts,textHash,version}` (the full
+  settings snapshot) and sets `cue.endMs = startMs + durationMs`. Blank cue text / no voice are rejected.
 - **Voice settings**: `VideoProject.tts: { voiceId, voiceName, model, direction, settings:
   {stability,similarityBoost,style,speed} }` (default model `eleven_multilingual_v2`, empty voiceId until
-  voices load); store action `setTts(patch)` deep-merges `settings`. The VTT **Voice panel** has a **model**
-  `<select>`, a **voice** `<select>` populated from `/api/voices` (auto-selects a British voice on first
-  load), and — depending on the model — a v3 **direction** `<textarea>` or **stability/similarity/style/
-  speed** sliders. Staleness: `ttsEngineKey(tts)` hashes voiceId+model+(direction for v3 | settings else);
-  `isAudioStale(cue, {engineKey})` flags a clip stale when the text or any synthesis input changed (a clip
-  with no stored `engineKey` — e.g. from a prior engine — is always stale). The MP4 export already muxes
+  voices load); store action `setTts(patch)` deep-merges `settings`. The VTT **Voice panel** (below the
+  script, above the clips) has a **model** `<select>`, a **voice** `<select>` populated from `/api/voices`
+  (auto-selects a British voice on first load) with a ▶ **preview** button (plays `previewUrl`), and —
+  depending on the model — a v3 **direction** `<textarea>` or **stability/similarity/style/speed** sliders.
+  Each cue chip shows the clip's voice name as a **button** → confirm → `setTts(audio.tts)` to reuse that
+  clip's exact settings. **Staleness is text-only**: `isAudioStale(cue)` = `audio.textHash !== hashText(text)`;
+  voice/model/settings differences are NOT stale (the chip surfaces them instead). The MP4 export muxes
   whatever clips exist, so ElevenLabs audio flows into exports unchanged.
 - **Synced audio**: `PlaybackCanvas` accepts `audioCues: AudioCue[] {id,startMs,endMs,url}` and schedules
   `<audio>` against `tRef` in the rAF tick (play when `t∈[start,end)`, pause otherwise, resync on >0.35s
@@ -389,9 +396,9 @@ playbackRate)`; `totalMs = rc.timing.totalMs`; per slide `i`: `projStart = rc.ti
 Above the timeline bar, one **vertical line per cue** rising from `xOf(cue.startMs)` up to a **voiceover
 label** showing the cue text. Use a **repeating staircase of heights** so many close cues don't overlap
 (e.g. height = base + (index mod N)·step). **Hover a line/label → bring to front** (raise z-index). A
-**drag handle** appears on hover where the line meets the timeline; dragging left/right sets
-`cue.startMs` live via `updateCue(id,{startMs})` (clamp ≥0; convert px→ms with `pxPerSec`; one undo per
-drag via `videoHistory.pause()/resume()`). Shade labels of cues that **have audio** (`cue.audio`) — the
+**drag handle** appears on hover where the line meets the timeline; dragging left/right moves a local
+`translateX` transform and commits `cue.startMs` once on pointerup via a single `updateCue(id,{startMs,
+endMs})` (clamp ≥0; px→ms with `pxPerSec`; one natural undo, no pause/resume). Shade labels of cues that **have audio** (`cue.audio`) — the
 "audio exists" indicator (no textbox link, so it lives on the cue/label, per the chosen model).
 Re-serialised VTT/extract update automatically since they read `project.voiceover`.
 

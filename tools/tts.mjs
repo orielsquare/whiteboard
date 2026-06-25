@@ -123,6 +123,8 @@ export async function listVoices() {
     accent: v.labels?.accent ?? '',
     description: v.labels?.description ?? '',
     category: v.category ?? '',
+    // free, hosted sample of the voice (no TTS call / no extra cost)
+    previewUrl: v.preview_url ?? '',
   }))
 }
 

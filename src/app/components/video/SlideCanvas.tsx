@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, type PointerEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, type PointerEvent } from 'react'
 import type { PreparedGlyph } from '@lib/animation/timeline'
 import { canvasSize } from '@lib/project/coords'
 import { layoutTextBox, type FontMetrics, type TextBoxLayout } from '@lib/project/layout'
 import { buildRenderContext, renderTextBox } from '@lib/project/render'
+import type { TextBox } from '@lib/project/schema'
 import { slideTimeWindows } from '@lib/project/timing'
-import { useVideoStore, videoHistory } from '../../state/videoStore'
+import { useVideoStore } from '../../state/videoStore'
 import { BACKING_W, boxOriginPx, clientToNorm, drawSelection, hitTest, type NormPoint } from './layoutCanvas'
 import { SlideOrderView } from './SlideOrderView'
 import { ProjectPlayer } from './ProjectPlayer'
@@ -28,7 +29,9 @@ export function SlideCanvas({
   const updateTextBoxFrame = useVideoStore((s) => s.updateTextBoxFrame)
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const dragRef = useRef<{ boxId: string; offX: number; offY: number } | null>(null)
+  // Live drag: the grabbed box's id, the pointer→origin offset, and the box's
+  // current transient position (normalized). Written to the store only on release.
+  const dragRef = useRef<{ boxId: string; offX: number; offY: number; x: number; y: number } | null>(null)
   const movedRef = useRef(false)
   const downNormRef = useRef<NormPoint | null>(null)
   const downHitRef = useRef<string | null>(null)
@@ -54,44 +57,44 @@ export function SlideCanvas({
     return slideTimeWindows(rc.timing).find((x) => x.slideId === slide.id) ?? null
   }, [project, slide, glyphs, metrics, slideView])
 
+  // Paint the slide. `drag`, when set, overrides one box's origin with its live
+  // transient position so a drag-in-progress repaints without writing the model
+  // (and thus without re-deriving the `layouts` memo). Used by both the static
+  // draw effect (drag=null) and pointermove (drag=the grabbed box).
+  const drawScene = useCallback(
+    (drag?: { boxId: string; x: number; y: number } | null) => {
+      const canvas = canvasRef.current
+      if (!canvas || !project || !slide) return
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      const { w, h } = canvasSize(project.aspect, BACKING_W)
+      if (canvas.width !== w) canvas.width = w
+      if (canvas.height !== h) canvas.height = h
+      ctx.clearRect(0, 0, w, h)
+      ctx.fillStyle = slide.background
+      ctx.fillRect(0, 0, w, h)
+      const minHalfWidth = metrics.unitsPerEm * 0.004
+      const originFor = (box: TextBox) =>
+        drag && drag.boxId === box.id ? { x: drag.x * w, y: drag.y * w } : boxOriginPx(box, w)
+      for (const box of slide.textBoxes) {
+        const layout = layouts.get(box.id)
+        if (!layout) continue
+        renderTextBox(ctx, layout, originFor(box), box.brush ?? project.brush, Infinity, minHalfWidth)
+      }
+      const selBox = slide.textBoxes.find((b) => b.id === selectedTextBoxId)
+      if (selBox) {
+        const l = layouts.get(selBox.id)
+        if (l) drawSelection(ctx, selBox, l, w, undefined, originFor(selBox))
+      }
+    },
+    [project, slide, layouts, selectedTextBoxId, metrics],
+  )
+
   // Static draw whenever the slide, its layouts, or the selection change.
   useEffect(() => {
     if (slideView !== 'layout') return
-    const canvas = canvasRef.current
-    if (!canvas || !project || !slide) return
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    const { w, h } = canvasSize(project.aspect, BACKING_W)
-    if (canvas.width !== w) canvas.width = w
-    if (canvas.height !== h) canvas.height = h
-    ctx.clearRect(0, 0, w, h)
-    ctx.fillStyle = slide.background
-    ctx.fillRect(0, 0, w, h)
-    const minHalfWidth = metrics.unitsPerEm * 0.004
-    for (const box of slide.textBoxes) {
-      const layout = layouts.get(box.id)
-      if (!layout) continue
-      renderTextBox(ctx, layout, boxOriginPx(box, w), box.brush ?? project.brush, Infinity, minHalfWidth)
-    }
-    const selBox = slide.textBoxes.find((b) => b.id === selectedTextBoxId)
-    if (selBox) {
-      const l = layouts.get(selBox.id)
-      if (l) drawSelection(ctx, selBox, l, w)
-    }
-  }, [project, slide, layouts, selectedTextBoxId, slideView, metrics])
-
-  // Safety net: if this canvas unmounts mid-drag (e.g. the user switches the slide
-  // view while dragging), pointerup never fires — make sure we don't leave zundo's
-  // history tracking paused for the rest of the session (it's a plain flag).
-  useEffect(
-    () => () => {
-      if (dragRef.current) {
-        dragRef.current = null
-        videoHistory.resume()
-      }
-    },
-    [],
-  )
+    drawScene(null)
+  }, [drawScene, slideView])
 
   if (!project || !slide) return <div className="stage video-stage">No slide.</div>
 
@@ -107,8 +110,11 @@ export function SlideCanvas({
       const box = slide.textBoxes.find((b) => b.id === hit)
       if (!box) return
       selectTextBox(hit)
-      dragRef.current = { boxId: hit, offX: p.nx - box.frame.x, offY: p.ny - box.frame.y }
-      videoHistory.pause()
+      // Deferred write (mirrors the timeline leader lines): we hold the grabbed
+      // box's live position locally and commit it to the store exactly once on
+      // release — so there's no zundo pause/resume to strand (it's a plain flag),
+      // and dragging never re-derives layouts or churns history every frame.
+      dragRef.current = { boxId: hit, offX: p.nx - box.frame.x, offY: p.ny - box.frame.y, x: box.frame.x, y: box.frame.y }
       canvas.setPointerCapture(e.pointerId)
     }
   }
@@ -123,26 +129,43 @@ export function SlideCanvas({
       if (dn && Math.hypot((p.nx - dn.nx) * BACKING_W, (p.ny - dn.ny) * BACKING_W) < 3) return
       movedRef.current = true
     }
-    updateTextBoxFrame(slide.id, d.boxId, { x: clamp01(p.nx - d.offX), y: clamp01(p.ny - d.offY) })
+    // Local move only: update the transient position and repaint this canvas —
+    // no store write (the model and the layouts memo stay untouched).
+    d.x = clamp01(p.nx - d.offX)
+    d.y = clamp01(p.ny - d.offY)
+    drawScene({ boxId: d.boxId, x: d.x, y: d.y })
   }
 
   const onPointerUp = (e: PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current
-    if (dragRef.current) {
-      // resume + commit a single undo entry for the whole drag gesture
-      videoHistory.resume()
+    const d = dragRef.current
+    if (d) {
       dragRef.current = null
       try {
         canvas?.releasePointerCapture(e.pointerId)
       } catch {
         /* never captured, or already lost (e.g. pointercancel) */
       }
+      // Commit the whole gesture as one store write ≡ one undo step. The store
+      // update re-renders and the effect repaints at the committed position. A
+      // bare click (no movement past the threshold) only (re)selected the box —
+      // nothing to write.
+      if (movedRef.current) updateTextBoxFrame(slide.id, d.boxId, { x: d.x, y: d.y })
       return
     }
     if (!downHitRef.current && !movedRef.current) {
       const p = downNormRef.current
       if (selectedTextBoxId) selectTextBox(null)
       else if (p) addTextBox(slide.id, clamp01(p.nx), clamp01(p.ny))
+    }
+  }
+
+  // Interrupted gesture (pointercancel) → abandon the move and snap the box back
+  // to its model position; nothing is written (matches the leader-line drag).
+  const onPointerCancel = () => {
+    if (dragRef.current) {
+      dragRef.current = null
+      drawScene(null)
     }
   }
 
@@ -163,7 +186,7 @@ export function SlideCanvas({
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
-              onPointerCancel={onPointerUp}
+              onPointerCancel={onPointerCancel}
             />
           </div>
           {slideWindow && (

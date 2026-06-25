@@ -107,24 +107,15 @@ check('estimate words', V.estimateDurationMs('one two three') === 1080, V.estima
   check('stale when text changed', V.isAudioStale(stale) === true)
 }
 {
-  // voice/prompt staleness (opts) — only checked when opts is given
+  // staleness is text-only: different voice/settings is NOT stale
   const text = 'hello'
-  const k1 = V.ttsEngineKey({ voiceId: 'v1', model: 'eleven_multilingual_v2', direction: '', settings: { stability: 0.5, style: 0, speed: 1, similarityBoost: 0.75 } })
-  const base = { id: 'z', startMs: 0, endMs: 1, text, audio: { file: 'z', durationMs: 1, engineKey: k1, textHash: V.hashText(text) } }
-  check('no opts → ignores engineKey', V.isAudioStale(base) === false)
-  check('fresh when engineKey matches', V.isAudioStale(base, { engineKey: k1 }) === false)
-  const k2 = V.ttsEngineKey({ voiceId: 'v2', model: 'eleven_multilingual_v2', direction: '', settings: { stability: 0.5, style: 0, speed: 1, similarityBoost: 0.75 } })
-  check('stale when voice differs', V.isAudioStale(base, { engineKey: k2 }) === true)
-  const k3 = V.ttsEngineKey({ voiceId: 'v1', model: 'eleven_multilingual_v2', direction: '', settings: { stability: 0.9, style: 0, speed: 1, similarityBoost: 0.75 } })
-  check('stale when a setting differs', V.isAudioStale(base, { engineKey: k3 }) === true)
-  // v3 ignores settings (uses direction); v2 ignores direction (uses settings)
-  const v3a = V.ttsEngineKey({ voiceId: 'v1', model: 'eleven_v3', direction: 'warm', settings: { stability: 0.5, style: 0, speed: 1, similarityBoost: 0.75 } })
-  const v3b = V.ttsEngineKey({ voiceId: 'v1', model: 'eleven_v3', direction: 'warm', settings: { stability: 0.9, style: 1, speed: 1.2, similarityBoost: 0.1 } })
-  check('v3 ignores voice settings in the key', v3a === v3b)
-  const v3c = V.ttsEngineKey({ voiceId: 'v1', model: 'eleven_v3', direction: 'brisk', settings: { stability: 0.5, style: 0, speed: 1, similarityBoost: 0.75 } })
-  check('v3 key changes with direction', v3a !== v3c)
-  const noKey = { id: 'w', startMs: 0, endMs: 1, text, audio: { file: 'w', durationMs: 1, textHash: V.hashText(text) } }
-  check('clip with no engineKey is stale vs a provided key', V.isAudioStale(noKey, { engineKey: k1 }) === true)
+  const tts = { voiceId: 'v1', voiceName: 'V', model: 'eleven_multilingual_v2', direction: '', settings: { stability: 0.5, similarityBoost: 0.75, style: 0, speed: 1 } }
+  const other = { ...tts, voiceId: 'v2', settings: { ...tts.settings, stability: 0.9 } }
+  const cue = { id: 'z', startMs: 0, endMs: 1, text, audio: { file: 'z', durationMs: 1, tts, textHash: V.hashText(text) } }
+  check('fresh when text matches (any tts)', V.isAudioStale(cue) === false)
+  check('not stale just because tts would differ', V.isAudioStale({ ...cue, audio: { ...cue.audio, tts: other } }) === false)
+  check('stale when text changed', V.isAudioStale({ ...cue, text: 'changed' }) === true)
+  check('no audio → not stale', V.isAudioStale({ id: 'n', startMs: 0, endMs: 1, text }) === false)
 }
 {
   // captionsVtt: escape markup chars + drop zero-length/reversed cues

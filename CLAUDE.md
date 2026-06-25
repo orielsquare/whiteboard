@@ -99,7 +99,8 @@ public/fonts/   bundled OFL samples: Patrick Hand (handwriting), Fira Sans (sans
 4. **Video** — slide-based animated-text editor. Its own view switch (in `VideoView`):
    **Layout** (drag/select/add textboxes + voiceover-in-range extract), **Order** (animation order +
    per-slide Play), **▶ Play** (project play-all + synced voiceover), **Timeline** (real-time voiceover
-   timeline — WIP), **VTT** (editable WebVTT script + TTS). See HANDOVER.md for the in-flight voiceover work.
+   timeline: sections/zoom/leader-line drag), **VTT** (WebVTT script + ElevenLabs voice panel/TTS).
+   See HANDOVER.md for the voiceover feature notes.
 
 **Shared across tabs** (in App): `selectedChar`, extraction `params`, `brush`, and a single
 `GlyphExtractor` (one Web Worker per font). Tuning params re-derives the active glyph centrally,
@@ -141,11 +142,17 @@ failure.
 engine, the editable **VTT** sub-view + read-only slide extract, **TTS** (**ElevenLabs** — `ELEVENLABS_API_KEY`
 env key; the VTT Voice panel picks an account voice [accent comes from the voice], a model, and per-model
 steering [v3 = free-text direction, else stability/style/speed sliders] — → ffmpeg `.m4a` via `/api/tts`,
-voices listed via `/api/voices`, with audio-exists/stale shading and clock-synced `<audio>` playback), the
+voices listed + free preview samples via `/api/voices`, each clip storing the settings it was made with
+[shown as a reuse-settings chip], **text-only** stale shading, and clock-synced `<audio>` playback), the
 full-width **Timeline**
 view (`TimelineView.tsx` — real-time-scaled DOM track: slide sections + numbered writing sub-bars + hold
-+ bleeding transition overlays + ruler + floating thumbnails, with zoom/Fit), and draggable voiceover
-**leader lines** (re-time a cue live, preserving its duration + id, as one atomic undo; double-click to
-add). Voiceover audio is now **muxed into the MP4 export** too (a second ffmpeg pass places each cue's
-clip at its absolute `startMs`). **Next — "later" items:** image/photo backgrounds, batch "extract all
-glyphs", mid-stroke pause UI, scope MP4 export to the play selection.
++ bleeding transition overlays + ruler + floating thumbnails; **mouse-wheel zoom** [cursor-anchored] +
+**Space/Shift+wheel** horizontal scroll; per-cue **audio-length bars** [yellow = ready, amber/hatched =
+stale]), and draggable voiceover **leader lines** (**deferred-write**: pointermove moves a local
+transform, the cue model is written once on release ≡ one undo, so dragging never re-lays-out the timeline
+mid-gesture; double-click to add). Voiceover audio is **muxed into the MP4 export** (a second ffmpeg pass
+places each cue's clip at its absolute `startMs`), and the exported-video preview shows **optional
+captions** built from the voiceover (a snapshot WebVTT `<track>`, toggleable). Closing transitions are
+fade / rubout / scroll-up·down·left·right, and the **playback speed** runs ×0.25–12. **Next — "later"
+items:** image/photo backgrounds, batch "extract all glyphs", mid-stroke pause UI, scope MP4 export to
+the play selection.
