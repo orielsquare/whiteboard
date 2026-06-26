@@ -2,6 +2,7 @@ import { useEffect, useState, type MouseEvent } from 'react'
 import type { BrushStyle } from '@lib/manifest/schema'
 import type { ProjectDefaults, TextAlign, TextBox } from '@lib/project/schema'
 import { MIXED, runsToPlainText, selectionStyle, type Maybe, type SelectionStyle, type StylePatch } from '@lib/project/runs'
+import { contentOf } from '@lib/project/aspect'
 import { httpStore, type FontSummary } from '@lib/persistence/FontStore'
 import { useVideoStore } from '../../state/videoStore'
 import { restoreOverlaySelection } from './TextBoxOverlay'
@@ -22,11 +23,12 @@ const clampSize = (v: number) => Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.roun
  */
 export function FormatBar() {
   const project = useVideoStore((s) => s.project)
+  const activeAspect = useVideoStore((s) => s.activeAspect)
   const selectedSlideId = useVideoStore((s) => s.selectedSlideId)
   const selectedTextBoxId = useVideoStore((s) => s.selectedTextBoxId)
   const selection = useVideoStore((s) => s.selection)
   const applyTextStyle = useVideoStore((s) => s.applyTextStyle)
-  const updateTextBox = useVideoStore((s) => s.updateTextBox)
+  const setBoxContent = useVideoStore((s) => s.setBoxContent)
   const setDefaults = useVideoStore((s) => s.setDefaults)
   const setProjectFont = useVideoStore((s) => s.setProjectFont)
   const setBrush = useVideoStore((s) => s.setBrush)
@@ -45,20 +47,22 @@ export function FormatBar() {
   const box: TextBox | undefined = slide?.textBoxes.find((b) => b.id === selectedTextBoxId)
   const brushColor = project.brush.color
 
-  // Resolve the target range + the displayed (possibly-mixed) style.
-  const len = box ? runsToPlainText(box.runs).length : 0
+  // Resolve the target range + the displayed (possibly-mixed) style — against the
+  // ACTIVE aspect's content (which may differ from the shared base when unlinked).
+  const content = box ? contentOf(box, activeAspect) : null
+  const len = content ? runsToPlainText(content.runs).length : 0
   const hasRange = !!box && !!selection && selection.boxId === box.id && selection.anchor !== selection.focus
   const start = hasRange ? Math.min(selection!.anchor, selection!.focus) : 0
   const end = hasRange ? Math.max(selection!.anchor, selection!.focus) : len
 
   const d = project.defaults
-  const style = box ? selectionStyle(box.runs, start, end) : null
+  const style = content ? selectionStyle(content.runs, start, end) : null
   const sizeVal: Maybe<number> = style ? style.sizeScale : d.sizeScale
   const colorVal: Maybe<string | null> = style ? style.color : d.runColor
   const underlineVal: Maybe<boolean> = style ? style.underline : d.runUnderline
   const kernVal: Maybe<number> = style ? style.letterSpacing : d.runLetterSpacing
-  const lineHeight = box ? box.lineHeightScale : d.lineHeightScale
-  const align = box ? box.align : d.align
+  const lineHeight = content ? content.lineHeightScale : d.lineHeightScale
+  const align = content ? content.align : d.align
   const fontVal: Maybe<string | null> = style ? style.fontId : project.fontId
   // The dropdown always shows a concrete font: a run with no explicit fontId
   // resolves to the project default. (No "Default" pseudo-entry.)
@@ -74,9 +78,9 @@ export function FormatBar() {
     if (box) applyTextStyle(slide.id, box.id, start, end, patch)
     else setDefaults(patchToDefaults(patch))
   }
-  const setAlign = (a: TextAlign) => (box ? updateTextBox(slide.id, box.id, { align: a }) : setDefaults({ align: a }))
+  const setAlign = (a: TextAlign) => (box ? setBoxContent(slide.id, box.id, { align: a }) : setDefaults({ align: a }))
   const setLineHeight = (v: number) =>
-    box ? updateTextBox(slide.id, box.id, { lineHeightScale: v }) : setDefaults({ lineHeightScale: v })
+    box ? setBoxContent(slide.id, box.id, { lineHeightScale: v }) : setDefaults({ lineHeightScale: v })
   // Font: per-run on a box/selection ('' = inherit project default); the project
   // default font when nothing is selected.
   const onFont = (v: string) => {
@@ -114,8 +118,6 @@ export function FormatBar() {
 
   return (
     <div className="formatbar">
-      {!box && <span className="fmt-mode" title="nothing selected — sets the format for new textboxes">new textbox ▾</span>}
-
       <div className="fmt-group">
         <span className="fmt-label">font</span>
         <select className="fmt-font" value={fontSelectValue} onChange={(e) => onFont(e.target.value)} title="font">
@@ -134,7 +136,7 @@ export function FormatBar() {
       <div className="fmt-group seg">
         {ALIGNS.map((a) => (
           <button key={a} className={align === a ? 'tool tool-on' : 'tool'} onMouseDown={keepFocus} onClick={() => setAlign(a)} title={`align ${a}`}>
-            {a === 'left' ? '⇤' : a === 'center' ? '↔' : '⇥'}
+            <AlignIcon a={a} />
           </button>
         ))}
       </div>
@@ -171,11 +173,9 @@ export function FormatBar() {
       <div className="fmt-group">
         <span className="fmt-label">colour</span>
         <input type="color" value={colorInput} onChange={(e) => onColor(e.target.value)} title={colorVal === MIXED ? 'mixed colours' : box ? 'text colour' : 'pen colour'} />
-        {box && (
-          <button className="tool" onMouseDown={keepFocus} onClick={() => applyRun({ color: null })} title="use pen colour">
-            ⊘
-          </button>
-        )}
+        <button className="tool" disabled={!box} onMouseDown={keepFocus} onClick={() => applyRun({ color: null })} title="use pen colour">
+          ⊘
+        </button>
       </div>
 
       <div className="fmt-group">
@@ -207,32 +207,31 @@ export function FormatBar() {
         />
       </div>
 
-      {box && (
-        <div className="fmt-group">
-          <span className="fmt-label">style</span>
-          <select
-            className="fmt-style"
-            value=""
-            onChange={(e) => {
-              if (e.target.value) {
-                applyNamedStyle(slide.id, box.id, start, end, e.target.value)
-                restoreOverlaySelection()
-              }
-            }}
-            title="apply a saved style to the selection"
-          >
-            <option value="">Apply…</option>
-            {(project.namedStyles ?? []).map((ns) => (
-              <option key={ns.id} value={ns.id}>
-                {ns.name}
-              </option>
-            ))}
-          </select>
-          <button className="tool" onMouseDown={keepFocus} onClick={onSaveStyle} title="save the selection as a named style">
-            ＋ Save
-          </button>
-        </div>
-      )}
+      <div className="fmt-group">
+        <span className="fmt-label">style</span>
+        <select
+          className="fmt-style"
+          value=""
+          disabled={!box}
+          onChange={(e) => {
+            if (box && e.target.value) {
+              applyNamedStyle(slide.id, box.id, start, end, e.target.value)
+              restoreOverlaySelection()
+            }
+          }}
+          title="apply a saved style to the selection"
+        >
+          <option value="">Apply…</option>
+          {(project.namedStyles ?? []).map((ns) => (
+            <option key={ns.id} value={ns.id}>
+              {ns.name}
+            </option>
+          ))}
+        </select>
+        <button className="tool" disabled={!box} onMouseDown={keepFocus} onClick={onSaveStyle} title="save the selection as a named style">
+          ＋ Save
+        </button>
+      </div>
     </div>
   )
 }
@@ -257,4 +256,17 @@ function patchToDefaults(p: StylePatch): Partial<ProjectDefaults> {
   if (p.underline !== undefined) out.runUnderline = p.underline
   if (p.letterSpacing !== undefined) out.runLetterSpacing = p.letterSpacing
   return out
+}
+
+/** Standard text-alignment glyph: 4 lines ranged left / centred / right. */
+function AlignIcon({ a }: { a: TextAlign }) {
+  const widths = [11, 7, 11, 8]
+  const xFor = (w: number) => (a === 'left' ? 1.5 : a === 'right' ? 14.5 - w : (16 - w) / 2)
+  return (
+    <svg viewBox="0 0 16 13" width="14" height="11" aria-hidden="true" focusable="false">
+      {widths.map((w, i) => (
+        <rect key={i} x={xFor(w)} y={1.4 + i * 3} width={w} height="1.4" rx="0.7" fill="currentColor" />
+      ))}
+    </svg>
+  )
 }

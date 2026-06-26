@@ -189,9 +189,8 @@ body {
 .formatbar .fmt-style {
   max-width: 130px;
 }
-.formatbar .fmt-mode {
-  color: var(--muted);
-  font-size: 12px;
+.formatbar button svg {
+  vertical-align: middle;
 }
 
 .hint {
@@ -434,9 +433,10 @@ body {
 
 .transport {
   display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 12px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 4px;
 }
 .transport button {
   background: var(--panel-2);
@@ -640,6 +640,13 @@ body {
   border-color: var(--accent);
   font-weight: 600;
 }
+/* `.video-top button` (specificity 0,1,1) otherwise beats `.tool-on` (0,1,0),
+   so toggle buttons in the top bar (aspect 16:9 / 9:16) wouldn't show state. */
+.video-top .tool-on {
+  background: var(--accent);
+  color: #0b0d11;
+  border-color: var(--accent);
+}
 .video-top input[type='color'] {
   width: 36px;
   height: 30px;
@@ -667,6 +674,13 @@ body {
   grid-template-columns: 232px 1fr 290px;
   gap: 14px;
   align-items: start;
+}
+/* right column: properties panel + the contextual voiceover extract beneath it */
+.inspector-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
 }
 .exportresult {
   margin: 8px 0 12px;
@@ -714,6 +728,7 @@ body {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 10px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.28);
 }
 .slidepanel-head {
   display: flex;
@@ -789,7 +804,8 @@ body {
   display: flex;
   gap: 2px;
 }
-.slide-row .rowbtns button {
+.slide-row .rowbtns button,
+.order-row .rowbtns button {
   width: 24px;
   height: 24px;
   border: 1px solid var(--line);
@@ -799,6 +815,17 @@ body {
   cursor: pointer;
   font-size: 12px;
   padding: 0;
+}
+.order-row .rowbtns {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+/* a chip's play button while it's the active playback scope */
+.slide-row .rowbtns button.on,
+.order-row .rowbtns button.on {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .slidecanvas {
@@ -1381,12 +1408,6 @@ body {
   accent-color: var(--accent);
   cursor: pointer;
 }
-.orderview .transport {
-  margin-top: 0;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-}
 .transport-row {
   display: flex;
   align-items: center;
@@ -1486,6 +1507,167 @@ body {
   font-family: inherit;
   font-size: 12px;
   padding: 3px 5px;
+}
+
+/* Editor left navigator: tabbed slides / textboxes + per-row locks */
+.navpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px; /* breathing room below the main Video tab set */
+}
+/* Underline tabs — deliberately lighter / less "buttony" than the main .tool tabs. */
+.navpanel-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+}
+.navtab {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px; /* sit the active underline on the row's border */
+  color: var(--muted);
+  padding: 6px 4px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.navtab:hover {
+  color: var(--text);
+}
+.navtab-on {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.navlist-wrap {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.28);
+}
+.navhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.navhead-title {
+  flex: 1;
+}
+/* header right-inset so the 'p'/'f' letters sit over the row lock columns
+   (rows add their own padding+border inside the row border). */
+.navhead-rowinset {
+  padding-right: 9px; /* order-row: 8px padding + 1px border */
+}
+.navhead.slidehead {
+  padding: 0 7px 0 0; /* slide-row: 6px padding + 1px border */
+}
+.lockcols {
+  display: inline-flex;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+.lockbtn {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.lockbtn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.lockbtn.lock-off {
+  color: #e0a23a; /* open padlock = unlinked / can diverge */
+}
+.lockbtn.lock-mixed {
+  border-style: dashed;
+}
+.lockbtn.lock-disabled,
+.lockbtn:disabled {
+  color: var(--muted);
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* letter column headers ('p' / 'f'), 22px wide to align over the padlocks */
+.lockhead {
+  width: 22px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.lockhead:hover:not(:disabled) {
+  color: var(--text);
+}
+.lockhead.lock-on {
+  color: var(--text);
+}
+.lockhead.lock-off {
+  color: #e0a23a;
+}
+.lockhead.lock-mixed {
+  color: var(--text);
+  text-decoration: underline dashed;
+  text-underline-offset: 2px;
+}
+.lockhead.lock-disabled,
+.lockhead:disabled {
+  color: var(--muted);
+  opacity: 0.45;
+  cursor: default;
+}
+.order-label.diverged {
+  color: #e0a23a;
+}
+
+/* confirm dialog (lock revert warning) */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.confirm-box {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 18px;
+  max-width: 380px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+.confirm-msg {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* inspector: run editor */
@@ -1630,4 +1812,148 @@ body {
   .extract-body {
     grid-template-columns: 1fr;
   }
+}
+
+/* ── Char stepper: browse arrows around the Character / Glyph input ── */
+.charstepper {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+.charstepper input {
+  min-width: 0;
+  text-align: center;
+}
+.charstepper .step {
+  height: 35px;
+  width: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.charstepper .step:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.charstepper .step:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* ── Font-wide action bar (Undo / Redo / Save / Reload), on every Font sub-tab ── */
+.font-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.font-actions .spacer {
+  flex: 1;
+}
+.font-actions button {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.font-actions button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.font-actions button.primary {
+  background: var(--accent);
+  color: #0b0d11;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.font-actions button.primary:disabled {
+  background: var(--panel-2);
+  color: var(--muted);
+  border-color: var(--line);
+  font-weight: 500;
+  cursor: default;
+}
+.savestatus-inline {
+  font-size: 12px;
+  color: var(--accent-2);
+}
+.extract-scope {
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+
+/* ── Glyphs overview grid ── */
+.glyphgrid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+.glyphgrid-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.glyphgrid-scroll {
+  max-height: calc(100vh - 300px);
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+}
+.glyphgrid-cells {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: 8px;
+}
+.glyphcell {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0b0d11;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+}
+.glyphcell:hover {
+  border-color: var(--accent);
+}
+.glyphcell canvas {
+  width: 56px;
+  height: 56px;
+}
+.gc-label {
+  position: absolute;
+  bottom: 2px;
+  right: 4px;
+  font-size: 9px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.gc-dot {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.gc-edited {
+  background: var(--accent-2);
+}
+.gc-reviewed {
+  background: #4ade80;
 }

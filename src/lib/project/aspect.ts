@@ -1,6 +1,7 @@
 import { aspectHeightUnits } from './coords'
 import type {
   Aspect,
+  BoxContent,
   BoxLockState,
   NormRect,
   Slide,
@@ -24,6 +25,11 @@ import { DEFAULT_DEFAULTS, DEFAULT_LOCK, PROJECT_VERSION } from './schema'
 
 export { aspectHeightUnits } from './coords'
 
+/** The two aspects, in canonical order. */
+export const ASPECTS: Aspect[] = ['16:9', '9:16']
+/** The other aspect of a pair. */
+export const otherAspect = (a: Aspect): Aspect => (a === '16:9' ? '9:16' : '16:9')
+
 /** A textbox flattened to one aspect: `frame` is a single width-units `NormRect`. */
 export type FlatBox = Omit<TextBox, 'frame'> & { frame: NormRect }
 export type FlatSlide = Omit<Slide, 'textBoxes'> & { textBoxes: FlatBox[] }
@@ -37,9 +43,23 @@ export function frameOf(box: TextBox, aspect: Aspect): NormRect {
   return { x: f.x, y: f.y * aspectHeightUnits(aspect), w: f.w }
 }
 
-/** A flattened box for `aspect` (width-units frame); content is unchanged. */
+/** The effective content (runs/align/line-height/brush) for `aspect`: the
+ *  per-aspect override if the box's format diverged, else the shared base. */
+export function contentOf(box: TextBox, aspect: Aspect): BoxContent {
+  return (
+    box.contentByAspect?.[aspect] ?? {
+      runs: box.runs,
+      align: box.align,
+      lineHeightScale: box.lineHeightScale,
+      brush: box.brush,
+    }
+  )
+}
+
+/** A flattened box for `aspect`: width-units frame + the per-aspect content
+ *  folded onto the shared fields, so layout/render/export see the right cut. */
 export function boxForAspect(box: TextBox, aspect: Aspect): FlatBox {
-  return { ...box, frame: frameOf(box, aspect) }
+  return { ...box, frame: frameOf(box, aspect), ...contentOf(box, aspect) }
 }
 
 /** A flattened slide for `aspect`. */
@@ -110,4 +130,12 @@ export function framesDiverge(box: TextBox): boolean {
   const b = box.frame['9:16']
   const wDiff = (a.w == null) !== (b.w == null) || (a.w != null && b.w != null && Math.abs(a.w - b.w) > EPS)
   return Math.abs(a.x - b.x) > EPS || Math.abs(a.y - b.y) > EPS || wDiff
+}
+
+const contentKey = (c: BoxContent): string =>
+  JSON.stringify([c.runs, c.align, c.lineHeightScale, c.brush ?? null])
+/** Whether a box's two cuts differ in formatted content (the format lock is "broken"). */
+export function contentsDiverge(box: TextBox): boolean {
+  if (!box.contentByAspect) return false
+  return contentKey(contentOf(box, '16:9')) !== contentKey(contentOf(box, '9:16'))
 }

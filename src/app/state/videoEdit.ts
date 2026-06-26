@@ -2,6 +2,9 @@ import {
   makeId,
   newSlide,
   newTextBox,
+  type Aspect,
+  type BoxContent,
+  type BoxLockState,
   type NamedStyle,
   type NormRect,
   type ProjectDefaults,
@@ -13,6 +16,7 @@ import {
   type VoiceoverAudio,
   type VoiceoverCue,
 } from '@lib/project/schema'
+import { contentOf, otherAspect } from '@lib/project/aspect'
 import { DEFAULT_TTS, DEFAULT_TTS_VOICE_SETTINGS } from '@lib/project/schema'
 import type { BrushSettings } from '@lib/manifest/schema'
 import { applyStyleToRange, type StylePatch } from '@lib/project/runs'
@@ -107,24 +111,164 @@ export function updateTextBox(
   }))
 }
 
-/** Patch a box's frame. `patch.y` is in stored units (fraction of HEIGHT) — the
- *  store converts editor width-units → fraction-of-height before calling here.
- *  Phase 1: boxes are position-locked by default, so the patch is written into
- *  BOTH cuts to keep them identical. (Phase 2 consults the per-box lock and writes
- *  only the active aspect when unlocked, diverging the cuts.) */
+/** Patch a box's frame into the given aspect key(s). `patch.y` is in stored units
+ *  (fraction of HEIGHT) — the store converts editor width-units first. The store
+ *  resolves the position lock and passes BOTH aspects when linked (so the cuts
+ *  stay identical) or just the active aspect when unlinked (so they diverge). */
 export function updateTextBoxFrame(
   p: VideoProject,
   slideId: string,
   boxId: string,
   patch: Partial<NormRect>,
+  writeAspects: Aspect[],
 ): VideoProject {
   return mapSlide(p, slideId, (s) => ({
     ...s,
-    textBoxes: s.textBoxes.map((b) =>
-      b.id === boxId
-        ? { ...b, frame: { '16:9': { ...b.frame['16:9'], ...patch }, '9:16': { ...b.frame['9:16'], ...patch } } }
-        : b,
-    ),
+    textBoxes: s.textBoxes.map((b) => {
+      if (b.id !== boxId) return b
+      const frame = { ...b.frame }
+      for (const a of writeAspects) frame[a] = { ...frame[a], ...patch }
+      return { ...b, frame }
+    }),
+  }))
+}
+
+const cleanLock = (lock: Partial<BoxLockState>): Partial<BoxLockState> | undefined =>
+  Object.keys(lock).length ? lock : undefined
+
+/** Set a box's position link explicitly. Linking a diverged box CONVERGES it —
+ *  the active aspect wins (copied onto the other), matching the eventual re-link
+ *  modal's default direction; one undo step. */
+export function setBoxPositionLink(
+  p: VideoProject,
+  slideId: string,
+  boxId: string,
+  linked: boolean,
+  activeAspect: Aspect,
+): VideoProject {
+  return mapSlide(p, slideId, (s) => ({
+    ...s,
+    textBoxes: s.textBoxes.map((b) => {
+      if (b.id !== boxId) return b
+      const lock = { ...b.lock, position: linked }
+      const frame = linked
+        ? { ...b.frame, [otherAspect(activeAspect)]: { ...b.frame[activeAspect] } }
+        : b.frame
+      return { ...b, lock: cleanLock(lock), frame }
+    }),
+  }))
+}
+
+/** Set every box on a slide's position link: set `slide.lock.position`, clear each
+ *  box's own position override (so they inherit uniformly), and on link converge
+ *  every box (active aspect wins). */
+function linkSlidePositions(s: Slide, linked: boolean, activeAspect: Aspect): Slide {
+  return {
+    ...s,
+    lock: cleanLock({ ...s.lock, position: linked }),
+    textBoxes: s.textBoxes.map((b) => {
+      const lock = { ...b.lock }
+      delete lock.position
+      const frame = linked
+        ? { ...b.frame, [otherAspect(activeAspect)]: { ...b.frame[activeAspect] } }
+        : b.frame
+      return { ...b, lock: cleanLock(lock), frame }
+    }),
+  }
+}
+
+/** Slide-level "link/unlink all positions". */
+export function setSlidePositionLink(
+  p: VideoProject,
+  slideId: string,
+  linked: boolean,
+  activeAspect: Aspect,
+): VideoProject {
+  return mapSlide(p, slideId, (s) => linkSlidePositions(s, linked, activeAspect))
+}
+
+/** Project-level "link/unlink all positions" (every box on every slide). */
+export function setProjectPositionLink(p: VideoProject, linked: boolean, activeAspect: Aspect): VideoProject {
+  return { ...p, slides: p.slides.map((s) => linkSlidePositions(s, linked, activeAspect)) }
+}
+
+// --- format lock (per-aspect content) -------------------------------------
+
+/** Converge a box's content onto the active aspect: the active cut's effective
+ *  content becomes the shared base, and the per-aspect overrides are dropped. */
+function convergeContent(box: TextBox, activeAspect: Aspect): TextBox {
+  const base = contentOf(box, activeAspect)
+  const { contentByAspect: _drop, ...rest } = box
+  return { ...rest, runs: base.runs, align: base.align, lineHeightScale: base.lineHeightScale, brush: base.brush }
+}
+
+/** Set a box's format link explicitly. Linking CONVERGES it (active aspect wins). */
+export function setBoxFormatLink(
+  p: VideoProject,
+  slideId: string,
+  boxId: string,
+  linked: boolean,
+  activeAspect: Aspect,
+): VideoProject {
+  return mapSlide(p, slideId, (s) => ({
+    ...s,
+    textBoxes: s.textBoxes.map((b) => {
+      if (b.id !== boxId) return b
+      const lock = cleanLock({ ...b.lock, content: linked })
+      return linked ? { ...convergeContent(b, activeAspect), lock } : { ...b, lock }
+    }),
+  }))
+}
+
+function linkSlideFormats(s: Slide, linked: boolean, activeAspect: Aspect): Slide {
+  return {
+    ...s,
+    lock: cleanLock({ ...s.lock, content: linked }),
+    textBoxes: s.textBoxes.map((b) => {
+      const lock = { ...b.lock }
+      delete lock.content
+      const cleaned = cleanLock(lock)
+      return linked ? { ...convergeContent(b, activeAspect), lock: cleaned } : { ...b, lock: cleaned }
+    }),
+  }
+}
+
+/** Slide-level "link/unlink all formats". */
+export function setSlideFormatLink(p: VideoProject, slideId: string, linked: boolean, activeAspect: Aspect): VideoProject {
+  return mapSlide(p, slideId, (s) => linkSlideFormats(s, linked, activeAspect))
+}
+
+/** Project-level "link/unlink all formats" (every box on every slide). */
+export function setProjectFormatLink(p: VideoProject, linked: boolean, activeAspect: Aspect): VideoProject {
+  return { ...p, slides: p.slides.map((s) => linkSlideFormats(s, linked, activeAspect)) }
+}
+
+/** Write content fields into a box, honouring the format lock. Linked → write the
+ *  shared base and drop any per-aspect overrides (cuts stay identical). Unlinked →
+ *  write only the active aspect's override (cuts diverge). */
+function writeContent(box: TextBox, aspect: Aspect, linked: boolean, patch: Partial<BoxContent>): TextBox {
+  if (linked) {
+    const { contentByAspect: _drop, ...rest } = box
+    return { ...rest, ...patch }
+  }
+  return {
+    ...box,
+    contentByAspect: { ...box.contentByAspect, [aspect]: { ...contentOf(box, aspect), ...patch } },
+  }
+}
+
+/** Patch content (align / line-height / brush) into a box per the format lock. */
+export function updateTextBoxContent(
+  p: VideoProject,
+  slideId: string,
+  boxId: string,
+  patch: Partial<BoxContent>,
+  aspect: Aspect,
+  linked: boolean,
+): VideoProject {
+  return mapSlide(p, slideId, (s) => ({
+    ...s,
+    textBoxes: s.textBoxes.map((b) => (b.id === boxId ? writeContent(b, aspect, linked, patch) : b)),
   }))
 }
 
@@ -133,14 +277,15 @@ export function updateTextBoxRuns(
   slideId: string,
   boxId: string,
   runs: TextRun[],
+  aspect: Aspect,
+  linked: boolean,
 ): VideoProject {
-  return updateTextBox(p, slideId, boxId, { runs })
+  return updateTextBoxContent(p, slideId, boxId, { runs }, aspect, linked)
 }
 
-/** Apply a style patch to a textbox's runs over [start, end) (flattened-text
- *  offsets). The format bar's per-run controls route through here. Only the
- *  fields present in `patch` are written, so untouched (incl. mixed) fields on
- *  each run are preserved. */
+/** Apply a style patch to the ACTIVE aspect's runs over [start, end) (flattened-
+ *  text offsets), honouring the format lock. Only fields present in `patch` are
+ *  written, so untouched (incl. mixed) fields on each run are preserved. */
 export function applyTextStyle(
   p: VideoProject,
   slideId: string,
@@ -148,12 +293,16 @@ export function applyTextStyle(
   start: number,
   end: number,
   patch: StylePatch,
+  aspect: Aspect,
+  linked: boolean,
 ): VideoProject {
   return mapSlide(p, slideId, (s) => ({
     ...s,
-    textBoxes: s.textBoxes.map((b) =>
-      b.id === boxId ? { ...b, runs: applyStyleToRange(b.runs, start, end, patch) } : b,
-    ),
+    textBoxes: s.textBoxes.map((b) => {
+      if (b.id !== boxId) return b
+      const runs = applyStyleToRange(contentOf(b, aspect).runs, start, end, patch)
+      return writeContent(b, aspect, linked, { runs })
+    }),
   }))
 }
 
@@ -236,7 +385,7 @@ export function removeNamedStyle(p: VideoProject, id: string): VideoProject {
   return { ...p, namedStyles: styles(p).filter((s) => s.id !== id) }
 }
 
-/** Apply a saved style's patch to [start,end) of a textbox. */
+/** Apply a saved style's patch to [start,end) of a textbox (honours the format lock). */
 export function applyNamedStyle(
   p: VideoProject,
   slideId: string,
@@ -244,10 +393,12 @@ export function applyNamedStyle(
   start: number,
   end: number,
   styleId: string,
+  aspect: Aspect,
+  linked: boolean,
 ): VideoProject {
   const ns = styles(p).find((s) => s.id === styleId)
   if (!ns) return p
-  return applyTextStyle(p, slideId, boxId, start, end, ns.style)
+  return applyTextStyle(p, slideId, boxId, start, end, ns.style, aspect, linked)
 }
 
 /** Patch the new-textbox format defaults (the format bar with nothing selected). */

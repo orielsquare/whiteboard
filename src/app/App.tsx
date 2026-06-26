@@ -1,19 +1,22 @@
-import { useCallback, useEffect, useState, type ChangeEvent } from 'react'
-import { DEFAULT_PARAMS, GlyphExtractor, type ExtractionParams } from '@lib/extraction'
+import { useCallback, useEffect, useMemo, useState, type ChangeEvent } from 'react'
+import { GlyphExtractor, extractionSig } from '@lib/extraction'
 import { DEFAULT_BRUSH, type BrushSettings } from '@lib/manifest/schema'
 import { loadFontFromArrayBuffer, loadFontFromUrl, type LoadedFont } from '@lib/font/load'
+import { httpStore } from '@lib/persistence/FontStore'
 import { ExtractionView } from './components/ExtractionView'
 import { PreviewView } from './components/PreviewView'
 import { EditorView } from './components/EditorView'
+import { GlyphGridView } from './components/GlyphGridView'
 import { VideoView } from './components/video/VideoView'
-import { editorHistory, ensureGlyphDerived, useEditorStore } from './state/store'
+import { listFontChars } from './fontGlyphs'
+import { editorHistory, ensureGlyphDerived, glyphParams, useEditorStore } from './state/store'
 
 /** The two distinct tools. Font (load → extract → edit → animate → save) and
  *  Video (slide-based animated-text editor) are separate apps that happen to
  *  share a loaded font + extractor, so they get top-level tabs. */
 type TopTab = 'font' | 'video'
-/** Sub-tabs within the Font tool, in working order. */
-type FontSubTab = 'extract' | 'editor' | 'animate'
+/** Sub-tabs within the Font tool, in working order (Glyphs is the landing grid). */
+type FontSubTab = 'glyphs' | 'extract' | 'editor' | 'animate'
 
 const BUNDLED = [
   { label: 'Patrick Hand (handwriting)', url: '/fonts/PatrickHand-Regular.ttf' },
@@ -25,21 +28,37 @@ export function App() {
   const [source, setSource] = useState(BUNDLED[0].url)
   const [error, setError] = useState<string | null>(null)
   const [topTab, setTopTab] = useState<TopTab>('font')
-  const [fontSubTab, setFontSubTab] = useState<FontSubTab>('extract')
+  const [fontSubTab, setFontSubTab] = useState<FontSubTab>('glyphs')
 
-  // Shared across tabs: the active character, extraction params, and the brush.
-  // selectedChar + params + brush are session/view state (NOT saved with the
-  // per-glyph manifest); the brush is an applied render style, not glyph data.
+  // Shared across tabs: the active character and the brush. selectedChar + brush
+  // are session/view state; extraction settings are now stored PER GLYPH in the
+  // manifest (see store.ts), not held here.
   const [selectedChar, setSelectedChar] = useState('r')
-  const [params, setParams] = useState<ExtractionParams>(DEFAULT_PARAMS)
   const [brush, setBrush] = useState<BrushSettings>(DEFAULT_BRUSH)
+
+  // Per-glyph "last visited" view, so clicking a glyph in the grid reopens it
+  // where you last worked (stroke extraction by default, editor if you've been).
+  const [glyphView, setGlyphView] = useState<Record<string, 'extract' | 'editor'>>({})
+  const [saveStatus, setSaveStatus] = useState<string | null>(null)
 
   // A single shared extractor per font (one Web Worker, one font parse).
   const [extractor, setExtractor] = useState<GlyphExtractor | null>(null)
 
-  // The fontId of the currently-loaded manifest — used to gate derivation until
-  // the right manifest is in the store.
+  // The fontId of the currently-loaded manifest — gates derivation until the
+  // right manifest is in the store.
   const manifestFontId = useEditorStore((s) => s.manifest?.metadata.fontId)
+  // Save is enabled only when the live manifest differs from what's on disk
+  // (collision-free monotonic edit counter vs. its last-saved baseline).
+  const dirty = useEditorStore((s) => !!s.manifest && s.editRev !== s.savedRev)
+  // The selected glyph's params signature — so tuning its settings re-derives it.
+  const selParamsSig = useEditorStore((s) => {
+    const g = s.manifest?.glyphs[String(selectedChar.codePointAt(0) ?? 0)]
+    return g ? extractionSig(glyphParams(g)) : ''
+  })
+
+  // Every Unicode-mapped character in the font, ordered by code point — drives
+  // the Glyphs grid and the prev/next browse arrows.
+  const charList = useMemo(() => (font ? listFontChars(font.font) : []), [font])
 
   // Load the selected bundled font.
   useEffect(() => {
@@ -64,30 +83,42 @@ export function App() {
   }, [font])
 
   // Load (or seed) this font's manifest into the store when the font changes.
+  // Guarded so a rapid font switch can't let an older load land after a newer
+  // one (and clear the freshly-loaded history out of order).
   useEffect(() => {
     if (!font) return
+    let cancelled = false
     useEditorStore
       .getState()
       .loadFontManifest(font)
-      .then(() => editorHistory.clear())
+      .then(() => !cancelled && editorHistory.clear())
+    return () => {
+      cancelled = true
+    }
   }, [font])
 
   // Central, debounced re-derivation of the active glyph: seeds it if missing
-  // and re-derives it when extraction params change — unless it's been edited.
-  // This fires regardless of which tab is open, so tuning in the Extraction tab
-  // shows up in the Editor and Animation tabs.
+  // and re-derives it when ITS stored extraction settings change — unless it's
+  // been edited. Fires regardless of which tab is open, so tuning in the
+  // Extraction tab shows up in the Editor and Animation tabs.
   useEffect(() => {
     if (!extractor || !font || manifestFontId !== font.hash) return
     let cancelled = false
     const timer = setTimeout(() => {
       if (cancelled) return
-      void ensureGlyphDerived(extractor, selectedChar, params)
+      void ensureGlyphDerived(extractor, selectedChar)
     }, 180)
     return () => {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [extractor, font, manifestFontId, selectedChar, params])
+  }, [extractor, font, manifestFontId, selectedChar, selParamsSig])
+
+  // Remember which per-glyph view we last used, for grid → glyph navigation.
+  useEffect(() => {
+    if (topTab !== 'font' || (fontSubTab !== 'extract' && fontSubTab !== 'editor')) return
+    setGlyphView((m) => (m[selectedChar] === fontSubTab ? m : { ...m, [selectedChar]: fontSubTab }))
+  }, [topTab, fontSubTab, selectedChar])
 
   const onFile = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -101,12 +132,46 @@ export function App() {
     }
   }, [])
 
+  // Click a glyph in the grid → open it where it was last worked on.
+  const onPickGlyph = useCallback(
+    (c: string) => {
+      setSelectedChar(c)
+      setFontSubTab(glyphView[c] ?? 'extract')
+    },
+    [glyphView],
+  )
+
+  const doSave = useCallback(async () => {
+    const m = useEditorStore.getState().manifest
+    if (!m || !font) return
+    setSaveStatus('saving…')
+    try {
+      await httpStore.save(m)
+      await httpStore.saveFont(m.metadata.fontId, font.buffer)
+      useEditorStore.getState().markSaved()
+      setSaveStatus(null) // the greyed-out Save button is the "saved" signal
+    } catch (e) {
+      setSaveStatus(`save failed: ${e}`)
+    }
+  }, [font])
+
+  const onReload = useCallback(() => {
+    if (!font) return
+    void useEditorStore
+      .getState()
+      .loadFontManifest(font)
+      .then(() => editorHistory.clear())
+    setSaveStatus(null)
+  }, [font])
+
   return (
     <div className="app">
       <header className="topbar">
         <h1>Font Animator</h1>
         <span className="tag">proof of concept</span>
-        {font && (
+        {/* The font reference is only meaningful on the Font tab; in the Video tool
+            fonts are a per-run formatting choice, so it would be redundant/confusing. */}
+        {font && topTab === 'font' && (
           <span className="meta-inline">
             <strong>{font.family}</strong> · {font.unitsPerEm} upm
           </span>
@@ -123,7 +188,8 @@ export function App() {
         </button>
       </div>
 
-      {/* The Font tool is all about working in a font: keep its loader prominent. */}
+      {/* The Font tool is all about working in a font: keep its loader + the
+          font-wide Undo/Save/Reload actions prominent across every sub-tab. */}
       {topTab === 'font' && (
         <>
           <div className="toolbar">
@@ -143,7 +209,21 @@ export function App() {
             </label>
           </div>
 
+          <div className="font-actions">
+            <button onClick={() => editorHistory.undo()}>↶ Undo</button>
+            <button onClick={() => editorHistory.redo()}>↷ Redo</button>
+            <span className="spacer" />
+            {saveStatus && <span className="savestatus-inline">{saveStatus}</span>}
+            <button className="primary" onClick={doSave} disabled={!dirty} title={dirty ? 'Save font to disk' : 'No unsaved changes'}>
+              💾 Save font
+            </button>
+            <button onClick={onReload}>Reload from disk</button>
+          </div>
+
           <div className="tabs tabs-sub">
+            <button className={fontSubTab === 'glyphs' ? 'tab tab-on' : 'tab'} onClick={() => setFontSubTab('glyphs')}>
+              Glyphs
+            </button>
             <button className={fontSubTab === 'extract' ? 'tab tab-on' : 'tab'} onClick={() => setFontSubTab('extract')}>
               Stroke extraction
             </button>
@@ -163,31 +243,31 @@ export function App() {
         !font ? (
           <div className="stage">Loading font…</div>
         ) : (
-          <VideoView font={font} extractor={extractor} params={params} brush={brush} />
+          <VideoView font={font} extractor={extractor} brush={brush} />
         )
       ) : !font ? (
         <div className="stage">Loading font…</div>
+      ) : fontSubTab === 'glyphs' ? (
+        <GlyphGridView font={font} extractor={extractor} chars={charList} onPick={onPickGlyph} />
       ) : fontSubTab === 'extract' ? (
         <ExtractionView
           extractor={extractor}
-          params={params}
-          onParamsChange={setParams}
           selectedChar={selectedChar}
           onSelectChar={setSelectedChar}
+          chars={charList}
         />
       ) : fontSubTab === 'editor' ? (
         <EditorView
           font={font}
           extractor={extractor}
-          params={params}
           selectedChar={selectedChar}
           onSelectChar={setSelectedChar}
+          chars={charList}
         />
       ) : (
         <PreviewView
           font={font}
           extractor={extractor}
-          params={params}
           brush={brush}
           onBrushChange={setBrush}
           selectedChar={selectedChar}

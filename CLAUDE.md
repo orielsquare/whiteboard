@@ -63,15 +63,20 @@ src/lib/
                 renderProject/renderSlide), transitions.ts, runs.ts, vtt.ts (WebVTT parse/serialize/etc).
                 Pure engines unit-tested in tools/{layout,runs,timing,vtt}.test.mjs (esbuild standalone).
 src/app/
-  App.tsx       shell: top-level Font/Video switch; owns font, single shared GlyphExtractor, params,
-                selectedChar, brush. Font side keeps the loader + sub-tabs (Stroke extraction/Editor/Animation preview).
+  App.tsx       shell: top-level Font/Video switch; owns font, single shared GlyphExtractor,
+                selectedChar, brush, the font-wide action bar (Undo/Redo/Save[dirty-greyed]/Reload), and the
+                ordered glyph list (listFontChars). Font side keeps the loader + sub-tabs
+                (Glyphs grid/Stroke extraction/Editor/Animation preview). Extraction params are PER GLYPH
+                (stored in the manifest), not a shared App value.
   state/        store.ts (useEditorStore — font manifest, zundo, ensureGlyphDerived/commitDerivedGlyph),
                 videoStore.ts (useVideoStore — video project, zundo; transient `selection` for the format bar)
                 + videoEdit.ts (pure helpers), fontRegistry.ts (useFontRegistry — prepared glyphs/metrics for
                 every referenced SAVED font, keyed by fontId; loads each font's manifest AND **derives missing
                 glyphs on demand** from its bytes via a per-font GlyphExtractor — so the Video tool renders any
                 font's text regardless of which font the Font tab has open).
-  components/   EditorView, ExtractionView, PreviewView, editorCanvas, overlay; video/ (VideoView owns the
+  components/   GlyphGridView (the Glyphs overview grid), CharStepper (the Character/Glyph input + ‹ › browse
+                arrows, shared by Extraction/Editor), EditorView, ExtractionView, PreviewView, editorCanvas,
+                overlay; (App.tsx imports listFontChars from ../fontGlyphs); video/ (VideoView owns the
                 Layout/Order/VTT/Timeline/Play switch; SlideCanvas, SlidePanel, Inspector, FormatBar [the one
                 horizontal text-format bar], TextBoxOverlay [contentEditable on-canvas editor], fontFaces.ts,
                 SlideOrderView/ProjectPlayer/PlaybackCanvas, AnimationOrderList, VttView, SlideVttExtract, TimelineView).
@@ -86,9 +91,12 @@ public/fonts/   bundled OFL samples: Patrick Hand (handwriting), Fira Sans (sans
 ## Data, stores, persistence
 
 - **`useEditorStore`** (zundo): the per-font `FontManifest` (glyph stroke sections + per-section
-  timing). `updateGlyph`/`markReviewed` set `edited:true`; `ensureGlyphDerived(extractor,char,params)`
-  seeds-or-re-derives a glyph (skips `edited` ones; compares `derivedSig`); `commitDerivedGlyph` pauses
-  history so auto-derivations aren't undoable. Saved to `fonts/<hash>/manifest.json` (+ `font.ttf`).
+  timing). `updateGlyph`/`markReviewed`/`setGlyphParams` set `edited:true`/bump `updatedAt`;
+  `ensureGlyphDerived(extractor,char)` seeds-or-re-derives a glyph using ITS OWN stored `extractionParams`
+  (or DEFAULT_PARAMS); skips `edited` ones; compares `derivedSig`. `commitDerivedGlyph` pauses history AND
+  uses `setGlyphSilent` (no `updatedAt` bump) so background auto-derivations are neither undoable nor mark
+  the manifest dirty. `dirty = manifest.updatedAt !== lastSavedAt`; `markSaved()`/load-from-disk clear it
+  (drives the greyed Save button). Saved to `fonts/<hash>/manifest.json` (+ `font.ttf`).
 - **`useVideoStore`** (zundo, separate history): the `VideoProject` (slides). Document state tracked;
   selection/view transient (`partialize`). Saved to `projects/<id>.json`. `ensureProjectGlyphsDerived`
   derives every char used in the project.
@@ -97,11 +105,20 @@ public/fonts/   bundled OFL samples: Patrick Hand (handwriting), Fira Sans (sans
 
 ## Two tools, top-level Font/Video switch (App.tsx)
 
-**Font tool** — keeps the font loader prominent at the top; three sub-tabs:
-1. **Stroke extraction** — read-only debug overlay of the automatic extraction; tune params (live).
-2. **Editor** — pick a glyph; reorder/flip/split/merge stroke sections (drag + buttons); per-section
-   timing; brush-less neutral-pen play preview; Save font / Reload / Undo / Redo.
-3. **Animation preview** — animate holding text with the chosen brush; reflects per-glyph edits.
+**Font tool** — keeps the font loader + a font-wide action bar (Undo/Redo/**Save font** [greyed until the
+manifest is dirty]/Reload, shared by every sub-tab) prominent at the top; four sub-tabs:
+1. **Glyphs** (landing) — `GlyphGridView`: every Unicode glyph in a vertically-scrolling grid (~18pt cells);
+   a global **Font/Strokes** toggle flips all cells between the font outline and the extracted pen-strokes
+   (strokes derived lazily as cells scroll into view); click a cell to open that glyph at its last-visited
+   view (Stroke extraction by default, Editor if you've been there).
+2. **Stroke extraction** — read-only debug overlay of the automatic extraction; tune the **per-glyph**
+   extraction params (live; stored on the glyph, persisted with the font). View toggles stay global.
+3. **Editor** — pick a glyph; reorder/flip/split/merge stroke sections (drag + buttons); per-section
+   timing; brush-less neutral-pen play preview; Reset glyph re-derives from the glyph's stored params.
+4. **Animation preview** — animate holding text with the chosen brush; reflects per-glyph edits.
+
+Stroke extraction and Editor share a `CharStepper` (the Character/Glyph input + ‹ › arrows that browse the
+font's glyph list).
 
 **Video tool** — slide-based animated-text editor; no font loader (font is a per-text formatting option
 from all SAVED fonts). Its own view switch (in `VideoView`), in order:
@@ -123,9 +140,11 @@ per-project) save the selection's non-mixed fields as a reusable `StylePatch` an
 Per-run **fonts** resolve through a `FontSet` (`layout.ts`/`render.ts`); the Video tool builds it from
 `useFontRegistry` + the live editor font; MP4 export sends `fontsById` so preview == export.
 
-**Shared across tabs** (in App): `selectedChar`, extraction `params`, `brush`, and a single
-`GlyphExtractor` (one Web Worker per font). Tuning params re-derives the active glyph centrally,
-gated on `manifest.metadata.fontId === font.hash`.
+**Shared across tabs** (in App): `selectedChar`, `brush`, and a single `GlyphExtractor` (one Web Worker per
+font). Extraction params live PER GLYPH in the manifest (`GlyphAnimation.extractionParams`); the active
+glyph is re-derived centrally when its stored params change (App watches the selected glyph's params
+signature), gated on `manifest.metadata.fontId === font.hash`. `glyphParams(glyph)` returns the glyph's
+params or `DEFAULT_PARAMS`.
 
 ## Conventions
 

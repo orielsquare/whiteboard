@@ -14,10 +14,9 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { extractionSig, type ExtractionParams, type GlyphExtractor } from '@lib/extraction'
+import { DEFAULT_PARAMS, extractionSig, type GlyphExtractor } from '@lib/extraction'
 import type { LoadedFont } from '@lib/font/load'
 import { EASING_NAMES, type EasingName } from '@lib/geometry/easing'
-import { httpStore } from '@lib/persistence/FontStore'
 import { seedGlyphAnimation } from '@lib/manifest/seed'
 import type { BrushSettings, StrokeSection } from '@lib/manifest/schema'
 import {
@@ -28,16 +27,14 @@ import {
   setSectionOrder,
   splitSection,
   toggleReversed,
-  togglePenLift,
   updateSectionTiming,
 } from '@lib/manifest/edit'
 import { prepareGlyph, sampleGlyph } from '@lib/animation/timeline'
 import type { Transform } from '@lib/render/ribbon'
 import { paintStroke } from '@lib/render/brush'
 import { computeGlyphTransform, drawEditable, pickNearest, strokeColor } from './editorCanvas'
-import { editorHistory, useEditorStore } from '../state/store'
-
-const EDIT_CHARS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'r', 'e', 't', 'a', 'o', '+', '=']
+import { CharStepper } from './CharStepper'
+import { useEditorStore } from '../state/store'
 
 // The editor's play preview uses a neutral pen — geometry, not applied style.
 // (Brush styling lives in the Animation tab.)
@@ -55,20 +52,19 @@ const NEUTRAL_PEN: BrushSettings = {
 export function EditorView({
   font,
   extractor,
-  params,
   selectedChar,
   onSelectChar,
+  chars,
 }: {
   font: LoadedFont
   extractor: GlyphExtractor | null
-  params: ExtractionParams
   selectedChar: string
   onSelectChar: (c: string) => void
+  chars: string[]
 }) {
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [mode, setMode] = useState<'select' | 'split'>('select')
   const [isPlaying, setIsPlaying] = useState(false)
-  const [saveStatus, setSaveStatus] = useState<string | null>(null)
 
   const unicode = selectedChar.codePointAt(0) ?? 0
   const key = String(unicode)
@@ -78,7 +74,6 @@ export function EditorView({
   const updateGlyph = useEditorStore((s) => s.updateGlyph)
   const upsertGlyph = useEditorStore((s) => s.upsertGlyph)
   const markReviewed = useEditorStore((s) => s.markReviewed)
-  const loadFontManifest = useEditorStore((s) => s.loadFontManifest)
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const glyphRef = useRef(glyph)
@@ -174,22 +169,13 @@ export function EditorView({
     updateGlyph(unicode, (g) => setSectionOrder(g, arrayMove(ids, oldIndex, newIndex)))
   }
 
-  const doSave = async () => {
-    if (!manifest) return
-    setSaveStatus('saving…')
-    try {
-      await httpStore.save(manifest)
-      await httpStore.saveFont(manifest.metadata.fontId, font.buffer)
-      setSaveStatus(`saved ${Object.keys(manifest.glyphs).length} glyph(s) to disk`)
-    } catch (e) {
-      setSaveStatus(`save failed: ${e}`)
-    }
-  }
-
+  // Re-derive from scratch using THIS glyph's stored extraction settings (or
+  // defaults), discarding manual edits. upsertGlyph marks it dirty + undoable.
   const onReset = () => {
     if (!extractor) return
-    extractor.extract(selectedChar, params).then((strokes) =>
-      upsertGlyph(seedGlyphAnimation(strokes, useEditorStore.getState().manifest?.defaultTiming, extractionSig(params))),
+    const p = glyph?.extractionParams ?? DEFAULT_PARAMS
+    extractor.extract(selectedChar, p).then((strokes) =>
+      upsertGlyph(seedGlyphAnimation(strokes, useEditorStore.getState().manifest?.defaultTiming, extractionSig(p), p)),
     )
     setSelectedIds([])
   }
@@ -197,26 +183,8 @@ export function EditorView({
   return (
     <div className="editor">
       <div className="editor-top">
-        <label className="field">
-          <span>Glyph</span>
-          <input value={selectedChar} maxLength={2} onChange={(e) => onSelectChar(e.target.value || ' ')} style={{ width: 60 }} />
-        </label>
-        <div className="chips">
-          {EDIT_CHARS.map((c, i) => (
-            <button key={`${c}-${i}`} className={selectedChar === c ? 'chip chip-on' : 'chip'} onClick={() => onSelectChar(c)}>
-              {c}
-            </button>
-          ))}
-        </div>
-        <div className="spacer" />
-        <button onClick={() => editorHistory.undo()}>↶ Undo</button>
-        <button onClick={() => editorHistory.redo()}>↷ Redo</button>
-        <button className="primary" onClick={doSave}>
-          💾 Save font
-        </button>
-        <button onClick={() => loadFontManifest(font)}>Reload from disk</button>
+        <CharStepper label="Glyph" value={selectedChar} onChange={onSelectChar} chars={chars} width={60} />
       </div>
-      {saveStatus && <div className="savestatus">{saveStatus}</div>}
 
       <div className="editor-body">
         <div className="stage stage-overlay">
@@ -277,7 +245,6 @@ export function EditorView({
                     onSelect={(id) => setSelectedIds([id])}
                     onMove={(id, dir) => updateGlyph(unicode, (g) => moveSection(g, id, dir))}
                     onFlip={(id) => updateGlyph(unicode, (g) => toggleReversed(g, id))}
-                    onPenLift={(id) => updateGlyph(unicode, (g) => togglePenLift(g, id))}
                     onDelete={(id) => {
                       updateGlyph(unicode, (g) => deleteSection(g, id))
                       setSelectedIds([])
@@ -337,7 +304,6 @@ function SortableRow({
   onSelect,
   onMove,
   onFlip,
-  onPenLift,
   onDelete,
 }: {
   s: StrokeSection
@@ -346,7 +312,6 @@ function SortableRow({
   onSelect: (id: string) => void
   onMove: (id: string, dir: -1 | 1) => void
   onFlip: (id: string) => void
-  onPenLift: (id: string) => void
   onDelete: (id: string) => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: s.id })
@@ -368,7 +333,6 @@ function SortableRow({
         <button title="move earlier" onClick={(e) => { stop(e); onMove(s.id, -1) }}>↑</button>
         <button title="move later" onClick={(e) => { stop(e); onMove(s.id, 1) }}>↓</button>
         <button title="flip direction" className={s.reversed ? 'on' : ''} onClick={(e) => { stop(e); onFlip(s.id) }}>⇄</button>
-        <button title="pen lift after" className={s.penLiftAfter ? 'on' : ''} onClick={(e) => { stop(e); onPenLift(s.id) }}>✎</button>
         <button title="delete" onClick={(e) => { stop(e); onDelete(s.id) }}>×</button>
       </span>
     </li>

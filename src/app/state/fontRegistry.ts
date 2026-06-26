@@ -110,7 +110,7 @@ export const useFontRegistry = create<FontRegistryState>((set, get) => ({
           missing.map(async (ch) => {
             try {
               const strokes = await ex.extract(ch, DEFAULT_PARAMS)
-              derived.push([ch, prepareGlyph(seedGlyphAnimation(strokes, entry.timing, sig))])
+              derived.push([ch, prepareGlyph(seedGlyphAnimation(strokes, entry.timing, sig, DEFAULT_PARAMS))])
             } catch {
               /* extraction failed for this char — leave it missing */
             } finally {

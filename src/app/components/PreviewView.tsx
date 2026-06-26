@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import { extractionSig, type ExtractionParams, type GlyphExtractor } from '@lib/extraction'
+import { extractionSig, type GlyphExtractor } from '@lib/extraction'
 import type { LoadedFont } from '@lib/font/load'
 import { type BrushSettings, type BrushStyle } from '@lib/manifest/schema'
 import { layoutText, prepareGlyph, sampleGlyph, type PreparedGlyph, type TextTimeline } from '@lib/animation/timeline'
 import { paintStroke } from '@lib/render/brush'
 import { type Transform } from '@lib/render/ribbon'
-import { ensureGlyphDerived, useEditorStore } from '../state/store'
+import { ensureGlyphDerived, glyphParams, useEditorStore } from '../state/store'
 
 const INTER_CHAR_DELAY = 140
 const END_HOLD_MS = 700
@@ -14,14 +14,12 @@ const BRUSH_STYLES: BrushStyle[] = ['chalk', 'ink', 'marker']
 export function PreviewView({
   font,
   extractor,
-  params,
   brush,
   onBrushChange,
   selectedChar,
 }: {
   font: LoadedFont
   extractor: GlyphExtractor | null
-  params: ExtractionParams
   brush: BrushSettings
   onBrushChange: (b: BrushSettings) => void
   selectedChar: string
@@ -68,20 +66,19 @@ export function PreviewView({
     ;(async () => {
       for (const c of [...new Set(text)].filter((ch) => ch.trim().length > 0)) {
         if (cancelled) return
-        await ensureGlyphDerived(extractor, c, params)
+        await ensureGlyphDerived(extractor, c)
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [text, extractor, params, manifestFontId, font.hash])
+  }, [text, extractor, manifestFontId, font.hash])
 
   // (re)build the timeline from the shared (possibly edited) manifest glyphs.
   // A glyph counts as "pending" if it's missing OR stale w.r.t. the current
   // params (and not manually edited) — so the status reflects an in-flight
   // re-derivation rather than showing stale geometry as ready.
   useEffect(() => {
-    const sig = extractionSig(params)
     const map = new Map<string, PreparedGlyph>()
     let pending = false
     for (const c of [...new Set(text)].filter((ch) => ch.trim().length > 0)) {
@@ -90,7 +87,8 @@ export function PreviewView({
       const g = manifestGlyphs?.[String(cp)]
       if (g) {
         map.set(c, prepareGlyph(g))
-        if (!g.edited && g.derivedSig !== sig) pending = true
+        // Stale = derived with params that no longer match the glyph's own settings.
+        if (!g.edited && g.derivedSig !== extractionSig(glyphParams(g))) pending = true
       } else {
         pending = true
       }
@@ -100,7 +98,7 @@ export function PreviewView({
     transformRef.current = computeTransform(timeline, canvasRef.current)
     setTotalMs(Math.max(1, timeline.totalMs))
     setStatus(pending ? 'loading' : 'ready')
-  }, [text, manifestGlyphs, font, params])
+  }, [text, manifestGlyphs, font])
 
   // single rAF loop, driven by refs
   useEffect(() => {

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Aspect, TextBox } from '@lib/project/schema'
-import { frameOf } from '@lib/project/aspect'
+import { contentOf, frameOf } from '@lib/project/aspect'
 import { runsToPlainText, setPlainTextPreservingStyles } from '@lib/project/runs'
 import { useVideoStore } from '../../state/videoStore'
 import { ensureFontFaceById, fontFamilyFor, registerFontFace } from './fontFaces'
@@ -39,6 +39,7 @@ export function TextBoxOverlay({
   slideId,
   canvasEl,
   baseEmFraction,
+  lineHeightEm,
   brushColor,
   editorFontId,
   editorFontBuffer,
@@ -51,6 +52,9 @@ export function TextBoxOverlay({
   slideId: string
   canvasEl: HTMLCanvasElement | null
   baseEmFraction: number
+  /** font line-box height in ems ((asc+|desc|)/upm); CSS line-height = this × lineHeightScale,
+   *  so the overlay's line spacing matches the canvas. */
+  lineHeightEm: number
   brushColor: string
   /** the Font-tab font's id + bytes (registered directly for its @font-face). */
   editorFontId: string
@@ -79,6 +83,10 @@ export function TextBoxOverlay({
   const pendingCaretRef = useRef<number | null>(null)
   const didFocusRef = useRef(false)
 
+  // Edit the ACTIVE aspect's content (which may diverge from the shared base when
+  // the box's format lock is off).
+  const content = contentOf(box, aspect)
+
   // The canvas client width drives positioning + base font size (everything is
   // normalized to canvas width). Re-measure on canvas/window resize.
   const [clientW, setClientW] = useState(() => canvasEl?.clientWidth ?? 0)
@@ -98,7 +106,7 @@ export function TextBoxOverlay({
   // Rebuild the styled spans from the runs (imperative — React owns no children).
   const syncDom = (el: HTMLElement) => {
     el.replaceChildren(
-      ...box.runs.map((r, i) => {
+      ...content.runs.map((r, i) => {
         const span = document.createElement('span')
         span.setAttribute('data-run', String(i))
         const sizeScale = r.sizeScale ?? 1
@@ -124,7 +132,7 @@ export function TextBoxOverlay({
     const el = elRef.current
     if (!el) return
     syncDom(el)
-    const len = runsToPlainText(box.runs).length
+    const len = runsToPlainText(content.runs).length
     let a = len
     let f = len
     const pc = pendingCaretRef.current
@@ -144,7 +152,7 @@ export function TextBoxOverlay({
     }
     applySelection(el, a, f)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [box.runs])
+  }, [content.runs])
 
   // Mirror the DOM selection into the store while this overlay is focused.
   useEffect(() => {
@@ -182,7 +190,7 @@ export function TextBoxOverlay({
     const el = elRef.current
     if (!el) return
     selfEditRef.current = true
-    updateTextBoxRuns(slideId, box.id, setPlainTextPreservingStyles(box.runs, el.textContent ?? ''))
+    updateTextBoxRuns(slideId, box.id, setPlainTextPreservingStyles(content.runs, el.textContent ?? ''))
   }
 
   // Insert a literal string at the live selection, committing through the model
@@ -199,7 +207,7 @@ export function TextBoxOverlay({
     const text = el.textContent ?? ''
     const next = text.slice(0, lo) + str + text.slice(hi)
     pendingCaretRef.current = lo + str.length
-    updateTextBoxRuns(slideId, box.id, setPlainTextPreservingStyles(box.runs, next))
+    updateTextBoxRuns(slideId, box.id, setPlainTextPreservingStyles(content.runs, next))
   }
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -225,8 +233,8 @@ export function TextBoxOverlay({
     top: `${f.y * clientW}px`,
     width: noWrap ? 'max-content' : `${f.w! * clientW}px`,
     fontSize: `${baseEmFraction * clientW}px`,
-    lineHeight: box.lineHeightScale,
-    textAlign: box.align,
+    lineHeight: lineHeightEm * content.lineHeightScale,
+    textAlign: content.align,
     fontFamily: FALLBACK_FAMILY, // per-run families are set on each span
     color: brushColor,
   }

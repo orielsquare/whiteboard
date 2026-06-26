@@ -1,4 +1,4 @@
-import type { GlyphStrokes } from '@lib/extraction'
+import type { ExtractionParams, GlyphStrokes } from '@lib/extraction'
 import type { LoadedFont } from '@lib/font/load'
 import {
   DEFAULT_TIMING,
@@ -14,6 +14,7 @@ export function seedGlyphAnimation(
   g: GlyphStrokes,
   timing: SectionTiming = DEFAULT_TIMING,
   derivedSig?: string,
+  extractionParams?: ExtractionParams,
 ): GlyphAnimation {
   const orderPos = new Map<number, number>()
   g.order.forEach((sectionIdx, pos) => orderPos.set(sectionIdx, pos))
@@ -24,7 +25,6 @@ export function seedGlyphAnimation(
     kind: s.kind,
     orderIndex: orderPos.get(i) ?? i,
     reversed: g.reversed[i] ?? false,
-    penLiftAfter: false,
     timing: { ...timing, pauses: [] },
   }))
 
@@ -37,6 +37,7 @@ export function seedGlyphAnimation(
     reviewed: false,
     edited: false,
     derivedSig,
+    extractionParams,
   }
 }
 

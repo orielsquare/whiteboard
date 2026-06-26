@@ -1,16 +1,17 @@
-import type { BrushSettings, BrushStyle } from '@lib/manifest/schema'
 import type { TransitionKind } from '@lib/project/schema'
 import { frameOf } from '@lib/project/aspect'
 import { useVideoStore } from '../../state/videoStore'
 
-const BRUSH_STYLES: BrushStyle[] = ['chalk', 'ink', 'marker']
 const TRANSITIONS: TransitionKind[] = ['none', 'fade', 'rubout', 'scroll-up', 'scroll-down', 'scroll-left', 'scroll-right']
 const DEFAULT_WRAP_W = 0.7
 
-/** Right-hand panel: edits the selected textbox (text + style + frame + timing) and the slide. */
+/** Right-hand properties panel. Mirrors the navigator tab: the **Textboxes** tab
+ *  shows the selected textbox's frame + timing; the **Slides** tab shows the
+ *  slide's background + transition. */
 export function Inspector() {
   const project = useVideoStore((s) => s.project)
   const activeAspect = useVideoStore((s) => s.activeAspect)
+  const navTab = useVideoStore((s) => s.navTab)
   const selectedSlideId = useVideoStore((s) => s.selectedSlideId)
   const selectedTextBoxId = useVideoStore((s) => s.selectedTextBoxId)
   const updateTextBox = useVideoStore((s) => s.updateTextBox)
@@ -23,148 +24,87 @@ export function Inspector() {
   if (!project) return null
   const slide = project.slides.find((s) => s.id === selectedSlideId) ?? project.slides[0]
   const box = slide.textBoxes.find((b) => b.id === selectedTextBoxId)
-  const boxBrush = box?.brush
   const wrapW = box ? frameOf(box, activeAspect).w : null
 
-  const toggleCustomBrush = (on: boolean) => {
-    if (!box) return
-    updateTextBox(slide.id, box.id, { brush: on ? { ...project.brush } : undefined })
-  }
-  const patchBoxBrush = (patch: Partial<BrushSettings>) => {
-    if (!box || !box.brush) return
-    updateTextBox(slide.id, box.id, { brush: { ...box.brush, ...patch } })
+  // --- Textbox properties (navigator on "Textboxes") ----------------------
+  if (navTab === 'boxes') {
+    if (!box) {
+      return (
+        <aside className="inspector">
+          <div className="muted insp-empty">Select a textbox in the list or on the slide to edit it.</div>
+        </aside>
+      )
+    }
+    return (
+      <aside className="inspector">
+        <div className="insp-head">
+          <h3>Textbox</h3>
+          <button
+            className="tool danger"
+            title="delete textbox"
+            onClick={() => {
+              deleteTextBox(slide.id, box.id)
+              selectTextBox(null)
+            }}
+          >
+            × Delete
+          </button>
+        </div>
+
+        <p className="insp-tip muted">Double-click the textbox on the slide to edit its text; use the format bar above to style it.</p>
+
+        <label className="toggle">
+          <input
+            type="checkbox"
+            checked={wrapW != null}
+            onChange={(e) => updateTextBoxFrame(slide.id, box.id, { w: e.target.checked ? DEFAULT_WRAP_W : null })}
+          />
+          wrap to width
+        </label>
+        {wrapW != null && (
+          <label className="slider">
+            <span>width <b>{Math.round(wrapW * 100)}%</b></span>
+            <input
+              type="range"
+              min={0.15}
+              max={1}
+              step={0.01}
+              value={wrapW}
+              onChange={(e) => updateTextBoxFrame(slide.id, box.id, { w: Number(e.target.value) })}
+            />
+          </label>
+        )}
+
+        <label className="slider">
+          <span>time before display <b>{box.delayBeforeMs}ms</b></span>
+          <input
+            type="range"
+            min={0}
+            max={3000}
+            step={50}
+            value={box.delayBeforeMs}
+            onChange={(e) => updateTextBox(slide.id, box.id, { delayBeforeMs: Number(e.target.value) })}
+          />
+        </label>
+
+        <label className="slider">
+          <span>handwriting cadence <b>{box.interCharDelayMs}ms</b></span>
+          <input
+            type="range"
+            min={0}
+            max={300}
+            step={5}
+            value={box.interCharDelayMs}
+            onChange={(e) => updateTextBox(slide.id, box.id, { interCharDelayMs: Number(e.target.value) })}
+          />
+        </label>
+      </aside>
+    )
   }
 
+  // --- Slide properties (navigator on "Slides") ---------------------------
   return (
     <aside className="inspector">
-      {box ? (
-        <>
-          <div className="insp-head">
-            <h3>Textbox</h3>
-            <button
-              className="tool danger"
-              title="delete textbox"
-              onClick={() => {
-                deleteTextBox(slide.id, box.id)
-                selectTextBox(null)
-              }}
-            >
-              × Delete
-            </button>
-          </div>
-
-          <p className="insp-tip muted">Double-click the textbox on the slide to edit its text; use the format bar above to style it.</p>
-
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={wrapW != null}
-              onChange={(e) => updateTextBoxFrame(slide.id, box.id, { w: e.target.checked ? DEFAULT_WRAP_W : null })}
-            />
-            wrap to width
-          </label>
-          {wrapW != null && (
-            <label className="slider">
-              <span>width <b>{Math.round(wrapW * 100)}%</b></span>
-              <input
-                type="range"
-                min={0.15}
-                max={1}
-                step={0.01}
-                value={wrapW}
-                onChange={(e) => updateTextBoxFrame(slide.id, box.id, { w: Number(e.target.value) })}
-              />
-            </label>
-          )}
-
-          <label className="slider">
-            <span>time before display <b>{box.delayBeforeMs}ms</b></span>
-            <input
-              type="range"
-              min={0}
-              max={3000}
-              step={50}
-              value={box.delayBeforeMs}
-              onChange={(e) => updateTextBox(slide.id, box.id, { delayBeforeMs: Number(e.target.value) })}
-            />
-          </label>
-
-          <label className="slider">
-            <span>handwriting cadence <b>{box.interCharDelayMs}ms</b></span>
-            <input
-              type="range"
-              min={0}
-              max={300}
-              step={5}
-              value={box.interCharDelayMs}
-              onChange={(e) => updateTextBox(slide.id, box.id, { interCharDelayMs: Number(e.target.value) })}
-            />
-          </label>
-
-          <label className="toggle">
-            <input type="checkbox" checked={!!boxBrush} onChange={(e) => toggleCustomBrush(e.target.checked)} />
-            custom brush (override project brush)
-          </label>
-          {boxBrush && (
-            <>
-              <label className="slider">
-                <span>brush style</span>
-                <div className="seg">
-                  {BRUSH_STYLES.map((st) => (
-                    <button
-                      key={st}
-                      className={boxBrush.style === st ? 'tool tool-on' : 'tool'}
-                      onClick={() => patchBoxBrush({ style: st })}
-                    >
-                      {st}
-                    </button>
-                  ))}
-                </div>
-              </label>
-              <label className="slider">
-                <span>brush colour</span>
-                <div className="bg-row">
-                  <input type="color" value={boxBrush.color} onChange={(e) => patchBoxBrush({ color: e.target.value })} />
-                  <input
-                    type="text"
-                    className="bg-hex"
-                    value={boxBrush.color}
-                    spellCheck={false}
-                    onChange={(e) => patchBoxBrush({ color: e.target.value })}
-                  />
-                </div>
-              </label>
-              <label className="slider">
-                <span>brush size <b>×{boxBrush.sizeScale.toFixed(2)}</b></span>
-                <input
-                  type="range"
-                  min={0.3}
-                  max={3}
-                  step={0.05}
-                  value={boxBrush.sizeScale}
-                  onChange={(e) => patchBoxBrush({ sizeScale: Number(e.target.value) })}
-                />
-              </label>
-              <label className="slider">
-                <span>brush opacity <b>{Math.round(boxBrush.opacity * 100)}%</b></span>
-                <input
-                  type="range"
-                  min={0.1}
-                  max={1}
-                  step={0.05}
-                  value={boxBrush.opacity}
-                  onChange={(e) => patchBoxBrush({ opacity: Number(e.target.value) })}
-                />
-              </label>
-            </>
-          )}
-        </>
-      ) : (
-        <div className="muted insp-empty">
-          Double-click a textbox to edit its text, or click empty space on the slide to add one.
-        </div>
-      )}
-
       <h3>Slide</h3>
       <label className="slider">
         <span>background</span>

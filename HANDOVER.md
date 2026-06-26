@@ -5,6 +5,19 @@ designs so you can continue without re-deriving anything.
 
 > ## 👉 CURRENT IN-FLIGHT WORK (start here)
 >
+> **Dual aspect-ratio + editor rework is the active feature — see [`DUAL_ASPECT_DESIGN.md`](DUAL_ASPECT_DESIGN.md)
+> for the live design + status (Phases 1–2 + format-lock content divergence + the editor/playback rework are
+> landed & verified; only the Phase-3 *directional* re-link modal remains).** That rework **supersedes parts
+> of the VP5 description below**: the Video tool now has a **single shared editor canvas** that edits when idle
+> and plays inline when a scope is active, with a **permanent `Transport`** (`Transport.tsx` +
+> `usePlaybackEngine.ts`) under it and per-slide / per-textbox **chip ▶/■ play buttons** (loop just that item).
+> The top tabs are now **Editor / VTT / Timeline** (the **Layout**, **Order** and **Play** tabs, plus
+> `ProjectPlayer.tsx`, `PlaybackCanvas.tsx`, `SlideOrderView.tsx`, `AnimationOrderList.tsx`, the **All/Selected**
+> play scope and `playSelectedIds`/`editorPlaying`, were removed). The left panel is a tabbed **Slides /
+> Textboxes** navigator (`NavigatorPanel.tsx`) carrying the per-box **position/format locks**; playback is the
+> transient store field `playback: {kind:'project'|'slide'|'box', …} | null`. Treat VP5 mentions of
+> PlaybackCanvas/ProjectPlayer/Play-tab/checkbox-scope as historical.
+>
 > The **Video editor (VP1–VP5)** and all post-VP5 polish are **done & verified**, and the **Voiceover**
 > feature is **complete & verified**: a project-wide WebVTT track synced to the animation, **TTS via
 > ElevenLabs** (P1–P4), audio **muxed into the MP4 export** + **optional captions** on the export preview,

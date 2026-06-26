@@ -1,6 +1,6 @@
 # Dual aspect-ratio authoring — design
 
-Status: **Phase 1 landed & verified; Phases 2–4 pending.** Companion to `HANDOVER.md`.
+Status: **Phases 1–2 + the Editor/navigator restructure + format-lock content divergence landed & verified. Remaining: the Phase-3 *directional* re-link modal (re-link currently warns + converges active-wins).** Companion to `HANDOVER.md`.
 
 The Video tool must let one project author **both** a 16:9 and a 9:16 cut. The two cuts are
 **stored separately** but keep a **preserved relationship** governed by per-textbox **locks**. This
@@ -267,11 +267,63 @@ under content-unlock + actual divergence (Phase 4).
   NOTE: editor preview keeps `BACKING_W` for both cuts (proportions already match export; only the
   exported MP4 uses per-AR pixel size). Boxes are written to BOTH frame keys (locked-by-default) until
   Phase 2 adds the unlock path.
-- **Phase 2 — locks + position write-through.** Lock storage/resolver (default locked); position
-  write-through (one-undo); per-box + slide + project lock UI; divergence dashed outline. Content
-  lock present but a no-op (label it or hide until Phase 4).
-- **Phase 3 — re-lock merge.** Directional winner modal + before/after thumbnail; deferred flag flip;
-  slide/project bulk merge with a count.
+- **Phase 2 — locks + position write-through. ✅ DONE.** `effLock` resolver (box→slide→project,
+  default locked); `updateTextBoxFrame` takes `writeAspects` and the store passes BOTH cuts when
+  position-locked / only the active aspect when unlocked (one `set()` ≡ one undo). Per-box **link
+  position** toggle + slide-level **Link all / Unlink all** in the Inspector; diverged boxes
+  (`framesDiverge`) get an amber dashed ring on the canvas + an Inspector note naming the other cut.
+  Re-linking **auto-converges (active aspect wins)** — Phase 3 upgrades this to the directional
+  winner modal + preview; it is not a no-op now. Content lock is shown only as a muted "text & style
+  are shared" note. Verified: `tsc`/`vite build` clean, `tools/videoEdit.test.mjs` (16 cases) + all
+  prior suites green, and in-browser: unlink → edit one cut → 16:9=40%/9:16=70% with the divergence
+  note; re-link converges (active wins, note clears); linked edits mirror to both cuts; slide-level
+  unlink-all cascades to the box.
+- **Editor restructure (between 2 and 3). ✅ DONE.** Merged the **Layout** + **Order** tabs into one
+  **Editor** tab (tabs now Editor / VTT / Timeline / Play); the left panel became a tabbed
+  **Slides / Textboxes** navigator (`NavigatorPanel`). The textbox list (`TextboxNavigator`, replacing
+  `AnimationOrderList`) keeps reorder + per-box delay and adds the **p / f padlock columns** — per-row
+  toggles, a clickable **column header** that bulk-applies to the slide (tri-state mixed), and diverged
+  boxes shown amber. The **slide** navigator (`SlidePanel`) carries the same per-slide padlocks (apply
+  to all boxes on the slide). Re-linking a diverged box pops a **revert-warning confirm** (`useConfirm`
+  / `ConfirmDialog`) before converging (active aspect wins). The **format (`f`) padlock is present but
+  disabled** ("coming soon") — content stays shared until content-divergence lands. Per-slide play was
+  removed (Play tab unchanged); the Phase-2 lock controls were removed from the Inspector (locks live in
+  the navigator now; the canvas amber outline stays). Deleted `SlideOrderView` + `AnimationOrderList`.
+  Verified in-browser: tab merge, navigator tabs, per-box + header + slide padlocks, diverge → amber →
+  re-link confirm → active-wins converge; `tsc`/`build` clean, all test suites green.
+- **Editor consolidation (follow-up). ✅ DONE.** The navigator tab (`navTab`, in the store) now **gates the
+  Inspector** (Textboxes → frame/timing props; Slides → background/transition); clicking a textbox on the
+  canvas forces the Textboxes tab. The per-row "+ms" delay chip moved into the Inspector; the per-box
+  custom-brush control was removed. The **Play tab folded into the Editor** as a `▶ Play / ■ Stop` toggle
+  (`editorPlaying`, transient) swapping the canvas for the inline `ProjectPlayer` + the scope-ticking slide
+  list. Aspect 16:9/9:16 buttons now show toggle state (`.video-top button` vs `.tool-on` specificity fix);
+  padlocks/headers carry `Position`/`Format` tooltips; navigator restyled (underline tabs + drop shadow +
+  top gap). Verified in-browser; `tsc`/`build` clean.
+- **Inline playback rework (follow-up). ✅ DONE.** Replaced the pseudo-tab Play toggle with a **single
+  shared editor canvas** (edits when idle, plays when a scope is set) and a **permanent transport** under
+  it (`Transport` + `usePlaybackEngine`, extracted from the old `PlaybackCanvas`). The transport plays the
+  whole project (with voiceover audio); each **slide and textbox chip** has a ▶/■ that loops just that
+  slide/textbox on the canvas; **Stop** returns to the editing layout. Store: `editorPlaying`/`playSelectedIds`
+  → `playback: {kind:'project'|'slide'|'box', …} | null` (transient); selecting/tab-switching resets it.
+  Editing `layouts` now reuse the playback `rc.layoutsBySlide`. The **"All/Selected slides" scope was
+  dropped** (chips supersede it); `ProjectPlayer` + `PlaybackCanvas` deleted. Verified in-browser:
+  transport project-play, slide-chip loop, textbox-chip loop, stop→edit; `tsc`/`build`/tests clean.
+- **Phase 3 — re-lock merge.** Upgrade the revert-confirm into a directional winner modal + before/after
+  thumbnail (choose which cut wins, not just active-wins); deferred flag flip; slide/project bulk merge
+  with a count.
+- **Phase 3.5 — format-lock behaviour (per-aspect content divergence). ✅ DONE.** The `f` padlock is
+  live. `contentByAspect` (runs/align/line-height/brush) is folded in `boxForAspect`/`projectForAspect`
+  (so canvas/layout/thumbnail/export show the right cut) and read via `contentOf` in FormatBar /
+  TextBoxOverlay / Inspector. Content write-through (`applyTextStyle` / `updateTextBoxRuns` /
+  `updateTextBoxContent` / `applyNamedStyle`) routes to the shared base when format-linked or the
+  active aspect's override when unlinked; `setBox/Slide/ProjectFormatLink` converge active-wins on
+  re-link with the same confirm. `contentsDiverge` drives the diverged indicator. The `f` columns
+  (per-box, slide, project header) are enabled and mirror the `p` behaviour. Verified: `tsc`/`build`
+  clean, `tools/{aspect,videoEdit}.test.mjs` extended (content fold / divergence / lock-aware
+  write-through / converge — 40 + 28 cases), and in-browser: unlink `f` → change line-height in 16:9 →
+  16:9=2.0 / 9:16=1.2 (diverged, amber) → re-link converges (active wins) via the confirm; slide &
+  project `f` headers toggle. NOTE: text edits diverge per-aspect too, so the two cuts can now have
+  genuinely different wording — voiceover stays one shared track (accepted earlier).
 - **Phase 4 (deferred).** Per-aspect **content** divergence via `contentByAspect` (route all content
   readers through `projectForAspect`); per-aspect `baseEmFraction`; per-aspect `lineHeightScale`;
   optional **auto vertical-fit** of line-height (needs a real box-height concept — see below);

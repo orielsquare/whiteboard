@@ -4,10 +4,11 @@ import type { LoadedFont } from '@lib/font/load'
 import { projectStore } from '@lib/persistence/ProjectStore'
 import { httpStore } from '@lib/persistence/FontStore'
 import { ensureGlyphDerived } from './store'
-import type { ExtractionParams, GlyphExtractor } from '@lib/extraction'
+import type { GlyphExtractor } from '@lib/extraction'
 import {
   newVideoProject,
   type Aspect,
+  type BoxContent,
   type NamedStyle,
   type NormRect,
   type ProjectDefaults,
@@ -19,7 +20,14 @@ import {
   type VoiceoverAudio,
   type VoiceoverCue,
 } from '@lib/project/schema'
-import { migrateProject, toStoredY } from '@lib/project/aspect'
+import { ASPECTS, effLock, migrateProject, toStoredY } from '@lib/project/aspect'
+
+/** Resolve a box's effective content (format) lock for write-through routing. */
+function contentLinked(project: VideoProject, slideId: string, boxId: string): boolean {
+  const slide = project.slides.find((sl) => sl.id === slideId)
+  const box = slide?.textBoxes.find((b) => b.id === boxId)
+  return slide && box ? effLock(project, slide, box).content : true
+}
 import type { BrushSettings } from '@lib/manifest/schema'
 import type { StylePatch } from '@lib/project/runs'
 import * as E from './videoEdit'
@@ -33,7 +41,15 @@ export interface TextSelection {
 }
 
 const nowIso = () => new Date().toISOString()
-type SlideView = 'layout' | 'order' | 'play' | 'timeline' | 'vtt'
+type SlideView = 'editor' | 'timeline' | 'vtt'
+/** which list the Editor's left navigator shows (drives the Inspector too). */
+type NavTab = 'slides' | 'boxes'
+/** What the editor canvas is playing (null = editing). Project plays the whole
+ *  video; slide/box loop just that item (chip play buttons). Transient UI state. */
+export type Playback =
+  | { kind: 'project' }
+  | { kind: 'slide'; slideId: string }
+  | { kind: 'box'; slideId: string; boxId: string }
 
 interface VideoState {
   project: VideoProject | null
@@ -48,15 +64,17 @@ interface VideoState {
   /** copy/cut buffer for a textbox (transient — survives slide switches). */
   clipboardBox: TextBox | null
   slideView: SlideView
-  /** slides ticked for scoped ("Selected") play; project order applied at play time. */
-  playSelectedIds: string[]
+  /** Editor navigator tab; also gates which properties the Inspector shows. */
+  navTab: NavTab
+  /** what the editor canvas is playing (null = editing). */
+  playback: Playback | null
 
   selectSlide: (id: string | null) => void
   selectTextBox: (id: string | null) => void
   setSelection: (sel: TextSelection | null) => void
   setSlideView: (v: SlideView) => void
-  togglePlaySelected: (id: string) => void
-  setPlaySelected: (ids: string[]) => void
+  setNavTab: (t: NavTab) => void
+  setPlayback: (p: Playback | null) => void
 
   addSlide: () => void
   copySlide: (id: string) => void
@@ -69,10 +87,24 @@ interface VideoState {
   updateTextBox: (slideId: string, boxId: string, patch: Partial<TextBox>) => void
   updateTextBoxFrame: (slideId: string, boxId: string, patch: Partial<NormRect>) => void
   updateTextBoxRuns: (slideId: string, boxId: string, runs: TextRun[]) => void
+  /** patch a box's content (align / line-height / brush), honouring the format lock. */
+  setBoxContent: (slideId: string, boxId: string, patch: Partial<BoxContent>) => void
   /** apply a run-style patch to [start,end) of a textbox (format bar). */
   applyTextStyle: (slideId: string, boxId: string, start: number, end: number, patch: StylePatch) => void
   reorderTextBoxes: (slideId: string, orderedIds: string[]) => void
   deleteTextBox: (slideId: string, boxId: string) => void
+  /** link/unlink a box's position across aspects (linking converges, active wins). */
+  setBoxPositionLink: (slideId: string, boxId: string, linked: boolean) => void
+  /** link/unlink every box's position on a slide. */
+  setSlidePositionLink: (slideId: string, linked: boolean) => void
+  /** link/unlink every box's position across the whole project. */
+  setProjectPositionLink: (linked: boolean) => void
+  /** link/unlink a box's format (content) across aspects (linking converges, active wins). */
+  setBoxFormatLink: (slideId: string, boxId: string, linked: boolean) => void
+  /** link/unlink every box's format on a slide. */
+  setSlideFormatLink: (slideId: string, linked: boolean) => void
+  /** link/unlink every box's format across the whole project. */
+  setProjectFormatLink: (linked: boolean) => void
   // textbox clipboard (Cmd/Ctrl C / X / V); works across slides
   copyTextBox: (slideId: string, boxId: string) => void
   cutTextBox: (slideId: string, boxId: string) => void
@@ -116,25 +148,26 @@ export const useVideoStore = create<VideoState>()(
       selectedTextBoxId: null,
       selection: null,
       clipboardBox: null,
-      slideView: 'layout',
-      playSelectedIds: [],
+      slideView: 'editor',
+      navTab: 'slides',
+      playback: null,
 
-      selectSlide: (id) => set({ selectedSlideId: id, selectedTextBoxId: null, selection: null }),
+      // Selecting a slide/box returns to the editing layout (stops any playback).
+      selectSlide: (id) => set({ selectedSlideId: id, selectedTextBoxId: null, selection: null, playback: null }),
       selectTextBox: (id) =>
         set((s) => ({
           selectedTextBoxId: id,
           // keep a same-box selection alive; drop it when the box changes
           selection: s.selection && s.selection.boxId === id ? s.selection : null,
+          // selecting a box (e.g. clicking it on the canvas) reveals it in the navigator
+          ...(id ? { navTab: 'boxes' as const } : null),
+          playback: null,
         })),
       setSelection: (sel) => set({ selection: sel }),
-      setSlideView: (v) => set({ slideView: v }),
-      togglePlaySelected: (id) =>
-        set((s) => ({
-          playSelectedIds: s.playSelectedIds.includes(id)
-            ? s.playSelectedIds.filter((x) => x !== id)
-            : [...s.playSelectedIds, id],
-        })),
-      setPlaySelected: (ids) => set({ playSelectedIds: ids }),
+      // changing the top view stops inline playback (it's an Editor-only mode).
+      setSlideView: (v) => set({ slideView: v, playback: null }),
+      setNavTab: (t) => set({ navTab: t }),
+      setPlayback: (p) => set({ playback: p }),
 
       addSlide: () =>
         set((s) => {
@@ -162,7 +195,7 @@ export const useVideoStore = create<VideoState>()(
             project,
             selectedSlideId: sel,
             selectedTextBoxId: null,
-            playSelectedIds: s.playSelectedIds.filter((x) => x !== id),
+            playback: null,
           }
         }),
       reorderSlides: (orderedIds) =>
@@ -185,16 +218,52 @@ export const useVideoStore = create<VideoState>()(
       updateTextBoxFrame: (slideId, boxId, patch) =>
         set((s) => {
           if (!s.project) return s
+          const slide = s.project.slides.find((sl) => sl.id === slideId)
+          const box = slide?.textBoxes.find((b) => b.id === boxId)
+          if (!slide || !box) return s
           // The editor works in width-units for y; store it as a fraction of height.
           const p2 = patch.y != null ? { ...patch, y: toStoredY(patch.y, s.activeAspect) } : patch
-          return { project: E.updateTextBoxFrame(s.project, slideId, boxId, p2) }
+          // Position-locked → write BOTH cuts (stay identical); unlocked → only the
+          // active aspect (the cuts diverge). One set() ≡ one undo.
+          const targets = effLock(s.project, slide, box).position ? ASPECTS : [s.activeAspect]
+          return { project: E.updateTextBoxFrame(s.project, slideId, boxId, p2, targets) }
         }),
       updateTextBoxRuns: (slideId, boxId, runs) =>
-        set((s) => (s.project ? { project: E.updateTextBoxRuns(s.project, slideId, boxId, runs) } : s)),
+        set((s) =>
+          s.project
+            ? { project: E.updateTextBoxRuns(s.project, slideId, boxId, runs, s.activeAspect, contentLinked(s.project, slideId, boxId)) }
+            : s,
+        ),
+      setBoxContent: (slideId, boxId, patch) =>
+        set((s) =>
+          s.project
+            ? { project: E.updateTextBoxContent(s.project, slideId, boxId, patch, s.activeAspect, contentLinked(s.project, slideId, boxId)) }
+            : s,
+        ),
       applyTextStyle: (slideId, boxId, start, end, patch) =>
-        set((s) => (s.project ? { project: E.applyTextStyle(s.project, slideId, boxId, start, end, patch) } : s)),
+        set((s) =>
+          s.project
+            ? { project: E.applyTextStyle(s.project, slideId, boxId, start, end, patch, s.activeAspect, contentLinked(s.project, slideId, boxId)) }
+            : s,
+        ),
       reorderTextBoxes: (slideId, orderedIds) =>
         set((s) => (s.project ? { project: E.reorderTextBoxes(s.project, slideId, orderedIds) } : s)),
+      setBoxPositionLink: (slideId, boxId, linked) =>
+        set((s) =>
+          s.project ? { project: E.setBoxPositionLink(s.project, slideId, boxId, linked, s.activeAspect) } : s,
+        ),
+      setSlidePositionLink: (slideId, linked) =>
+        set((s) =>
+          s.project ? { project: E.setSlidePositionLink(s.project, slideId, linked, s.activeAspect) } : s,
+        ),
+      setProjectPositionLink: (linked) =>
+        set((s) => (s.project ? { project: E.setProjectPositionLink(s.project, linked, s.activeAspect) } : s)),
+      setBoxFormatLink: (slideId, boxId, linked) =>
+        set((s) => (s.project ? { project: E.setBoxFormatLink(s.project, slideId, boxId, linked, s.activeAspect) } : s)),
+      setSlideFormatLink: (slideId, linked) =>
+        set((s) => (s.project ? { project: E.setSlideFormatLink(s.project, slideId, linked, s.activeAspect) } : s)),
+      setProjectFormatLink: (linked) =>
+        set((s) => (s.project ? { project: E.setProjectFormatLink(s.project, linked, s.activeAspect) } : s)),
       deleteTextBox: (slideId, boxId) =>
         set((s) =>
           s.project
@@ -249,7 +318,11 @@ export const useVideoStore = create<VideoState>()(
       updateNamedStyle: (id, patch) => set((s) => (s.project ? { project: E.updateNamedStyle(s.project, id, patch) } : s)),
       removeNamedStyle: (id) => set((s) => (s.project ? { project: E.removeNamedStyle(s.project, id) } : s)),
       applyNamedStyle: (slideId, boxId, start, end, styleId) =>
-        set((s) => (s.project ? { project: E.applyNamedStyle(s.project, slideId, boxId, start, end, styleId) } : s)),
+        set((s) =>
+          s.project
+            ? { project: E.applyNamedStyle(s.project, slideId, boxId, start, end, styleId, s.activeAspect, contentLinked(s.project, slideId, boxId)) }
+            : s,
+        ),
 
       setTts: (patch) => set((s) => (s.project ? { project: E.setTts(s.project, patch) } : s)),
 
@@ -274,8 +347,9 @@ export const useVideoStore = create<VideoState>()(
           selectedSlideId: p.slides[0]?.id ?? null,
           selectedTextBoxId: null,
           selection: null,
-          slideView: 'layout',
-          playSelectedIds: [],
+          slideView: 'editor',
+          navTab: 'slides',
+          playback: null,
         })
       },
       loadProject: async (id) => {
@@ -289,8 +363,9 @@ export const useVideoStore = create<VideoState>()(
           selectedSlideId: p.slides[0]?.id ?? null,
           selectedTextBoxId: null,
           selection: null,
-          slideView: 'layout',
-          playSelectedIds: [],
+          slideView: 'editor',
+          navTab: 'slides',
+          playback: null,
         })
       },
       saveProject: async (font) => {
@@ -318,15 +393,15 @@ export const videoHistory = {
   resume: () => useVideoStore.temporal.getState().resume(),
 }
 
-/** Derive (seed) every character used across the project so it can animate. */
+/** Derive (seed) every character used across the project so it can animate.
+ *  Each glyph derives with its own stored extraction settings (or defaults). */
 export async function ensureProjectGlyphsDerived(
   extractor: GlyphExtractor,
   project: VideoProject,
-  params: ExtractionParams,
 ): Promise<void> {
   const chars = new Set<string>()
   for (const slide of project.slides)
     for (const box of slide.textBoxes)
       for (const run of box.runs) for (const ch of run.text) if (ch.trim().length) chars.add(ch)
-  for (const ch of chars) await ensureGlyphDerived(extractor, ch, params)
+  for (const ch of chars) await ensureGlyphDerived(extractor, ch)
 }

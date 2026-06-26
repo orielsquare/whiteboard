@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { LoadedFont } from '@lib/font/load'
 import { captionsVtt } from '@lib/project/vtt'
 import { exportCanvasW } from '@lib/project/coords'
-import { extractionSig, type ExtractionParams, type GlyphExtractor } from '@lib/extraction'
+import { type GlyphExtractor } from '@lib/extraction'
 import type { BrushSettings } from '@lib/manifest/schema'
 import { prepareGlyph, type PreparedGlyph } from '@lib/animation/timeline'
 import type { FontEntry, FontMetrics, FontSet } from '@lib/project/layout'
@@ -12,30 +12,27 @@ import { httpStore } from '@lib/persistence/FontStore'
 import { ensureProjectGlyphsDerived, useVideoStore, videoHistory } from '../../state/videoStore'
 import { useFontRegistry } from '../../state/fontRegistry'
 import { useEditorStore } from '../../state/store'
-import { SlidePanel } from './SlidePanel'
+import { NavigatorPanel } from './NavigatorPanel'
 import { SlideCanvas } from './SlideCanvas'
 import { Inspector } from './Inspector'
+import { VoiceoverExtractPanel } from './VoiceoverExtractPanel'
 import { TimelineView } from './TimelineView'
 import { VttView } from './VttView'
 
 const ASPECTS: Aspect[] = ['16:9', '9:16']
 const VIEWS = [
-  { id: 'layout', label: 'Layout' },
-  { id: 'order', label: 'Order' },
+  { id: 'editor', label: 'Editor' },
   { id: 'vtt', label: 'VTT' },
   { id: 'timeline', label: 'Timeline' },
-  { id: 'play', label: '▶ Play' },
 ] as const
 
 export function VideoView({
   font,
   extractor,
-  params,
   brush,
 }: {
   font: LoadedFont
   extractor: GlyphExtractor | null
-  params: ExtractionParams
   brush: BrushSettings
 }) {
   const project = useVideoStore((s) => s.project)
@@ -175,9 +172,10 @@ export function VideoView({
   }, [font, brush, newProject])
 
   // Derive every character used in the project so it can render. Keyed on a
-  // signature of the needed chars + extraction params (NOT the whole project),
-  // so dragging/positioning doesn't re-trigger derivation every frame.
-  const paramsSig = extractionSig(params)
+  // signature of the needed chars (NOT the whole project), so dragging/positioning
+  // doesn't re-trigger derivation every frame. Each glyph derives with its own
+  // stored extraction settings; tuning a glyph in the Font tab re-derives it into
+  // the shared manifest, which rebuilds `glyphs` above and re-renders here.
   const charsSig = useMemo(() => {
     if (!project) return ''
     const set = new Set<string>()
@@ -188,9 +186,9 @@ export function VideoView({
   useEffect(() => {
     if (!extractor || manifestFontId !== font.hash) return
     const p = useVideoStore.getState().project
-    if (p) void ensureProjectGlyphsDerived(extractor, p, params)
+    if (p) void ensureProjectGlyphsDerived(extractor, p)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [charsSig, paramsSig, extractor, manifestFontId, font.hash])
+  }, [charsSig, extractor, manifestFontId, font.hash])
 
   const refreshList = () => projectStore.list().then(setProjects).catch(() => {})
   useEffect(() => {
@@ -366,7 +364,7 @@ export function VideoView({
           </button>
         ))}
         <span className="slideview-hint">
-          {slideView === 'layout' ? 'drag to move · click empty space to add a textbox' : ''}
+          {slideView === 'editor' ? 'drag to move · click empty space to add a textbox · ▶ a slide/textbox chip to preview it' : ''}
         </span>
       </div>
 
@@ -376,17 +374,14 @@ export function VideoView({
         <VttView />
       ) : (
         <div className="video-body">
-          <SlidePanel fonts={fonts} />
+          <NavigatorPanel fonts={fonts} />
           <SlideCanvas fonts={fonts} font={font} />
-          <Inspector />
+          <div className="inspector-col">
+            <Inspector />
+            <VoiceoverExtractPanel fonts={fonts} />
+          </div>
         </div>
       )}
-
-      <p className="hint">
-        Video editor — Layout/Order/Play tune the animation; <b>VTT</b> edits the voiceover script and
-        <b> Timeline</b> aligns voiceover to the animation. The slide view shows the voiceover in range
-        beneath the canvas.
-      </p>
     </div>
   )
 }

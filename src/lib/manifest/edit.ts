@@ -46,15 +46,6 @@ export function toggleReversed(glyph: GlyphAnimation, id: string): GlyphAnimatio
   }
 }
 
-export function togglePenLift(glyph: GlyphAnimation, id: string): GlyphAnimation {
-  return {
-    ...glyph,
-    sections: glyph.sections.map((s) =>
-      s.id === id ? { ...s, penLiftAfter: !s.penLiftAfter } : s,
-    ),
-  }
-}
-
 export function deleteSection(glyph: GlyphAnimation, id: string): GlyphAnimation {
   return { ...glyph, sections: reindex(orderedSections(glyph).filter((s) => s.id !== id)) }
 }
@@ -90,7 +81,6 @@ export function splitSection(glyph: GlyphAnimation, id: string, at: number): Gly
     kind: 'curve',
     orderIndex: 0,
     reversed: s.reversed,
-    penLiftAfter: false,
     timing: { ...s.timing, pauses: [] },
   }
   const b: StrokeSection = {
@@ -99,7 +89,6 @@ export function splitSection(glyph: GlyphAnimation, id: string, at: number): Gly
     kind: 'curve',
     orderIndex: 0,
     reversed: s.reversed,
-    penLiftAfter: s.penLiftAfter,
     timing: { ...s.timing, pauses: [] },
   }
   ordered.splice(pos, 1, a, b)
@@ -139,7 +128,6 @@ export function mergeSections(glyph: GlyphAnimation, idA: string, idB: string): 
     kind: 'curve',
     orderIndex: 0,
     reversed: false,
-    penLiftAfter: b.penLiftAfter,
     timing: { ...a.timing },
   }
 

@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { type ExtractionParams, type GlyphExtractor, type GlyphStrokes } from '@lib/extraction'
 import { renderOverlay, type OverlayOptions } from './overlay'
-import { useEditorStore } from '../state/store'
-
-const SAMPLE_CHARS = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'r', 'o', 'e', 'a', '8', 'i']
+import { CharStepper } from './CharStepper'
+import { glyphParams, useEditorStore } from '../state/store'
 
 const DEFAULT_VIEW: OverlayOptions = {
   outline: true,
@@ -16,16 +15,14 @@ const DEFAULT_VIEW: OverlayOptions = {
 
 export function ExtractionView({
   extractor,
-  params,
-  onParamsChange,
   selectedChar,
   onSelectChar,
+  chars,
 }: {
   extractor: GlyphExtractor | null
-  params: ExtractionParams
-  onParamsChange: (p: ExtractionParams) => void
   selectedChar: string
   onSelectChar: (c: string) => void
+  chars: string[]
 }) {
   const [glyph, setGlyph] = useState<GlyphStrokes | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -33,8 +30,17 @@ export function ExtractionView({
   const [view, setView] = useState<OverlayOptions>(DEFAULT_VIEW)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
 
-  const key = String(selectedChar.codePointAt(0) ?? 0)
-  const isEdited = useEditorStore((s) => s.manifest?.glyphs[key]?.edited ?? false)
+  // Extraction settings are now PER GLYPH: read this glyph's stored params (or
+  // defaults on first visit) and write changes back to the manifest, where they
+  // persist with the font. The View toggles below stay global.
+  const unicode = selectedChar.codePointAt(0) ?? 0
+  const key = String(unicode)
+  const manifestGlyph = useEditorStore((s) => s.manifest?.glyphs[key])
+  const setGlyphParams = useEditorStore((s) => s.setGlyphParams)
+  const params = glyphParams(manifestGlyph)
+  const isEdited = manifestGlyph?.edited ?? false
+  const paramsDisabled = !manifestGlyph // sliders go live once the glyph is seeded
+  const onParamsChange = (p: ExtractionParams) => setGlyphParams(unicode, p)
 
   // Live, read-only extraction for the overlay (debug payload). This tab never
   // writes the manifest — re-derivation is centralised in App.
@@ -73,26 +79,7 @@ export function ExtractionView({
   return (
     <div className="extract">
       <div className="extract-controls">
-        <label className="field">
-          <span>Character</span>
-          <input
-            value={selectedChar}
-            maxLength={2}
-            onChange={(e) => onSelectChar(e.target.value || ' ')}
-            style={{ width: 70 }}
-          />
-        </label>
-        <div className="chips">
-          {SAMPLE_CHARS.map((c, i) => (
-            <button
-              key={`${c}-${i}`}
-              className={selectedChar === c ? 'chip chip-on' : 'chip'}
-              onClick={() => onSelectChar(c)}
-            >
-              {c}
-            </button>
-          ))}
-        </div>
+        <CharStepper label="Character" value={selectedChar} onChange={onSelectChar} chars={chars} />
         {busy && <span className="busy">extracting…</span>}
       </div>
 
@@ -134,6 +121,10 @@ export function ExtractionView({
           </div>
 
           <h3>Extraction</h3>
+          <div className="muted extract-scope">
+            Per glyph — saved with the font.
+            {paramsDisabled ? (error ? ' Extraction failed for this glyph.' : ' Extracting…') : ''}
+          </div>
           <label className="slider">
             <span>
               Spur prune k <b>{params.pruneK.toFixed(2)}</b>
@@ -144,6 +135,7 @@ export function ExtractionView({
               max={3}
               step={0.05}
               value={params.pruneK}
+              disabled={paramsDisabled}
               onChange={(e) => onParamsChange({ ...params, pruneK: Number(e.target.value) })}
             />
           </label>
@@ -151,6 +143,7 @@ export function ExtractionView({
             <span>Raster resolution</span>
             <select
               value={params.targetInkPx}
+              disabled={paramsDisabled}
               onChange={(e) => onParamsChange({ ...params, targetInkPx: Number(e.target.value) })}
             >
               <option value={128}>128 px</option>
@@ -163,6 +156,7 @@ export function ExtractionView({
             <input
               type="checkbox"
               checked={params.smooth}
+              disabled={paramsDisabled}
               onChange={(e) => onParamsChange({ ...params, smooth: e.target.checked })}
             />
             Smooth (Catmull-Rom)

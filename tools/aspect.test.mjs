@@ -159,5 +159,21 @@ const mkProject = (slides, over = {}) => ({
   ok(A.framesDiverge(mkBox({ frame: { '16:9': { x: 0.2, y: 0.5, w: 0.7 }, '9:16': { x: 0.2, y: 0.5, w: null } } })) === true, 'wrap on one side only diverges')
 }
 
+// --- contentOf / boxForAspect content fold / contentsDiverge --------------
+{
+  const plain = mkBox()
+  ok(A.contentOf(plain, '16:9').align === 'left', 'contentOf base align')
+  ok(A.contentsDiverge(plain) === false, 'no contentByAspect → not diverged')
+  const div = mkBox({ contentByAspect: { '9:16': { runs: [{ text: 'y' }], align: 'center', lineHeightScale: 1.5 } } })
+  ok(A.contentOf(div, '16:9').align === 'left', 'contentOf 16:9 falls back to base')
+  ok(A.contentOf(div, '9:16').align === 'center', 'contentOf 9:16 uses override')
+  ok(A.boxForAspect(div, '9:16').align === 'center', 'boxForAspect folds override content (align)')
+  ok(A.boxForAspect(div, '9:16').runs[0].text === 'y', 'boxForAspect folds override runs')
+  ok(A.boxForAspect(div, '16:9').runs[0].text === 'x', 'boxForAspect 16:9 uses base runs')
+  ok(A.contentsDiverge(div) === true, 'differing override → diverged')
+  const same = mkBox({ contentByAspect: { '9:16': { runs: [{ text: 'x' }], align: 'left', lineHeightScale: 1.2 } } })
+  ok(A.contentsDiverge(same) === false, 'override equal to base → not diverged')
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed) process.exit(1)

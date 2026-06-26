@@ -1,4 +1,5 @@
 import type { EasingName } from '@lib/geometry/easing'
+import type { ExtractionParams } from '@lib/extraction/types'
 
 /**
  * The editable Font Animator manifest. Geometry (the centerline points + width)
@@ -49,7 +50,6 @@ export interface StrokeSection {
   kind: SectionKind
   orderIndex: number
   reversed: boolean
-  penLiftAfter: boolean
   timing: SectionTiming
 }
 
@@ -64,6 +64,9 @@ export interface GlyphAnimation {
   edited?: boolean
   /** signature of the extraction params this glyph was derived from (extractionSig). */
   derivedSig?: string
+  /** Per-glyph extraction settings (tuned in the Stroke extraction tab, persisted with
+   *  the manifest). Absent ⇒ this glyph uses DEFAULT_PARAMS. */
+  extractionParams?: ExtractionParams
 }
 
 /** Deterministic, fully describes the look so headless render matches preview. */
