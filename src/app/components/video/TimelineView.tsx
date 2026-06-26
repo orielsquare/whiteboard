@@ -8,7 +8,7 @@ import { runsToPlainText } from '@lib/project/runs'
 import { isAudioStale } from '@lib/project/vtt'
 import type { VoiceoverCue } from '@lib/project/schema'
 import { useVideoStore } from '../../state/videoStore'
-import { BACKING_W } from './layoutCanvas'
+import { previewCanvasW } from './layoutCanvas'
 import { SlideThumbnail } from './SlideThumbnail'
 
 const EMPTY: VoiceoverCue[] = []
@@ -86,7 +86,10 @@ export function TimelineView({ fonts }: { fonts: FontSet }) {
   // dragging/adding/removing a cue doesn't re-lay-out the whole timeline. `slides`
   // stays referentially equal across voiceover edits (updateCue spreads the project).
   const rc = useMemo(
-    () => (project ? buildRenderContext(projectForAspect(project, activeAspect), fonts, BACKING_W, playbackRate) : null),
+    () =>
+      project
+        ? buildRenderContext(projectForAspect(project, activeAspect), fonts, previewCanvasW(activeAspect), playbackRate)
+        : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [project?.slides, project?.baseEmFraction, fonts, playbackRate, activeAspect],
   )

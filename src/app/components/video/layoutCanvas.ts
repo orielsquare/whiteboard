@@ -1,3 +1,5 @@
+import { aspectWidthFraction } from '@lib/project/coords'
+import type { Aspect } from '@lib/project/schema'
 import type { FlatBox, FlatSlide } from '@lib/project/aspect'
 import type { TextBoxLayout } from '@lib/project/layout'
 
@@ -8,8 +10,17 @@ import type { TextBoxLayout } from '@lib/project/layout'
  * normalized coords through the canvas backing size + getBoundingClientRect.
  */
 
-/** Backing width (px) the layout/render run at; CSS scales the canvas to fit. */
+/** Backing width (px) of the 16:9 (landscape) editor preview; CSS scales the
+ *  canvas to fit. The font basis for both cuts (the 16:9-equivalent width). */
 export const BACKING_W = 960
+
+/** The per-aspect preview backing width: 16:9 = BACKING_W, 9:16 = 9/16·BACKING_W
+ *  (so the portrait preview is genuinely 9/16 as wide, same area). All editor
+ *  geometry (canvas size, hit-test, origins) runs at this width; the font basis
+ *  stays BACKING_W via `buildRenderContext`. */
+export function previewCanvasW(aspect: Aspect): number {
+  return BACKING_W * aspectWidthFraction(aspect)
+}
 
 export interface NormPoint {
   nx: number

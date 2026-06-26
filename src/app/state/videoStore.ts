@@ -6,6 +6,7 @@ import { httpStore } from '@lib/persistence/FontStore'
 import { ensureGlyphDerived } from './store'
 import type { GlyphExtractor } from '@lib/extraction'
 import {
+  makeId,
   newVideoProject,
   type Aspect,
   type BoxContent,
@@ -136,6 +137,13 @@ interface VideoState {
   newProject: (fontId: string, brush: BrushSettings) => void
   loadProject: (id: string) => Promise<void>
   saveProject: (font: LoadedFont) => Promise<void>
+  /** Rename the open project (cosmetic; persisted on next save, which renames the
+   *  Drive file too). */
+  renameProject: (name: string) => void
+  /** Save a copy: persist the current project, then server-duplicate it (+ its
+   *  voiceover clips) under a new id/name, and switch the editor to the copy.
+   *  Returns the new project id. */
+  saveProjectAs: (name: string, font: LoadedFont) => Promise<string>
 }
 
 export const useVideoStore = create<VideoState>()(
@@ -379,6 +387,23 @@ export const useVideoStore = create<VideoState>()(
         // Persist the editor font's bytes so the project's default font is on disk
         // (other referenced fonts are saved via the Font tab).
         await httpStore.saveFont(font.hash, font.buffer)
+      },
+      renameProject: (name) =>
+        set((s) => (s.project ? { project: { ...s.project, name, updatedAt: nowIso() } } : s)),
+      saveProjectAs: async (name, font) => {
+        const p = get().project
+        if (!p) return ''
+        // The server copies the STORED project, so make sure it's current first.
+        const saved = { ...p, updatedAt: nowIso() }
+        set({ project: saved })
+        await projectStore.save(saved)
+        await httpStore.saveFont(font.hash, font.buffer)
+        const newId = makeId()
+        await projectStore.copy(saved.id, newId, name)
+        // Switch the editor to the copy; its voiceover cues now resolve under the
+        // new id (the server deep-copied the clips into the copy's folder).
+        set({ project: { ...saved, id: newId, name, updatedAt: nowIso() } })
+        return newId
       },
     }),
     { limit: 60, partialize: (s) => ({ project: s.project }) },

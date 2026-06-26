@@ -20,6 +20,11 @@ export interface FontMetrics {
   ascender: number
   /** negative (design units below baseline). */
   descender: number
+  /** the font's space-glyph advance (design units). Used so the canvas wraps text
+   *  with the SAME spacing the on-canvas editor (real font) does — otherwise a
+   *  hardcoded space width reflows the text on entering edit. Falls back to
+   *  `SPACE_EM` ems when absent (older manifests). */
+  spaceAdvance?: number
 }
 
 /** One font's render inputs: prepared glyphs (by char) + metrics. */
@@ -129,14 +134,21 @@ function underlineDrawMs(spanEm: number): number {
   return Math.min(700, Math.max(200, 120 + spanEm * 180))
 }
 
-/** Lay out one textbox. Pure; safe to memoize on (box, fonts, baseEmFraction, canvasW).
+/** Lay out one textbox. Pure; safe to memoize on (box, fonts, baseEmFraction, canvasW, emBasisW).
  *  Each run resolves its own font from `fonts` (per-run `fontId`), so a box — even
- *  a single line — may mix fonts; metrics are taken per run/slot. */
+ *  a single line — may mix fonts; metrics are taken per run/slot.
+ *
+ *  `canvasW` sizes GEOMETRY (box x/y/w, wrap width) — per aspect, so a portrait box
+ *  is physically narrower. `emBasisW` sizes the FONT (em px) — the aspect-invariant
+ *  16:9-equivalent width, so type stays the same pixel size across cuts and a
+ *  narrower portrait box wraps onto more lines. Defaults to `canvasW` (single-aspect
+ *  callers + tests are unaffected). */
 export function layoutTextBox(
   box: FlatBox,
   fonts: FontSet,
   baseEmFraction: number,
   canvasW: number,
+  emBasisW: number = canvasW,
 ): TextBoxLayout {
   const defMetrics = fontFor(fonts, fonts.defaultId).metrics
 
@@ -147,8 +159,8 @@ export function layoutTextBox(
     const fe = fontFor(fonts, run.fontId)
     const upm = fe.metrics.unitsPerEm
     const sizeScale = run.sizeScale ?? 1
-    const scale = (baseEmFraction * sizeScale * canvasW) / upm
-    const emPx = baseEmFraction * sizeScale * canvasW
+    const scale = (baseEmFraction * sizeScale * emBasisW) / upm
+    const emPx = baseEmFraction * sizeScale * emBasisW
     // Kerning: extra trailing advance after each glyph/space, in ems → px.
     const kernPx = (run.letterSpacing ?? 0) * emPx
     const ascentPx = fe.metrics.ascender * scale
@@ -156,12 +168,15 @@ export function layoutTextBox(
     const color = run.color ?? null
     const underline = !!run.underline
     const minHalfWidth = upm * 0.004
+    // Space width = the font's real space advance (matches the editor overlay +
+    // the actual font), falling back to SPACE_EM ems for older fonts.
+    const spaceEm = fe.metrics.spaceAdvance != null ? fe.metrics.spaceAdvance / upm : SPACE_EM
     for (const ch of run.text) {
       const base = { scale, ascentPx, descentPx, color, underline, upm, minHalfWidth, xPx: 0, startMs: 0, endMs: 0 }
       if (ch === '\n') {
         slots.push({ ...base, kind: 'newline', prepared: null, advancePx: 0, glyphIndex: -1 })
       } else if (/\s/.test(ch)) {
-        slots.push({ ...base, kind: 'space', prepared: null, advancePx: SPACE_EM * emPx + kernPx, glyphIndex: -1 })
+        slots.push({ ...base, kind: 'space', prepared: null, advancePx: spaceEm * emPx + kernPx, glyphIndex: -1 })
       } else {
         const pg = fe.glyphs.get(ch)
         if (pg) {
@@ -236,7 +251,7 @@ export function layoutTextBox(
   if (line.length > 0 || lines.length === 0) lines.push(line)
 
   // 4) per-line vertical metrics + baselines ---------------------------------
-  const defaultScale = (baseEmFraction * canvasW) / defMetrics.unitsPerEm
+  const defaultScale = (baseEmFraction * emBasisW) / defMetrics.unitsPerEm
   const lineAsc: number[] = []
   const lineDesc: number[] = []
   for (const ln of lines) {

@@ -158,6 +158,7 @@ export async function renderProjectToMp4({
   slideIds = null,
   tailMs = 600,
   includeAudio = true,
+  voiceoverDir = null,
   outPath,
   onProgress,
 }) {
@@ -241,7 +242,9 @@ export async function renderProjectToMp4({
   let audioCues = 0
   let audioWarning = null
   if (includeAudio && !slideIds) {
-    const audioDir = join(ROOT, 'voiceover', safeSeg(sub.id))
+    // Headless hosts (e.g. the spreadsheet-builder server) stage clips into a
+    // temp dir and pass it here; otherwise resolve the dev server's layout.
+    const audioDir = voiceoverDir || join(ROOT, 'voiceover', safeSeg(sub.id))
     const cues = collectAudioCues(sub, audioDir)
     if (cues.length) {
       try {

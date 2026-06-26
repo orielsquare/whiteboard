@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { aspectHeightUnits } from '@lib/project/coords'
+import { aspectHeightUnits, aspectWidthFraction } from '@lib/project/coords'
 import { boxForAspect } from '@lib/project/aspect'
 import { layoutTextBox, type FontSet } from '@lib/project/layout'
 import { renderTextBox } from '@lib/project/render'
@@ -61,9 +61,12 @@ export function SlideThumbnail({
     ctx.fillStyle = slide.background
     ctx.fillRect(0, 0, w, h)
     if (!brush) return
+    // Font basis = 16:9-equivalent width, so the thumbnail's line wrapping matches
+    // the main canvas (the thumbnail is height-fixed, so its width differs per aspect).
+    const emBasisW = w / aspectWidthFraction(aspect)
     for (const box of slide.textBoxes) {
       const fb = boxForAspect(box, aspect)
-      const layout = layoutTextBox(fb, fonts, baseEmFraction, w)
+      const layout = layoutTextBox(fb, fonts, baseEmFraction, w, emBasisW)
       renderTextBox(ctx, layout, boxOriginPx(fb, w), fb.brush ?? brush, Infinity)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

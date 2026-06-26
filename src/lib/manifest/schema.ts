@@ -90,6 +90,11 @@ export interface FontMetadata {
   unitsPerEm: number
   ascender: number
   descender: number
+  /** The font's space-glyph advance (design units); absent in older manifests. */
+  spaceAdvance?: number
+  /** Cosmetic, user-facing name (rename), decoupled from the content-hash id.
+   *  Defaults to `family` when unset. */
+  name?: string
 }
 
 /** Top-level editable artifact: one JSON file = one font's animation treatment. */

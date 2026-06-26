@@ -54,6 +54,7 @@ export function seedFontManifest(font: LoadedFont, isoNow: string): FontManifest
       unitsPerEm: font.unitsPerEm,
       ascender: f.ascender ?? font.unitsPerEm * 0.8,
       descender: f.descender ?? -font.unitsPerEm * 0.2,
+      spaceAdvance: font.spaceAdvance,
     },
     defaultTiming: { ...DEFAULT_TIMING },
     glyphs: {},

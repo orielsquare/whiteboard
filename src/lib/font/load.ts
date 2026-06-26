@@ -8,8 +8,21 @@ export interface LoadedFont {
   fileName: string
   family: string
   unitsPerEm: number
+  /** The font's space-glyph advance (design units) — so text wraps with the font's
+   *  real spacing in both the canvas and the on-canvas editor. */
+  spaceAdvance: number
   /** Short stable hash of the font bytes — used as the manifest fontId later. */
   hash: string
+}
+
+/** The font's space advance in design units (0 if it has no usable space glyph). */
+export function spaceAdvanceUnits(font: opentype.Font): number {
+  try {
+    const adv = font.getAdvanceWidth(' ', font.unitsPerEm)
+    return Number.isFinite(adv) && adv > 0 ? adv : 0
+  } catch {
+    return 0
+  }
 }
 
 export async function loadFontFromArrayBuffer(
@@ -20,7 +33,15 @@ export async function loadFontFromArrayBuffer(
   const family =
     font.names.fontFamily?.en ?? font.names.fullName?.en ?? fileName.replace(/\.[^.]+$/, '')
   const hash = await hashBuffer(buf)
-  return { font, buffer: buf, fileName, family, unitsPerEm: font.unitsPerEm, hash }
+  return {
+    font,
+    buffer: buf,
+    fileName,
+    family,
+    unitsPerEm: font.unitsPerEm,
+    spaceAdvance: spaceAdvanceUnits(font),
+    hash,
+  }
 }
 
 export async function loadFontFromUrl(url: string): Promise<LoadedFont> {

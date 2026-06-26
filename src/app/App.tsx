@@ -3,6 +3,7 @@ import { GlyphExtractor, extractionSig } from '@lib/extraction'
 import { DEFAULT_BRUSH, type BrushSettings } from '@lib/manifest/schema'
 import { loadFontFromArrayBuffer, loadFontFromUrl, type LoadedFont } from '@lib/font/load'
 import { httpStore } from '@lib/persistence/FontStore'
+import { apiFetch, authUrl } from '@lib/persistence/apiBase'
 import { ExtractionView } from './components/ExtractionView'
 import { PreviewView } from './components/PreviewView'
 import { EditorView } from './components/EditorView'
@@ -18,9 +19,11 @@ type TopTab = 'font' | 'video'
 /** Sub-tabs within the Font tool, in working order (Glyphs is the landing grid). */
 type FontSubTab = 'glyphs' | 'extract' | 'editor' | 'animate'
 
+// Bundled public assets resolve under the mount base (Vite serves public/ there
+// but does NOT rewrite runtime URL strings), so prefix with BASE_URL.
 const BUNDLED = [
-  { label: 'Patrick Hand (handwriting)', url: '/fonts/PatrickHand-Regular.ttf' },
-  { label: 'Fira Sans (sans)', url: '/fonts/FiraSans-Regular.ttf' },
+  { label: 'Patrick Hand (handwriting)', url: `${import.meta.env.BASE_URL}fonts/PatrickHand-Regular.ttf` },
+  { label: 'Fira Sans (sans)', url: `${import.meta.env.BASE_URL}fonts/FiraSans-Regular.ttf` },
 ]
 
 export function App() {
@@ -40,6 +43,12 @@ export function App() {
   // where you last worked (stroke extraction by default, editor if you've been).
   const [glyphView, setGlyphView] = useState<Record<string, 'extract' | 'editor'>>({})
   const [saveStatus, setSaveStatus] = useState<string | null>(null)
+  // Signed-in user (from the shared builder server), shown in the header.
+  const [user, setUser] = useState<{ email?: string } | null>(null)
+  // Cosmetic font name (rename); local draft committed on blur/Enter.
+  const setFontName = useEditorStore((s) => s.setFontName)
+  const manifestName = useEditorStore((s) => (s.manifest ? s.manifest.metadata.name ?? s.manifest.metadata.family : ''))
+  const [fontNameDraft, setFontNameDraft] = useState('')
 
   // A single shared extractor per font (one Web Worker, one font parse).
   const [extractor, setExtractor] = useState<GlyphExtractor | null>(null)
@@ -120,6 +129,26 @@ export function App() {
     setGlyphView((m) => (m[selectedChar] === fontSubTab ? m : { ...m, [selectedChar]: fontSubTab }))
   }, [topTab, fontSubTab, selectedChar])
 
+  // Who's signed in (the shared builder server's Google session).
+  useEffect(() => {
+    apiFetch(authUrl('/auth/me'))
+      .then((r) => (r.ok ? r.json() : null))
+      .then((u) => u && setUser(u))
+      .catch(() => {})
+  }, [])
+
+  // Sync the font-name field when the loaded font changes.
+  useEffect(() => {
+    setFontNameDraft(manifestName)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manifestFontId])
+
+  const commitFontName = useCallback(() => {
+    const n = fontNameDraft.trim()
+    if (n && n !== manifestName) setFontName(n)
+    else setFontNameDraft(manifestName)
+  }, [fontNameDraft, manifestName, setFontName])
+
   const onFile = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
@@ -176,6 +205,8 @@ export function App() {
             <strong>{font.family}</strong> · {font.unitsPerEm} upm
           </span>
         )}
+        <span className="spacer" />
+        {user?.email && <span className="meta-inline user-inline" title="signed in">{user.email}</span>}
       </header>
 
       {/* Top-level tool switch. */}
@@ -212,6 +243,20 @@ export function App() {
           <div className="font-actions">
             <button onClick={() => editorHistory.undo()}>↶ Undo</button>
             <button onClick={() => editorHistory.redo()}>↷ Redo</button>
+            <label className="field font-name-field">
+              <span>Name</span>
+              <input
+                className="font-name-input"
+                value={fontNameDraft}
+                onChange={(e) => setFontNameDraft(e.target.value)}
+                onBlur={commitFontName}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                }}
+                placeholder="font name"
+                title="Rename this font (cosmetic — the font is identified by its content hash)"
+              />
+            </label>
             <span className="spacer" />
             {saveStatus && <span className="savestatus-inline">{saveStatus}</span>}
             <button className="primary" onClick={doSave} disabled={!dirty} title={dirty ? 'Save font to disk' : 'No unsaved changes'}>

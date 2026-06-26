@@ -82,7 +82,7 @@ export const useFontRegistry = create<FontRegistryState>((set, get) => ({
               const m = manifest.metadata
               const entry: RegistryEntry = {
                 glyphs,
-                metrics: { unitsPerEm: m.unitsPerEm, ascender: m.ascender, descender: m.descender },
+                metrics: { unitsPerEm: m.unitsPerEm, ascender: m.ascender, descender: m.descender, spaceAdvance: m.spaceAdvance },
                 family: m.family,
                 timing: manifest.defaultTiming,
               }

@@ -3,6 +3,7 @@ import type { BrushSettings } from '@lib/manifest/schema'
 import { paintStroke } from '@lib/render/brush'
 import type { Transform } from '@lib/render/ribbon'
 import { layoutTextBox, type FontSet, type TextBoxLayout } from './layout'
+import { aspectWidthFraction } from './coords'
 import type { FlatProject, FlatSlide } from './aspect'
 import { computeProjectTiming, type ProjectTiming, type SlideTiming } from './timing'
 import { composeTransition, transitionProgress } from './transitions'
@@ -183,11 +184,15 @@ export function buildRenderContext(
   canvasW: number,
   speed = 1,
 ): RenderContext {
+  // Font basis = the 16:9-equivalent width (aspect-invariant), so type is the same
+  // pixel size in both cuts while geometry (box width) scales with the per-aspect
+  // canvasW — i.e. a portrait box wraps onto more lines.
+  const emBasisW = canvasW / aspectWidthFraction(project.aspect)
   const layoutsBySlide = new Map<string, Map<string, TextBoxLayout>>()
   for (const slide of project.slides) {
     const m = new Map<string, TextBoxLayout>()
     for (const box of slide.textBoxes) {
-      m.set(box.id, layoutTextBox(box, fonts, project.baseEmFraction, canvasW))
+      m.set(box.id, layoutTextBox(box, fonts, project.baseEmFraction, canvasW, emBasisW))
     }
     layoutsBySlide.set(slide.id, m)
   }

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { Aspect, TextBox } from '@lib/project/schema'
+import { aspectWidthFraction } from '@lib/project/coords'
 import { contentOf, frameOf } from '@lib/project/aspect'
 import { runsToPlainText, setPlainTextPreservingStyles } from '@lib/project/runs'
 import { useVideoStore } from '../../state/videoStore'
@@ -82,6 +83,13 @@ export function TextBoxOverlay({
   // A flat caret offset to restore after a model-driven rebuild (Enter/paste).
   const pendingCaretRef = useRef<number | null>(null)
   const didFocusRef = useRef(false)
+  // True during a model-driven DOM rebuild + the frame after it. `replaceChildren`
+  // momentarily collapses the DOM selection before we restore it; without this
+  // guard that transient collapse can be recorded to the store (via selectionchange)
+  // and then "restored" as a caret on the next format change — the recurring
+  // selection-collapse bug. The layoutEffect sets the authoritative selection, so
+  // ignoring selectionchange in this window loses nothing.
+  const rebuildingRef = useRef(false)
 
   // Edit the ACTIVE aspect's content (which may diverge from the shared base when
   // the box's format lock is off).
@@ -131,6 +139,7 @@ export function TextBoxOverlay({
     }
     const el = elRef.current
     if (!el) return
+    rebuildingRef.current = true
     syncDom(el)
     const len = runsToPlainText(content.runs).length
     let a = len
@@ -151,6 +160,10 @@ export function TextBoxOverlay({
       didFocusRef.current = true
     }
     applySelection(el, a, f)
+    // Release the guard after this turn's selectionchange events have flushed.
+    requestAnimationFrame(() => {
+      rebuildingRef.current = false
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [content.runs])
 
@@ -160,6 +173,9 @@ export function TextBoxOverlay({
       const el = elRef.current
       const sel = window.getSelection()
       if (!el || !sel || sel.rangeCount === 0) return
+      // Ignore the transient selection churn while we rebuild the spans (the
+      // layoutEffect sets the real selection); recording it would clobber the range.
+      if (rebuildingRef.current) return
       // Only record the selection while WE are focused. Otherwise a focus-stealing
       // format control (font/style select, colour picker) blurs the overlay, which
       // collapses the DOM selection and would otherwise clobber the real range.
@@ -227,12 +243,15 @@ export function TextBoxOverlay({
 
   const f = frameOf(box, aspect)
   const noWrap = f.w == null
+  // Font basis is the 16:9-equivalent width (aspect-invariant), so the overlay's
+  // type matches the canvas (which sizes fonts against BACKING_W, not the narrower
+  // portrait width). Position/width use clientW directly (fractions of width).
   const style: React.CSSProperties = {
     position: 'absolute',
     left: `${f.x * clientW}px`,
     top: `${f.y * clientW}px`,
     width: noWrap ? 'max-content' : `${f.w! * clientW}px`,
-    fontSize: `${baseEmFraction * clientW}px`,
+    fontSize: `${(baseEmFraction * clientW) / aspectWidthFraction(aspect)}px`,
     lineHeight: lineHeightEm * content.lineHeightScale,
     textAlign: content.align,
     fontFamily: FALLBACK_FAMILY, // per-run families are set on each span

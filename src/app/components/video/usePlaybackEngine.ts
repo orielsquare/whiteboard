@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { canvasSize } from '@lib/project/coords'
 import type { Aspect } from '@lib/project/schema'
-import { BACKING_W } from './layoutCanvas'
+import { previewCanvasW } from './layoutCanvas'
 
 const END_HOLD_MS = 500
 
@@ -129,7 +129,7 @@ export function usePlaybackEngine(
             }
           }
         }
-        const { w, h } = canvasSize(aspectRef.current, BACKING_W)
+        const { w, h } = canvasSize(aspectRef.current, previewCanvasW(aspectRef.current))
         if (canvas.width !== w) canvas.width = w
         if (canvas.height !== h) canvas.height = h
         const ctx = canvas.getContext('2d')

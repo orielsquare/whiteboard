@@ -5,7 +5,7 @@ import { contentOf, flattenSlide, framesDiverge, projectForAspect, type FlatBox 
 import { fontFor, type FontSet, type TextBoxLayout } from '@lib/project/layout'
 import { buildRenderContext, renderProject, renderSlide, renderTextBox } from '@lib/project/render'
 import { useVideoStore } from '../../state/videoStore'
-import { BACKING_W, boxOriginPx, clientToNorm, drawSelection, hitTest, type NormPoint } from './layoutCanvas'
+import { boxOriginPx, clientToNorm, drawSelection, hitTest, previewCanvasW, type NormPoint } from './layoutCanvas'
 import { FormatBar } from './FormatBar'
 import { TextBoxOverlay } from './TextBoxOverlay'
 import { Transport } from './Transport'
@@ -73,13 +73,15 @@ export function SlideCanvas({
   )
   const baseEmFraction = project?.baseEmFraction ?? 0.085
   const editingBox = editingBoxId ? slide?.textBoxes.find((b) => b.id === editingBoxId) : undefined
+  // Per-aspect preview backing width (portrait = 9/16 as wide as landscape).
+  const previewW = previewCanvasW(activeAspect)
 
   // Full render context (every slide, projected to the active aspect) — drives the
   // voiceover extract AND inline playback; the editing layouts reuse its per-slide map.
   const flatProject = useMemo(() => (project ? projectForAspect(project, activeAspect) : null), [project, activeAspect])
   const rc = useMemo(
-    () => (flatProject ? buildRenderContext(flatProject, fonts, BACKING_W, playbackRate) : null),
-    [flatProject, fonts, playbackRate],
+    () => (flatProject ? buildRenderContext(flatProject, fonts, previewW, playbackRate) : null),
+    [flatProject, fonts, previewW, playbackRate],
   )
   const layouts = useMemo(
     () => (slide && rc ? rc.layoutsBySlide.get(slide.id) ?? EMPTY_LAYOUTS : EMPTY_LAYOUTS),
@@ -153,7 +155,7 @@ export function SlideCanvas({
       if (!canvas || !project || !fslide) return
       const ctx = canvas.getContext('2d')
       if (!ctx) return
-      const { w, h } = canvasSize(activeAspect, BACKING_W)
+      const { w, h } = canvasSize(activeAspect, previewW)
       if (canvas.width !== w) canvas.width = w
       if (canvas.height !== h) canvas.height = h
       ctx.clearRect(0, 0, w, h)
@@ -180,7 +182,7 @@ export function SlideCanvas({
         if (l) drawSelection(ctx, selBox, l, w, undefined, originFor(selBox))
       }
     },
-    [project, fslide, activeAspect, layouts, divergedIds, selectedTextBoxId, editingBoxId],
+    [project, fslide, activeAspect, previewW, layouts, divergedIds, selectedTextBoxId, editingBoxId],
   )
 
   // Static draw when idle; also re-fires on Stop (playback → null) to repaint the
@@ -220,7 +222,7 @@ export function SlideCanvas({
     const p = clientToNorm(canvas, e.clientX, e.clientY)
     downNormRef.current = p
     movedRef.current = false
-    const hit = hitTest(fslide, layouts, p.nx, p.ny, BACKING_W)
+    const hit = hitTest(fslide, layouts, p.nx, p.ny, previewW)
     downHitRef.current = hit
     if (hit) {
       const box = fslide.textBoxes.find((b) => b.id === hit)
@@ -241,7 +243,7 @@ export function SlideCanvas({
     const p = clientToNorm(canvas, e.clientX, e.clientY)
     if (!movedRef.current) {
       const dn = downNormRef.current
-      if (dn && Math.hypot((p.nx - dn.nx) * BACKING_W, (p.ny - dn.ny) * BACKING_W) < 3) return
+      if (dn && Math.hypot((p.nx - dn.nx) * previewW, (p.ny - dn.ny) * previewW) < 3) return
       movedRef.current = true
     }
     // Local move only: update the transient position and repaint. y is width-units;
@@ -288,7 +290,7 @@ export function SlideCanvas({
     const canvas = canvasRef.current
     if (!canvas) return
     const p = clientToNorm(canvas, e.clientX, e.clientY)
-    const hit = hitTest(fslide, layouts, p.nx, p.ny, BACKING_W)
+    const hit = hitTest(fslide, layouts, p.nx, p.ny, previewW)
     if (hit) {
       selectTextBox(hit)
       setEditingBoxId(hit)
@@ -297,14 +299,14 @@ export function SlideCanvas({
 
   return (
     <div className="slidecanvas">
-      {!playback && <FormatBar />}
+      <FormatBar />
       <div className="stage stage-overlay video-stage">
         <div className="canvas-wrap">
           <canvas
             ref={canvasRef}
             className="slide-canvas-el"
-            width={canvasSize(activeAspect, BACKING_W).w}
-            height={canvasSize(activeAspect, BACKING_W).h}
+            width={canvasSize(activeAspect, previewW).w}
+            height={canvasSize(activeAspect, previewW).h}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}

@@ -9,6 +9,7 @@ import type { FontEntry, FontMetrics, FontSet } from '@lib/project/layout'
 import type { Aspect } from '@lib/project/schema'
 import { projectStore, type ProjectSummary } from '@lib/persistence/ProjectStore'
 import { httpStore } from '@lib/persistence/FontStore'
+import { apiUrl, apiFetch } from '@lib/persistence/apiBase'
 import { ensureProjectGlyphsDerived, useVideoStore, videoHistory } from '../../state/videoStore'
 import { useFontRegistry } from '../../state/fontRegistry'
 import { useEditorStore } from '../../state/store'
@@ -39,6 +40,8 @@ export function VideoView({
   const newProject = useVideoStore((s) => s.newProject)
   const loadProject = useVideoStore((s) => s.loadProject)
   const saveProject = useVideoStore((s) => s.saveProject)
+  const renameProject = useVideoStore((s) => s.renameProject)
+  const saveProjectAs = useVideoStore((s) => s.saveProjectAs)
   const activeAspect = useVideoStore((s) => s.activeAspect)
   const setActiveAspect = useVideoStore((s) => s.setActiveAspect)
   const setBaseEmFraction = useVideoStore((s) => s.setBaseEmFraction)
@@ -47,6 +50,10 @@ export function VideoView({
 
   const [status, setStatus] = useState<string | null>(null)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [filesOpen, setFilesOpen] = useState(false)
+  // Local draft of the project name; committed (renamed) on blur/Enter so typing
+  // doesn't spam the undo history per keystroke.
+  const [nameDraft, setNameDraft] = useState('')
   const [exporting, setExporting] = useState(false)
   const [exportResult, setExportResult] = useState<
     {
@@ -103,17 +110,30 @@ export function VideoView({
     return m
   }, [manifestGlyphs])
 
+  // Always carry the live font's real space advance (the manifest may predate it),
+  // so the canvas wraps text with the same spacing as the on-canvas editor.
   const metrics: FontMetrics | null = useMemo(
     () =>
       manifestMeta
-        ? { unitsPerEm: manifestMeta.unitsPerEm, ascender: manifestMeta.ascender, descender: manifestMeta.descender }
-        : { unitsPerEm: font.unitsPerEm, ascender: font.font.ascender, descender: font.font.descender },
+        ? {
+            unitsPerEm: manifestMeta.unitsPerEm,
+            ascender: manifestMeta.ascender,
+            descender: manifestMeta.descender,
+            spaceAdvance: manifestMeta.spaceAdvance ?? font.spaceAdvance,
+          }
+        : {
+            unitsPerEm: font.unitsPerEm,
+            ascender: font.font.ascender,
+            descender: font.font.descender,
+            spaceAdvance: font.spaceAdvance,
+          },
     [manifestMeta, font],
   )
   const safeMetrics: FontMetrics = metrics ?? {
     unitsPerEm: font.unitsPerEm,
     ascender: font.font.ascender,
     descender: font.font.descender,
+    spaceAdvance: font.spaceAdvance,
   }
 
   // Multi-font: assemble a FontSet for the pure pipeline. The Font-tab font is
@@ -195,6 +215,11 @@ export function VideoView({
     refreshList()
   }, [])
 
+  // Keep the name field in sync when the open project changes (load/new/copy).
+  useEffect(() => {
+    setNameDraft(project?.name ?? '')
+  }, [project?.id])
+
   // Textbox clipboard: Cmd/Ctrl C / X / V on the selected box (across slides).
   // Defers to the browser while editing text (overlay / form fields).
   useEffect(() => {
@@ -221,20 +246,66 @@ export function VideoView({
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  const commitName = () => {
+    const name = nameDraft.trim()
+    if (name && name !== project?.name) renameProject(name)
+    else setNameDraft(project?.name ?? '')
+  }
   const doSave = async () => {
+    // Prompt for a real name the first time an "Untitled video" is saved, so the
+    // Drive file lands with a meaningful name.
+    const cur = useVideoStore.getState().project
+    if (cur && (!cur.name || cur.name === 'Untitled video')) {
+      const entered = window.prompt('Name this video:', '')
+      if (entered && entered.trim()) {
+        renameProject(entered.trim())
+        setNameDraft(entered.trim())
+      }
+    }
     setStatus('saving…')
     try {
       await saveProject(font)
-      setStatus('saved to disk')
+      setStatus('saved')
       refreshList()
     } catch (e) {
       setStatus('save failed: ' + e)
+    }
+  }
+  const doSaveAs = async () => {
+    const cur = useVideoStore.getState().project
+    if (!cur) return
+    const entered = window.prompt('Save a copy as:', `${cur.name} copy`)
+    if (!entered || !entered.trim()) return
+    setStatus('saving copy…')
+    try {
+      const id = await saveProjectAs(entered.trim(), font)
+      setNameDraft(entered.trim())
+      setStatus('saved copy')
+      refreshList()
+      setFilesOpen(false)
+      return id
+    } catch (e) {
+      setStatus('copy failed: ' + e)
+    }
+  }
+  const doDelete = async (id: string, name: string) => {
+    if (!window.confirm(`Delete "${name}"? This moves it to Drive trash.`)) return
+    try {
+      await projectStore.remove(id)
+      refreshList()
+      if (useVideoStore.getState().project?.id === id) {
+        newProject(font.hash, brush)
+        videoHistory.clear()
+      }
+    } catch (e) {
+      setStatus('delete failed: ' + e)
     }
   }
   const doLoad = async (id: string) => {
     setStatus('loading…')
     await loadProject(id)
     videoHistory.clear()
+    setFilesOpen(false)
     setStatus('loaded')
   }
   const doExport = async () => {
@@ -256,12 +327,21 @@ export function VideoView({
         if (!mf) continue
         fontsById[id] = {
           glyphs: mf.glyphs,
-          metrics: { unitsPerEm: mf.metadata.unitsPerEm, ascender: mf.metadata.ascender, descender: mf.metadata.descender },
+          metrics: {
+            unitsPerEm: mf.metadata.unitsPerEm,
+            ascender: mf.metadata.ascender,
+            descender: mf.metadata.descender,
+            // keep the live font's real space advance even if its manifest predates it
+            spaceAdvance: mf.metadata.spaceAdvance ?? (id === font.hash ? font.spaceAdvance : undefined),
+          },
         }
       }
-      const res = await fetch('/api/export', {
+      // text/plain so the builder's global 1 MB JSON parser skips this large
+      // payload (it bundles every referenced font's glyph data); the route reads
+      // the raw body.
+      const res = await apiFetch(apiUrl('/api/export'), {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'text/plain;charset=utf-8' },
         body: JSON.stringify({
           project: p,
           fontsById,
@@ -293,7 +373,17 @@ export function VideoView({
   return (
     <div className="video">
       <div className="video-top">
-        <strong className="proj-name">{project.name}</strong>
+        <input
+          className="proj-name-input"
+          value={nameDraft}
+          onChange={(e) => setNameDraft(e.target.value)}
+          onBlur={commitName}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+          }}
+          title="Rename this video"
+          aria-label="Video name"
+        />
         <div className="seg">
           {ASPECTS.map((a) => (
             <button key={a} className={activeAspect === a ? 'tool tool-on' : 'tool'} onClick={() => setActiveAspect(a)}>
@@ -316,16 +406,63 @@ export function VideoView({
         <button onClick={() => videoHistory.undo()} title="undo">↶</button>
         <button onClick={() => videoHistory.redo()} title="redo">↷</button>
         <button className="primary" onClick={doSave}>💾 Save</button>
-        <select value="" onChange={(e) => e.target.value && doLoad(e.target.value)}>
-          <option value="">Load…</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} ({p.slideCount})
-            </option>
-          ))}
-        </select>
-        <button onClick={() => { newProject(font.hash, brush); videoHistory.clear() }}>New</button>
-        <button onClick={doExport} disabled={exporting} title="render to MP4 (saved under ./exports)">
+        <button onClick={doSaveAs} title="Save a copy under a new name">⎘ Save a copy</button>
+        <div className="files-menu" style={{ position: 'relative' }}>
+          <button
+            onClick={() => {
+              if (!filesOpen) refreshList()
+              setFilesOpen((o) => !o)
+            }}
+            title="Open or delete saved videos"
+          >
+            Files ▾
+          </button>
+          {filesOpen && (
+            <div
+              className="files-panel"
+              style={{
+                position: 'absolute',
+                top: '100%',
+                right: 0,
+                zIndex: 30,
+                minWidth: 240,
+                maxHeight: 360,
+                overflowY: 'auto',
+                background: 'var(--panel, #fff)',
+                color: 'var(--text, #111)',
+                border: '1px solid var(--border, #ccc)',
+                borderRadius: 6,
+                boxShadow: '0 6px 24px rgba(0,0,0,0.18)',
+                padding: 4,
+              }}
+            >
+              {projects.length === 0 ? (
+                <div style={{ padding: 8, opacity: 0.7 }}>No saved videos</div>
+              ) : (
+                projects.map((p) => (
+                  <div
+                    key={p.id}
+                    style={{ display: 'flex', alignItems: 'center', gap: 4 }}
+                  >
+                    <button
+                      style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      title={`Open ${p.name}`}
+                      onClick={() => doLoad(p.id)}
+                    >
+                      {p.id === project.id ? '● ' : ''}
+                      {p.name} <span style={{ opacity: 0.6 }}>({p.slideCount})</span>
+                    </button>
+                    <button title="Delete" onClick={() => doDelete(p.id, p.name)}>
+                      🗑
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+        <button onClick={() => { newProject(font.hash, brush); videoHistory.clear(); setNameDraft('Untitled video') }}>New</button>
+        <button onClick={doExport} disabled={exporting} title="render to MP4 (download only — not saved to Drive)">
           {exporting ? '⏳ Exporting…' : '🎬 Export MP4'}
         </button>
       </div>
@@ -333,11 +470,11 @@ export function VideoView({
       {exportResult && (
         <div className="exportresult">
           <div className="exportresult-info">
-            Exported <code>exports/{exportResult.file}</code> — {(exportResult.bytes / 1048576).toFixed(2)} MB ·{' '}
+            Rendered MP4 — {(exportResult.bytes / 1048576).toFixed(2)} MB ·{' '}
             {exportResult.w}×{exportResult.h} · {(exportResult.durationMs / 1000).toFixed(1)}s · {exportResult.frames} frames
             {exportResult.audioMuxed ? ` · 🔊 ${exportResult.audioCues} voiceover clip(s)` : ''}
             {exportResult.audioWarning ? ` · ⚠ ${exportResult.audioWarning}` : ''}{' '}
-            <a href={`/api/export/${exportResult.file}`} target="_blank" rel="noreferrer" download>
+            <a href={`${apiUrl('/api/export')}/${exportResult.file}`} target="_blank" rel="noreferrer" download>
               ↓ download
             </a>
           </div>
@@ -347,7 +484,7 @@ export function VideoView({
               Captions (from the voiceover script)
             </label>
           )}
-          <video ref={videoRef} className="export-preview" src={`/api/export/${exportResult.file}`} controls>
+          <video ref={videoRef} className="export-preview" src={`${apiUrl('/api/export')}/${exportResult.file}`} controls>
             {captionsUrl && <track kind="captions" src={captionsUrl} srcLang="en" label="Voiceover" default />}
           </video>
         </div>

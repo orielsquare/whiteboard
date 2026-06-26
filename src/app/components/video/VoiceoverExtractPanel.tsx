@@ -4,7 +4,7 @@ import type { FontSet } from '@lib/project/layout'
 import { buildRenderContext } from '@lib/project/render'
 import { slideTimeWindows } from '@lib/project/timing'
 import { useVideoStore } from '../../state/videoStore'
-import { BACKING_W } from './layoutCanvas'
+import { previewCanvasW } from './layoutCanvas'
 import { SlideVttExtract } from './SlideVttExtract'
 
 /**
@@ -22,7 +22,7 @@ export function VoiceoverExtractPanel({ fonts }: { fonts: FontSet }) {
   const slide = project ? project.slides.find((s) => s.id === selectedSlideId) ?? project.slides[0] : undefined
   const window = useMemo(() => {
     if (!project || !slide || playback) return null
-    const rc = buildRenderContext(projectForAspect(project, activeAspect), fonts, BACKING_W, playbackRate)
+    const rc = buildRenderContext(projectForAspect(project, activeAspect), fonts, previewCanvasW(activeAspect), playbackRate)
     return slideTimeWindows(rc.timing).find((x) => x.slideId === slide.id) ?? null
   }, [project, slide, activeAspect, fonts, playbackRate, playback])
 

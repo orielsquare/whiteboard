@@ -16,8 +16,8 @@ canvas).
 |---|----------|-----------|
 | D1 | **Coordinates are proportional per axis.** `x`,`w` = fraction of **width**; `y` = fraction of **height**. | Both cuts then share the same numbers when linked; "matching" is automatic, no remap function. |
 | D2 | **Position match = identity in x/w, identity in y (as a fraction of height).** Rendered, `y` lands at `y × H_dst/H_src` of the old vertical position — i.e. it scales with the frame. | This is the per-axis-proportional ("Figma Scale") behaviour the user chose, **not** the naive "scale all positions" (which would wrongly scale x too). |
-| D3 | **Font size is invariant** (same fraction of width). Reflow is a **manual** action: unlock and narrow the box → more lines. | Keeps type legible/consistent; the user drives any density change deliberately. |
-| D4 | **Per-AR pixel dimensions:** 16:9 → 1920×1080, 9:16 → 1080×1920. Each cut renders at its own `canvasW`. | Real export targets. Proportional storage makes this free. |
+| D3 | **Font size is invariant in absolute pixels** across the two cuts — sized against the **16:9-equivalent width** (`emBasisW = canvasW / aspectWidthFraction`), NOT the per-aspect width. Because a 90%-wide box is physically narrower in portrait but the type is the same px, a **locked** box automatically **reflows onto more lines in 9:16** (top-left/right anchors stay at the same %x/%y). | The user's spec: same-size type, density follows the frame. No manual unlock needed for the reflow. |
+| D4 | **Per-AR pixel dimensions:** 16:9 → 1920×1080, 9:16 → 1080×1920 — the portrait cut is **9/16 as wide** (`aspectWidthFraction`), same pixel area. Geometry (x/y/w) renders at the per-aspect `canvasW`; fonts at the invariant `emBasisW`. | Real export targets. Proportional storage + a separate font basis makes both free. |
 | D5 | **Two locks per box: `position` (x,y,w) and `content` (runs/text/style/align/line-height/brush).** Default **both locked**. Resolvable per-box, per-slide, project-default. | The user's spec. |
 | D6 | **Voiceover may diverge** — accepted. One shared track by default; per-aspect track is a later option. | User: "we can live with divergent v/o without any problem." |
 | D7 | **The render/layout/timing/export pipeline is untouched**, behind one pure selector `projectForAspect(p, aspect)`. | These all read only `box.frame`/`box.runs`/`slide.textBoxes`/`project.slides`. |
@@ -40,7 +40,9 @@ the only loser is two boxes meant to hug each other, which you'd then unlock and
 | `frame.x` | fraction of width `[0,1]` | `x · canvasW` |
 | `frame.w` | fraction of width, or `null` | `w · canvasW` |
 | `frame.y` | **fraction of height `[0,1]`** (was width-units) | `y · canvasH` where `canvasH = canvasW · aspectHeightUnits(aspect)` |
-| font size | `baseEmFraction · sizeScale` (fraction of width) | `… · canvasW` |
+| font size | `baseEmFraction · sizeScale` | `… · emBasisW`, where `emBasisW = canvasW / aspectWidthFraction(aspect)` = the **16:9-equivalent width** (same px in both cuts) |
+
+`aspectWidthFraction`: 16:9 → `1`, 9:16 → `9/16`. The per-aspect `canvasW = referenceW · aspectWidthFraction` (export referenceW = 1920; editor preview = `BACKING_W`). Geometry uses `canvasW`; fonts use `emBasisW` (= referenceW). So the **same** stored numbers give a portrait box that is 9/16 as wide with type the same pixel size → more lines. `layoutTextBox(box, fonts, baseEm, canvasW, emBasisW)`; `buildRenderContext` derives `emBasisW` from `project.aspect`.
 
 **Why "scale all positions" is wrong, and what's right.** `x` and `w` are proportions of the shared
 width basis → **identical** across cuts, zero transform. Only `y` is proportional to the axis that
@@ -56,10 +58,12 @@ recomputed, so 16:9 → 9:16 → 16:9 is the identity.
 width-units up to 1.778) **becomes correct** — provided the drag/hit-test code normalises `y` by
 `canvasH` (not `canvasW`).
 
-**Font consequence of D4 (note, not a blocker):** same fraction of width × a narrower portrait
-`canvasW` ⇒ portrait type is physically smaller and occupies less of the tall frame. If portrait
-ever needs bigger type globally, make `baseEmFraction` per-aspect — a clean future knob, independent
-of the per-box locks.
+**Font basis (D3/D4):** type is sized against `emBasisW` (the 16:9-equivalent width), so it is the
+**same pixel size in both cuts** — the portrait box (9/16 as wide) therefore wraps onto more lines.
+Space width also uses the font's **real space advance** (`FontMetadata.spaceAdvance`), so the canvas
+wraps exactly like the on-canvas editor (which renders the real font) — no reflow on entering edit.
+The editor preview also runs at the per-aspect width (`previewCanvasW(aspect) = BACKING_W ·
+aspectWidthFraction`), so the portrait canvas is genuinely narrower (not the old same-width-taller).
 
 ---
 
@@ -264,9 +268,9 @@ under content-unlock + actual divergence (Phase 4).
   (31 cases: frameOf/round-trip/projectForAspect/migrate v1→v2/idempotent v2/effLock/framesDiverge) +
   the existing layout/runs/timing/vtt suites all green, and in-browser the aspect toggle reshapes the
   canvas with a stable round-trip, a real v1 project migrates and opens identically in its saved cut.
-  NOTE: editor preview keeps `BACKING_W` for both cuts (proportions already match export; only the
-  exported MP4 uses per-AR pixel size). Boxes are written to BOTH frame keys (locked-by-default) until
-  Phase 2 adds the unlock path.
+  NOTE: the editor preview now runs at the **per-aspect** width (`previewCanvasW(aspect)`), so the
+  portrait canvas is 9/16 as wide (matching export), and fonts use the aspect-invariant `emBasisW`
+  (see §2). Boxes are written to BOTH frame keys (locked-by-default) until Phase 2 adds the unlock path.
 - **Phase 2 — locks + position write-through. ✅ DONE.** `effLock` resolver (box→slide→project,
   default locked); `updateTextBoxFrame` takes `writeAspects` and the store passes BOTH cuts when
   position-locked / only the active aspect when unlocked (one `set()` ≡ one undo). Per-box **link

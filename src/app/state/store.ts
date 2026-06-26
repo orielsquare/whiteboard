@@ -28,6 +28,8 @@ interface EditorState {
   /** Set a glyph's per-glyph extraction settings (re-derivation is triggered by the App). */
   setGlyphParams: (unicode: number, params: ExtractionParams) => void
   markReviewed: (unicode: number, reviewed: boolean) => void
+  /** Set the font's cosmetic name (rename); marks the manifest dirty. */
+  setFontName: (name: string) => void
   markSaved: () => void
   loadFontManifest: (font: LoadedFont) => Promise<void>
 }
@@ -118,6 +120,16 @@ export const useEditorStore = create<EditorState>()(
             editRev: s.editRev + 1,
           }
         }),
+
+      setFontName: (name) =>
+        set((s) =>
+          s.manifest
+            ? {
+                manifest: { ...s.manifest, metadata: { ...s.manifest.metadata, name }, updatedAt: nowIso() },
+                editRev: s.editRev + 1,
+              }
+            : s,
+        ),
 
       // Record that the live manifest has been persisted (clears the dirty flag).
       markSaved: () => set((s) => ({ savedRev: s.editRev })),

@@ -53,27 +53,17 @@ export function Inspector() {
 
         <p className="insp-tip muted">Double-click the textbox on the slide to edit its text; use the format bar above to style it.</p>
 
-        <label className="toggle">
+        <label className="slider">
+          <span>width <b>{Math.round((wrapW ?? DEFAULT_WRAP_W) * 100)}%</b></span>
           <input
-            type="checkbox"
-            checked={wrapW != null}
-            onChange={(e) => updateTextBoxFrame(slide.id, box.id, { w: e.target.checked ? DEFAULT_WRAP_W : null })}
+            type="range"
+            min={0.15}
+            max={1}
+            step={0.01}
+            value={wrapW ?? DEFAULT_WRAP_W}
+            onChange={(e) => updateTextBoxFrame(slide.id, box.id, { w: Number(e.target.value) })}
           />
-          wrap to width
         </label>
-        {wrapW != null && (
-          <label className="slider">
-            <span>width <b>{Math.round(wrapW * 100)}%</b></span>
-            <input
-              type="range"
-              min={0.15}
-              max={1}
-              step={0.01}
-              value={wrapW}
-              onChange={(e) => updateTextBoxFrame(slide.id, box.id, { w: Number(e.target.value) })}
-            />
-          </label>
-        )}
 
         <label className="slider">
           <span>time before display <b>{box.delayBeforeMs}ms</b></span>

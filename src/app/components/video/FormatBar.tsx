@@ -173,9 +173,6 @@ export function FormatBar() {
       <div className="fmt-group">
         <span className="fmt-label">colour</span>
         <input type="color" value={colorInput} onChange={(e) => onColor(e.target.value)} title={colorVal === MIXED ? 'mixed colours' : box ? 'text colour' : 'pen colour'} />
-        <button className="tool" disabled={!box} onMouseDown={keepFocus} onClick={() => applyRun({ color: null })} title="use pen colour">
-          ⊘
-        </button>
       </div>
 
       <div className="fmt-group">

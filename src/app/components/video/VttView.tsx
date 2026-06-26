@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { DEFAULT_TTS, makeId, type TtsSettings, type VoiceoverCue } from '@lib/project/schema'
 import { formatTimestamp, hashText, isAudioStale, parseVtt, reconcileParsed, serializeVtt } from '@lib/project/vtt'
+import { apiUrl, apiFetch } from '@lib/persistence/apiBase'
 import { useVideoStore, videoHistory } from '../../state/videoStore'
 
 const EMPTY: never[] = []
@@ -30,7 +31,7 @@ const isBritish = (v: Voice) => /british|england|english \(uk|^uk\b|\buk\b|recei
 export function cueAudioUrl(projectId: string, cue: VoiceoverCue): string | null {
   if (!cue.audio) return null
   const v = cue.audio.version ? `?v=${cue.audio.version}` : ''
-  return `/api/voiceover/${encodeURIComponent(projectId)}/${encodeURIComponent(cue.audio.file)}${v}`
+  return `${apiUrl('/api/voiceover')}/${encodeURIComponent(projectId)}/${encodeURIComponent(cue.audio.file)}${v}`
 }
 
 /**
@@ -70,7 +71,7 @@ export function VttView() {
   useEffect(() => {
     let alive = true
     setVoicesLoading(true)
-    fetch('/api/voices')
+    apiFetch(apiUrl('/api/voices'))
       .then((r) => r.json())
       .then((data) => {
         if (!alive) return
@@ -118,6 +119,19 @@ export function VttView() {
     addCue(last ? last.endMs + 200 : 0)
   }
 
+  /** Download the voiceover script as a .vtt file (client-side; not saved to Drive). */
+  const downloadVtt = () => {
+    const blob = new Blob([serializeVtt(cues)], { type: 'text/vtt' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${(project?.name || 'voiceover').replace(/[^a-z0-9-_]+/gi, '_') || 'voiceover'}.vtt`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
   const setSetting = (patch: Partial<typeof tts.settings>) => setTts({ settings: { ...tts.settings, ...patch } })
 
   /** Play a free hosted sample of the given voice (no TTS call). */
@@ -162,7 +176,7 @@ export function VttView() {
     setGenError(null)
     setBusy((b) => ({ ...b, [cue.id]: true }))
     try {
-      const res = await fetch('/api/tts', {
+      const res = await apiFetch(apiUrl('/api/tts'), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -303,6 +317,9 @@ export function VttView() {
         <button onClick={onAdd}>+ Add cue</button>
         <button onClick={generateAll} disabled={anyGenerating || cues.length === 0 || noVoice}>
           {anyGenerating ? '⏳ Generating…' : '🔊 Generate all'}
+        </button>
+        <button onClick={downloadVtt} disabled={cues.length === 0} title="download the script as a .vtt file">
+          ⬇ .vtt
         </button>
         <span className="muted">{cues.length} cue(s)</span>
       </div>
