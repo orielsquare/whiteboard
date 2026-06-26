@@ -1,4 +1,5 @@
 import type { BrushSettings } from '@lib/manifest/schema'
+import type { StylePatch } from './runs'
 
 /**
  * A "video project": a sequence of slides of animated handwritten text.
@@ -21,6 +22,11 @@ export interface TextRun {
   /** overrides the global brush colour for this run (null/undefined = brush colour). */
   color?: string | null
   underline?: boolean
+  /** extra tracking between glyphs in ems (kerning); default 0. */
+  letterSpacing?: number
+  /** font for this run (=== a saved font's id/hash); unset/'' = inherit the
+   *  project default font (VideoProject.fontId). */
+  fontId?: string
 }
 
 /** Normalized rect; basis is canvas width. `w = null` means no wrapping. */
@@ -52,6 +58,15 @@ export interface ClosingTransition {
   ruboutMode?: 'reverse' | 'eraser'
 }
 
+/** A reusable named text style. `style` is a Partial run style: only the fields
+ *  it sets are applied, so a style captured from a mixed selection (mixed fields
+ *  omitted) neither bakes an arbitrary value nor overwrites those fields on apply. */
+export interface NamedStyle {
+  id: string
+  name: string
+  style: StylePatch
+}
+
 export interface Slide {
   id: string
   background: string
@@ -62,12 +77,21 @@ export interface Slide {
 }
 
 export interface ProjectDefaults {
+  /** default run size for new textboxes (the format bar edits this when nothing is selected). */
   sizeScale: number
   interCharDelayMs: number
   lineHeightScale: number
   delayBeforeMs: number
   holdBeforeTransitionMs: number
   transition: ClosingTransition
+  /** default text alignment for new textboxes. */
+  align: TextAlign
+  /** default run colour for new textboxes (null = use the brush colour). */
+  runColor: string | null
+  /** default underline for new textboxes. */
+  runUnderline: boolean
+  /** default kerning (ems) for new textboxes. */
+  runLetterSpacing: number
 }
 
 /** Generated/recorded audio for a voiceover cue. */
@@ -153,6 +177,8 @@ export interface VideoProject {
   baseEmFraction: number
   defaults: ProjectDefaults
   slides: Slide[]
+  /** reusable named text styles (applied to a selection from the format bar). */
+  namedStyles: NamedStyle[]
   /** project-wide voiceover track (absolute-time WebVTT cues). */
   voiceover: VoiceoverCue[]
   /** voice-synthesis settings for generating cue audio. */
@@ -170,6 +196,10 @@ export const DEFAULT_DEFAULTS: ProjectDefaults = {
   delayBeforeMs: 300,
   holdBeforeTransitionMs: 1000,
   transition: DEFAULT_TRANSITION,
+  align: 'left',
+  runColor: null,
+  runUnderline: false,
+  runLetterSpacing: 0,
 }
 
 export function makeId(): string {
@@ -181,11 +211,18 @@ export function makeId(): string {
 }
 
 export function newTextBox(defaults: ProjectDefaults, x: number, y: number, animOrder: number): TextBox {
+  // Seed the starter run from the format defaults, omitting no-op default values
+  // so the JSON stays minimal (matches runs.ts `styleOf`).
+  const run: TextRun = { text: 'Text' }
+  if (defaults.sizeScale !== 1) run.sizeScale = defaults.sizeScale
+  if (defaults.runColor != null) run.color = defaults.runColor
+  if (defaults.runUnderline) run.underline = true
+  if (defaults.runLetterSpacing) run.letterSpacing = defaults.runLetterSpacing
   return {
     id: makeId(),
     frame: { x, y, w: 0.7 },
-    align: 'left',
-    runs: [{ text: 'Text' }],
+    align: defaults.align,
+    runs: [run],
     lineHeightScale: defaults.lineHeightScale,
     animOrder,
     delayBeforeMs: defaults.delayBeforeMs,
@@ -216,6 +253,7 @@ export function newVideoProject(fontId: string, brush: BrushSettings, isoNow: st
     baseEmFraction: 0.085,
     defaults,
     slides: [newSlide(defaults)],
+    namedStyles: [],
     voiceover: [],
     tts: { ...DEFAULT_TTS },
     createdAt: isoNow,

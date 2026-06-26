@@ -8,7 +8,12 @@ import { EditorView } from './components/EditorView'
 import { VideoView } from './components/video/VideoView'
 import { editorHistory, ensureGlyphDerived, useEditorStore } from './state/store'
 
-type Tab = 'editor' | 'extract' | 'animate' | 'video'
+/** The two distinct tools. Font (load → extract → edit → animate → save) and
+ *  Video (slide-based animated-text editor) are separate apps that happen to
+ *  share a loaded font + extractor, so they get top-level tabs. */
+type TopTab = 'font' | 'video'
+/** Sub-tabs within the Font tool, in working order. */
+type FontSubTab = 'extract' | 'editor' | 'animate'
 
 const BUNDLED = [
   { label: 'Patrick Hand (handwriting)', url: '/fonts/PatrickHand-Regular.ttf' },
@@ -19,7 +24,8 @@ export function App() {
   const [font, setFont] = useState<LoadedFont | null>(null)
   const [source, setSource] = useState(BUNDLED[0].url)
   const [error, setError] = useState<string | null>(null)
-  const [tab, setTab] = useState<Tab>('editor')
+  const [topTab, setTopTab] = useState<TopTab>('font')
+  const [fontSubTab, setFontSubTab] = useState<FontSubTab>('extract')
 
   // Shared across tabs: the active character, extraction params, and the brush.
   // selectedChar + params + brush are session/view state (NOT saved with the
@@ -107,51 +113,61 @@ export function App() {
         )}
       </header>
 
-      <div className="toolbar">
-        <label className="field">
-          <span>Bundled font</span>
-          <select value={source} onChange={(e) => setSource(e.target.value)}>
-            {BUNDLED.map((b) => (
-              <option key={b.url} value={b.url}>
-                {b.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>…or load your own</span>
-          <input type="file" accept=".ttf,.otf,.woff" onChange={onFile} />
-        </label>
-      </div>
-
-      {error && <div className="error">{error}</div>}
-
-      <div className="tabs">
-        <button className={tab === 'editor' ? 'tab tab-on' : 'tab'} onClick={() => setTab('editor')}>
-          Editor
+      {/* Top-level tool switch. */}
+      <div className="tabs tabs-top">
+        <button className={topTab === 'font' ? 'tab tab-on' : 'tab'} onClick={() => setTopTab('font')}>
+          Font
         </button>
-        <button className={tab === 'extract' ? 'tab tab-on' : 'tab'} onClick={() => setTab('extract')}>
-          Stroke extraction
-        </button>
-        <button className={tab === 'animate' ? 'tab tab-on' : 'tab'} onClick={() => setTab('animate')}>
-          Animation preview
-        </button>
-        <button className={tab === 'video' ? 'tab tab-on' : 'tab'} onClick={() => setTab('video')}>
+        <button className={topTab === 'video' ? 'tab tab-on' : 'tab'} onClick={() => setTopTab('video')}>
           Video
         </button>
       </div>
 
-      {!font ? (
+      {/* The Font tool is all about working in a font: keep its loader prominent. */}
+      {topTab === 'font' && (
+        <>
+          <div className="toolbar">
+            <label className="field">
+              <span>Bundled font</span>
+              <select value={source} onChange={(e) => setSource(e.target.value)}>
+                {BUNDLED.map((b) => (
+                  <option key={b.url} value={b.url}>
+                    {b.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>…or load your own</span>
+              <input type="file" accept=".ttf,.otf,.woff" onChange={onFile} />
+            </label>
+          </div>
+
+          <div className="tabs tabs-sub">
+            <button className={fontSubTab === 'extract' ? 'tab tab-on' : 'tab'} onClick={() => setFontSubTab('extract')}>
+              Stroke extraction
+            </button>
+            <button className={fontSubTab === 'editor' ? 'tab tab-on' : 'tab'} onClick={() => setFontSubTab('editor')}>
+              Editor
+            </button>
+            <button className={fontSubTab === 'animate' ? 'tab tab-on' : 'tab'} onClick={() => setFontSubTab('animate')}>
+              Animation preview
+            </button>
+          </div>
+        </>
+      )}
+
+      {error && <div className="error">{error}</div>}
+
+      {topTab === 'video' ? (
+        !font ? (
+          <div className="stage">Loading font…</div>
+        ) : (
+          <VideoView font={font} extractor={extractor} params={params} brush={brush} />
+        )
+      ) : !font ? (
         <div className="stage">Loading font…</div>
-      ) : tab === 'editor' ? (
-        <EditorView
-          font={font}
-          extractor={extractor}
-          params={params}
-          selectedChar={selectedChar}
-          onSelectChar={setSelectedChar}
-        />
-      ) : tab === 'extract' ? (
+      ) : fontSubTab === 'extract' ? (
         <ExtractionView
           extractor={extractor}
           params={params}
@@ -159,7 +175,15 @@ export function App() {
           selectedChar={selectedChar}
           onSelectChar={setSelectedChar}
         />
-      ) : tab === 'animate' ? (
+      ) : fontSubTab === 'editor' ? (
+        <EditorView
+          font={font}
+          extractor={extractor}
+          params={params}
+          selectedChar={selectedChar}
+          onSelectChar={setSelectedChar}
+        />
+      ) : (
         <PreviewView
           font={font}
           extractor={extractor}
@@ -168,8 +192,6 @@ export function App() {
           onBrushChange={setBrush}
           selectedChar={selectedChar}
         />
-      ) : (
-        <VideoView font={font} extractor={extractor} params={params} brush={brush} />
       )}
     </div>
   )

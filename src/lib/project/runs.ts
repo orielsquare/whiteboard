@@ -9,13 +9,32 @@ import type { TextRun } from './schema'
  */
 
 /** The style-only patch the UI applies to a selection. */
-export type StylePatch = Partial<Pick<TextRun, 'sizeScale' | 'color' | 'underline'>>
+export type StylePatch = Partial<Pick<TextRun, 'sizeScale' | 'color' | 'underline' | 'letterSpacing' | 'fontId'>>
 
 /** Resolved style with defaults filled in (for UI display). */
 export interface ResolvedStyle {
   sizeScale: number
   color: string | null
   underline: boolean
+  /** extra tracking between glyphs, in ems (kerning). 0 = normal. */
+  letterSpacing: number
+  /** per-run font id, or null = inherit the project default font. */
+  fontId: string | null
+}
+
+/** Sentinel for a field that has more than one value across a selection. */
+export const MIXED = Symbol('mixed')
+export type Maybe<T> = T | typeof MIXED
+
+/** Per-field resolved style across a selection — a field is `MIXED` when the
+ *  covered runs disagree. Drives the format bar's synced/indeterminate display
+ *  and "save a named style ignoring the mixed parts". */
+export interface SelectionStyle {
+  sizeScale: Maybe<number>
+  color: Maybe<string | null>
+  underline: Maybe<boolean>
+  letterSpacing: Maybe<number>
+  fontId: Maybe<string | null>
 }
 
 export function runsToPlainText(runs: TextRun[]): string {
@@ -24,12 +43,16 @@ export function runsToPlainText(runs: TextRun[]): string {
   return s
 }
 
-/** Canonical key of a run's style (text-independent), for equality + merging. */
+/** Canonical key of a run's style (text-independent), for equality + merging.
+ *  EVERY style field must appear here or adjacent runs differing only in that
+ *  field will wrongly merge in normalizeRuns. */
 export function styleKey(run: TextRun): string {
   const sizeScale = run.sizeScale ?? 1
   const color = run.color ?? ''
   const underline = run.underline ? 1 : 0
-  return `${sizeScale}|${color}|${underline}`
+  const letterSpacing = run.letterSpacing ?? 0
+  const fontId = run.fontId ?? ''
+  return `${sizeScale}|${color}|${underline}|${letterSpacing}|${fontId}`
 }
 
 /** Style fields of a run, with defaults dropped so the JSON stays minimal. */
@@ -40,6 +63,8 @@ function styleOf(run: TextRun): Omit<TextRun, 'text'> {
   const color = run.color ?? null
   if (color != null && color !== '') s.color = color
   if (run.underline) s.underline = true
+  if (run.letterSpacing) s.letterSpacing = run.letterSpacing
+  if (run.fontId) s.fontId = run.fontId
   return s
 }
 
@@ -174,5 +199,51 @@ export function runStyleAt(runs: TextRun[], offset: number): ResolvedStyle {
 }
 
 function resolved(r: TextRun): ResolvedStyle {
-  return { sizeScale: r.sizeScale ?? 1, color: r.color ?? null, underline: !!r.underline }
+  return {
+    sizeScale: r.sizeScale ?? 1,
+    color: r.color ?? null,
+    underline: !!r.underline,
+    letterSpacing: r.letterSpacing ?? 0,
+    fontId: r.fontId && r.fontId.length ? r.fontId : null,
+  }
+}
+
+/**
+ * Resolve the style across [start, end), reporting each field as either its
+ * common value or `MIXED`. A collapsed range (caret) returns the single-offset
+ * insertion style (never MIXED). Comparison is on *resolved* values so two runs
+ * that are both "default size" don't read as mixed. `color: null` (use the brush
+ * colour) is a legitimate shared value — only genuinely-differing colours mix.
+ */
+export function selectionStyle(runs: TextRun[], start: number, end: number): SelectionStyle {
+  const total = runsToPlainText(runs).length
+  const s = Math.max(0, Math.min(start, end))
+  const e = Math.min(total, Math.max(start, end))
+  const single = (): SelectionStyle => {
+    const r = runStyleAt(runs, s)
+    return { sizeScale: r.sizeScale, color: r.color, underline: r.underline, letterSpacing: r.letterSpacing, fontId: r.fontId }
+  }
+  if (e <= s) return single()
+
+  let acc: SelectionStyle | null = null
+  let pos = 0
+  for (const r of runs) {
+    const len = r.text.length
+    if (len === 0) continue
+    const runStart = pos
+    const runEnd = pos + len
+    pos = runEnd
+    if (runEnd <= s || runStart >= e) continue // no overlap with the selection
+    const rs = resolved(r)
+    if (acc === null) {
+      acc = { sizeScale: rs.sizeScale, color: rs.color, underline: rs.underline, letterSpacing: rs.letterSpacing, fontId: rs.fontId }
+    } else {
+      if (acc.sizeScale !== MIXED && acc.sizeScale !== rs.sizeScale) acc.sizeScale = MIXED
+      if (acc.color !== MIXED && acc.color !== rs.color) acc.color = MIXED
+      if (acc.underline !== MIXED && acc.underline !== rs.underline) acc.underline = MIXED
+      if (acc.letterSpacing !== MIXED && acc.letterSpacing !== rs.letterSpacing) acc.letterSpacing = MIXED
+      if (acc.fontId !== MIXED && acc.fontId !== rs.fontId) acc.fontId = MIXED
+    }
+  }
+  return acc ?? single()
 }

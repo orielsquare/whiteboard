@@ -39,7 +39,9 @@ const box = (over = {}) => ({
   interCharDelayMs: 50,
   ...over,
 })
-const lay = (over) => layoutTextBox(box(over), glyphs, metrics, 0.1, 1000)
+// single-font set for the bulk of the cases
+const fonts = { byId: new Map([['F', { glyphs, metrics }]]), defaultId: 'F' }
+const lay = (over) => layoutTextBox(box(over), fonts, 0.1, 1000)
 
 let passed = 0
 let failed = 0
@@ -135,6 +137,31 @@ const check = (name, cond, got) => {
   const l = lay({ runs: [{ text: '' }] })
   check('8 no instances', l.instances.length === 0, l.instances.length)
   check('8 height>0', l.heightPx > 0, l.heightPx)
+}
+
+// 9) kerning (letterSpacing) adds trailing advance per glyph
+{
+  // a advance = 50px + kern(0.1*EM=10) = 60 → b starts at x=60
+  const l = lay({ runs: [{ text: 'ab', letterSpacing: 0.1 }] })
+  check('9 kern b.x=60', approx(l.instances[1].xPx, 60), l.instances[1].xPx)
+}
+
+// default-font minHalfWidth = unitsPerEm(1000) * 0.004 = 4
+check('1b minHalfWidth=4', approx(lay().instances[0].minHalfWidth, 4), lay().instances[0].minHalfWidth)
+
+// 10) per-run font: a run with fontId resolves to that font's glyphs + metrics
+{
+  const metricsB = { unitsPerEm: 2000, ascender: 1600, descender: -400 }
+  const glyphsB = new Map()
+  for (const ch of 'ab') glyphsB.set(ch, g(1000, 100))
+  const fontsAB = { byId: new Map([['F', { glyphs, metrics }], ['B', { glyphs: glyphsB, metrics: metricsB }]]), defaultId: 'F' }
+  const l = layoutTextBox(box({ runs: [{ text: 'a', fontId: 'B' }] }), fontsAB, 0.1, 1000)
+  // font B: scale = 0.1*1000/2000 = 0.05 ; minHalfWidth = 2000*0.004 = 8
+  check('10 fontB scale=0.05', approx(l.instances[0].scale, 0.05), l.instances[0].scale)
+  check('10 fontB minHalfWidth=8', approx(l.instances[0].minHalfWidth, 8), l.instances[0].minHalfWidth)
+  // unknown fontId falls back to the default font
+  const l2 = layoutTextBox(box({ runs: [{ text: 'a', fontId: 'NOPE' }] }), fontsAB, 0.1, 1000)
+  check('10 unknown font → default scale 0.1', approx(l2.instances[0].scale, 0.1), l2.instances[0].scale)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

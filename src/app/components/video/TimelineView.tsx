@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react'
-import type { PreparedGlyph } from '@lib/animation/timeline'
 import { aspectHeightUnits } from '@lib/project/coords'
-import type { FontMetrics } from '@lib/project/layout'
+import type { FontSet } from '@lib/project/layout'
 import { buildRenderContext } from '@lib/project/render'
 import { slideTimeWindows } from '@lib/project/timing'
 import { runsToPlainText } from '@lib/project/runs'
@@ -65,7 +64,7 @@ const cueLabel = (text: string): string => {
  * the ruler and can be dragged to re-time their cues. Zoom + horizontal scroll.
  * Everything is plain DOM (crisp text + hover + drag), scaled to real project time.
  */
-export function TimelineView({ glyphs, metrics }: { glyphs: Map<string, PreparedGlyph>; metrics: FontMetrics }) {
+export function TimelineView({ fonts }: { fonts: FontSet }) {
   const project = useVideoStore((s) => s.project)
   const cues = useVideoStore((s) => s.project?.voiceover ?? EMPTY)
   const updateCue = useVideoStore((s) => s.updateCue)
@@ -85,9 +84,9 @@ export function TimelineView({ glyphs, metrics }: { glyphs: Map<string, Prepared
   // dragging/adding/removing a cue doesn't re-lay-out the whole timeline. `slides`
   // stays referentially equal across voiceover edits (updateCue spreads the project).
   const rc = useMemo(
-    () => (project ? buildRenderContext(project, glyphs, BACKING_W, metrics, playbackRate) : null),
+    () => (project ? buildRenderContext(project, fonts, BACKING_W, playbackRate) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [project?.slides, project?.baseEmFraction, glyphs, metrics, playbackRate],
+    [project?.slides, project?.baseEmFraction, fonts, playbackRate],
   )
   const windows = useMemo(() => (rc ? slideTimeWindows(rc.timing) : []), [rc])
   const sortedCues = useMemo(() => [...cues].sort((a, b) => a.startMs - b.startMs), [cues])
@@ -305,7 +304,7 @@ export function TimelineView({ glyphs, metrics }: { glyphs: Map<string, Prepared
               if (width < thumbW + 8 || !slide) return null
               return (
                 <div key={win.slideId} className="tl-thumb" style={{ left: left + 4 }}>
-                  <SlideThumbnail slide={slide} glyphs={glyphs} metrics={metrics} />
+                  <SlideThumbnail slide={slide} fonts={fonts} />
                 </div>
               )
             })}

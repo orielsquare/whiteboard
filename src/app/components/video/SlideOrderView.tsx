@@ -1,6 +1,5 @@
 import { useCallback, useMemo } from 'react'
-import type { PreparedGlyph } from '@lib/animation/timeline'
-import type { FontMetrics } from '@lib/project/layout'
+import { fontFor, type FontSet } from '@lib/project/layout'
 import { buildRenderContext, renderSlide } from '@lib/project/render'
 import { useVideoStore } from '../../state/videoStore'
 import { BACKING_W } from './layoutCanvas'
@@ -13,7 +12,7 @@ import { PlaybackCanvas } from './PlaybackCanvas'
  * a shared PlaybackCanvas. Below the canvas, the order list reorders boxes /
  * tunes delays.
  */
-export function SlideOrderView({ glyphs, metrics }: { glyphs: Map<string, PreparedGlyph>; metrics: FontMetrics }) {
+export function SlideOrderView({ fonts }: { fonts: FontSet }) {
   const project = useVideoStore((s) => s.project)
   const selectedSlideId = useVideoStore((s) => s.selectedSlideId)
   const playbackRate = useVideoStore((s) => s.project?.playbackRate ?? 1)
@@ -23,8 +22,8 @@ export function SlideOrderView({ glyphs, metrics }: { glyphs: Map<string, Prepar
   const slide = project && slideIndex >= 0 ? project.slides[slideIndex] : undefined
 
   const rc = useMemo(
-    () => (project ? buildRenderContext(project, glyphs, BACKING_W, metrics, playbackRate) : null),
-    [project, glyphs, metrics, playbackRate],
+    () => (project ? buildRenderContext(project, fonts, BACKING_W, playbackRate) : null),
+    [project, fonts, playbackRate],
   )
   const totalMs = rc && slideIndex >= 0 ? rc.timing.slides[slideIndex]?.timing.totalMs ?? 0 : 0
 
@@ -32,9 +31,9 @@ export function SlideOrderView({ glyphs, metrics }: { glyphs: Map<string, Prepar
     if (!slide) return false
     for (const box of slide.textBoxes)
       for (const run of box.runs)
-        for (const ch of run.text) if (ch.trim().length && !glyphs.has(ch)) return false
+        for (const ch of run.text) if (ch.trim().length && !fontFor(fonts, run.fontId).glyphs.has(ch)) return false
     return true
-  }, [slide, glyphs])
+  }, [slide, fonts])
 
   const draw = useCallback(
     (ctx: CanvasRenderingContext2D, t: number, w: number, h: number) => {

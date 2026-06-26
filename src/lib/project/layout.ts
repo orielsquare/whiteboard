@@ -22,6 +22,29 @@ export interface FontMetrics {
   descender: number
 }
 
+/** One font's render inputs: prepared glyphs (by char) + metrics. */
+export interface FontEntry {
+  glyphs: Map<string, PreparedGlyph>
+  metrics: FontMetrics
+}
+
+/** All fonts a project may render with, keyed by fontId, plus the project
+ *  default that an unset `run.fontId` resolves to. A single-font project is just
+ *  a one-entry set. */
+export interface FontSet {
+  byId: Map<string, FontEntry>
+  defaultId: string
+}
+
+/** Resolve the font for a run: its own fontId, else the project default, else
+ *  the first available entry, else an empty fallback so layout never throws. */
+export function fontFor(fonts: FontSet, fontId?: string): FontEntry {
+  const e = (fontId && fonts.byId.get(fontId)) || fonts.byId.get(fonts.defaultId)
+  if (e) return e
+  const first = fonts.byId.values().next().value
+  return first ?? { glyphs: new Map(), metrics: { unitsPerEm: 1000, ascender: 800, descender: -200 } }
+}
+
 export interface GlyphInstance {
   prepared: PreparedGlyph
   /** design units → px. */
@@ -36,6 +59,9 @@ export interface GlyphInstance {
   startMs: number
   /** stable per-box+glyph salt → deterministic chalk grain. */
   seedSalt: string
+  /** minimum stroke half-width (px), derived from this glyph's font unitsPerEm
+   *  (fonts may differ, so it is baked per instance rather than globally). */
+  minHalfWidth: number
 }
 
 export interface UnderlineSegment {
@@ -75,6 +101,10 @@ interface Slot {
   descentPx: number
   color: string | null
   underline: boolean
+  /** this slot's font unitsPerEm (for mixed-font underline em sizing). */
+  upm: number
+  /** this slot's font-derived minimum stroke half-width (px). */
+  minHalfWidth: number
   /** stable index among drawn glyphs in reading order (glyph slots only). */
   glyphIndex: number
   // assigned during wrap / timing:
@@ -99,40 +129,45 @@ function underlineDrawMs(spanEm: number): number {
   return Math.min(700, Math.max(200, 120 + spanEm * 180))
 }
 
-/** Lay out one textbox. Pure; safe to memoize on (box, glyphs, metrics, baseEmFraction, canvasW). */
+/** Lay out one textbox. Pure; safe to memoize on (box, fonts, baseEmFraction, canvasW).
+ *  Each run resolves its own font from `fonts` (per-run `fontId`), so a box — even
+ *  a single line — may mix fonts; metrics are taken per run/slot. */
 export function layoutTextBox(
   box: TextBox,
-  glyphs: Map<string, PreparedGlyph>,
-  metrics: FontMetrics,
+  fonts: FontSet,
   baseEmFraction: number,
   canvasW: number,
 ): TextBoxLayout {
-  const { unitsPerEm, ascender, descender } = metrics
-  const descAbs = Math.abs(descender)
+  const defMetrics = fontFor(fonts, fonts.defaultId).metrics
 
   // 1) flatten runs → slots --------------------------------------------------
   const slots: Slot[] = []
   let drawn = 0
   for (const run of box.runs) {
+    const fe = fontFor(fonts, run.fontId)
+    const upm = fe.metrics.unitsPerEm
     const sizeScale = run.sizeScale ?? 1
-    const scale = (baseEmFraction * sizeScale * canvasW) / unitsPerEm
+    const scale = (baseEmFraction * sizeScale * canvasW) / upm
     const emPx = baseEmFraction * sizeScale * canvasW
-    const ascentPx = ascender * scale
-    const descentPx = descAbs * scale
+    // Kerning: extra trailing advance after each glyph/space, in ems → px.
+    const kernPx = (run.letterSpacing ?? 0) * emPx
+    const ascentPx = fe.metrics.ascender * scale
+    const descentPx = Math.abs(fe.metrics.descender) * scale
     const color = run.color ?? null
     const underline = !!run.underline
+    const minHalfWidth = upm * 0.004
     for (const ch of run.text) {
-      const base = { scale, ascentPx, descentPx, color, underline, xPx: 0, startMs: 0, endMs: 0 }
+      const base = { scale, ascentPx, descentPx, color, underline, upm, minHalfWidth, xPx: 0, startMs: 0, endMs: 0 }
       if (ch === '\n') {
         slots.push({ ...base, kind: 'newline', prepared: null, advancePx: 0, glyphIndex: -1 })
       } else if (/\s/.test(ch)) {
-        slots.push({ ...base, kind: 'space', prepared: null, advancePx: SPACE_EM * emPx, glyphIndex: -1 })
+        slots.push({ ...base, kind: 'space', prepared: null, advancePx: SPACE_EM * emPx + kernPx, glyphIndex: -1 })
       } else {
-        const pg = glyphs.get(ch)
+        const pg = fe.glyphs.get(ch)
         if (pg) {
-          slots.push({ ...base, kind: 'glyph', prepared: pg, advancePx: pg.advanceWidth * scale, glyphIndex: drawn++ })
+          slots.push({ ...base, kind: 'glyph', prepared: pg, advancePx: pg.advanceWidth * scale + kernPx, glyphIndex: drawn++ })
         } else {
-          slots.push({ ...base, kind: 'missing', prepared: null, advancePx: MISSING_EM * emPx, glyphIndex: -1 })
+          slots.push({ ...base, kind: 'missing', prepared: null, advancePx: MISSING_EM * emPx + kernPx, glyphIndex: -1 })
         }
       }
     }
@@ -201,7 +236,7 @@ export function layoutTextBox(
   if (line.length > 0 || lines.length === 0) lines.push(line)
 
   // 4) per-line vertical metrics + baselines ---------------------------------
-  const defaultScale = (baseEmFraction * canvasW) / unitsPerEm
+  const defaultScale = (baseEmFraction * canvasW) / defMetrics.unitsPerEm
   const lineAsc: number[] = []
   const lineDesc: number[] = []
   for (const ln of lines) {
@@ -212,8 +247,8 @@ export function layoutTextBox(
       d = Math.max(d, s.descentPx)
     }
     if (ln.length === 0) {
-      a = ascender * defaultScale
-      d = descAbs * defaultScale
+      a = defMetrics.ascender * defaultScale
+      d = Math.abs(defMetrics.descender) * defaultScale
     }
     lineAsc.push(a)
     lineDesc.push(d)
@@ -267,6 +302,7 @@ export function layoutTextBox(
         color: s.color,
         startMs: s.startMs,
         seedSalt: `${box.id}:${s.glyphIndex}`,
+        minHalfWidth: s.minHalfWidth,
       })
       contentMs = Math.max(contentMs, s.endMs)
       t = s.endMs + box.interCharDelayMs
@@ -289,8 +325,12 @@ export function layoutTextBox(
       const seg = ln.slice(r, e)
       const drawnInSeg = seg.filter((s) => s.kind === 'glyph' && s.prepared)
       if (drawnInSeg.length > 0) {
-        const maxScale = seg.reduce((m, s) => Math.max(m, s.scale), 0)
-        const emPx = unitsPerEm * maxScale
+        // em size from the largest slot — and that slot's own font upm, since a
+        // segment may mix fonts.
+        let maxScale = 0
+        let maxUpm = defMetrics.unitsPerEm
+        for (const s of seg) if (s.scale > maxScale) { maxScale = s.scale; maxUpm = s.upm }
+        const emPx = maxUpm * maxScale
         const x0Px = seg[0].xPx
         const x1Px = seg[seg.length - 1].xPx + seg[seg.length - 1].advancePx
         // Human behaviour: underline the word AFTER it's fully written — wait for

@@ -1,6 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
-import type { PreparedGlyph } from '@lib/animation/timeline'
-import type { FontMetrics } from '@lib/project/layout'
+import { fontFor, type FontSet } from '@lib/project/layout'
 import { buildRenderContext, projectDurationMs, renderProject } from '@lib/project/render'
 import type { VideoProject } from '@lib/project/schema'
 import { useVideoStore } from '../../state/videoStore'
@@ -16,7 +15,7 @@ type Scope = 'all' | 'selected'
  * closing transitions overlapping the next. A single ticked slide plays on its
  * own. Same pure render path as a future MP4 exporter.
  */
-export function ProjectPlayer({ glyphs, metrics }: { glyphs: Map<string, PreparedGlyph>; metrics: FontMetrics }) {
+export function ProjectPlayer({ fonts }: { fonts: FontSet }) {
   const project = useVideoStore((s) => s.project)
   const selectedSlideId = useVideoStore((s) => s.selectedSlideId)
   const playSelectedIds = useVideoStore((s) => s.playSelectedIds)
@@ -34,8 +33,8 @@ export function ProjectPlayer({ glyphs, metrics }: { glyphs: Map<string, Prepare
   }, [project, scope, playSelectedIds])
 
   const rc = useMemo(
-    () => (subProject ? buildRenderContext(subProject, glyphs, BACKING_W, metrics, playbackRate) : null),
-    [subProject, glyphs, metrics, playbackRate],
+    () => (subProject ? buildRenderContext(subProject, fonts, BACKING_W, playbackRate) : null),
+    [subProject, fonts, playbackRate],
   )
   const totalMs = rc ? projectDurationMs(rc) : 0
 
@@ -44,9 +43,9 @@ export function ProjectPlayer({ glyphs, metrics }: { glyphs: Map<string, Prepare
     for (const slide of subProject.slides)
       for (const box of slide.textBoxes)
         for (const run of box.runs)
-          for (const ch of run.text) if (ch.trim().length && !glyphs.has(ch)) return false
+          for (const ch of run.text) if (ch.trim().length && !fontFor(fonts, run.fontId).glyphs.has(ch)) return false
     return true
-  }, [subProject, glyphs])
+  }, [subProject, fonts])
 
   const draw = useCallback(
     (ctx: CanvasRenderingContext2D, t: number, w: number, h: number) => {

@@ -3,7 +3,9 @@ import {
   newSlide,
   newTextBox,
   type Aspect,
+  type NamedStyle,
   type NormRect,
+  type ProjectDefaults,
   type Slide,
   type TextBox,
   type TextRun,
@@ -14,6 +16,7 @@ import {
 } from '@lib/project/schema'
 import { DEFAULT_TTS, DEFAULT_TTS_VOICE_SETTINGS } from '@lib/project/schema'
 import type { BrushSettings } from '@lib/manifest/schema'
+import { applyStyleToRange, type StylePatch } from '@lib/project/runs'
 import { estimateDurationMs } from '@lib/project/vtt'
 
 function mapSlide(p: VideoProject, slideId: string, fn: (s: Slide) => Slide): VideoProject {
@@ -126,6 +129,26 @@ export function updateTextBoxRuns(
   return updateTextBox(p, slideId, boxId, { runs })
 }
 
+/** Apply a style patch to a textbox's runs over [start, end) (flattened-text
+ *  offsets). The format bar's per-run controls route through here. Only the
+ *  fields present in `patch` are written, so untouched (incl. mixed) fields on
+ *  each run are preserved. */
+export function applyTextStyle(
+  p: VideoProject,
+  slideId: string,
+  boxId: string,
+  start: number,
+  end: number,
+  patch: StylePatch,
+): VideoProject {
+  return mapSlide(p, slideId, (s) => ({
+    ...s,
+    textBoxes: s.textBoxes.map((b) =>
+      b.id === boxId ? { ...b, runs: applyStyleToRange(b.runs, start, end, patch) } : b,
+    ),
+  }))
+}
+
 export function reorderTextBoxes(p: VideoProject, slideId: string, orderedIds: string[]): VideoProject {
   return mapSlide(p, slideId, (s) => {
     const pos = new Map(orderedIds.map((id, i) => [id, i]))
@@ -141,6 +164,38 @@ export function deleteTextBox(p: VideoProject, slideId: string, boxId: string): 
   }))
 }
 
+const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
+
+/** Deep-clone a textbox (for the copy/cut clipboard — independent of later edits). */
+export function cloneTextBox(box: TextBox): TextBox {
+  return {
+    ...box,
+    frame: { ...box.frame },
+    runs: box.runs.map((r) => ({ ...r })),
+    brush: box.brush ? { ...box.brush } : undefined,
+  }
+}
+
+/** Paste a (clipboard) box onto a slide as a new box: fresh id, nudged position,
+ *  appended animation order. Returns the new box id (for selection). */
+export function pasteTextBox(
+  p: VideoProject,
+  slideId: string,
+  box: TextBox,
+): { project: VideoProject; boxId: string } {
+  const id = makeId()
+  const project = mapSlide(p, slideId, (s) => {
+    const clone: TextBox = {
+      ...cloneTextBox(box),
+      id,
+      frame: { ...box.frame, x: clamp01(box.frame.x + 0.03), y: clamp01(box.frame.y + 0.03) },
+      animOrder: s.textBoxes.length,
+    }
+    return { ...s, textBoxes: [...s.textBoxes, clone] }
+  })
+  return { project, boxId: id }
+}
+
 // --- project-level --------------------------------------------------------
 
 export function setAspect(p: VideoProject, aspect: Aspect): VideoProject {
@@ -151,6 +206,47 @@ export function setBaseEmFraction(p: VideoProject, baseEmFraction: number): Vide
 }
 export function setPlaybackRate(p: VideoProject, playbackRate: number): VideoProject {
   return { ...p, playbackRate }
+}
+
+/** Set the project's default font (the font an unset `run.fontId` resolves to). */
+export function setProjectFont(p: VideoProject, fontId: string): VideoProject {
+  return { ...p, fontId }
+}
+
+// --- named styles ---------------------------------------------------------
+
+const styles = (p: VideoProject): NamedStyle[] => p.namedStyles ?? []
+
+export function addNamedStyle(p: VideoProject, name: string, style: StylePatch): { project: VideoProject; id: string } {
+  const id = makeId()
+  return { project: { ...p, namedStyles: [...styles(p), { id, name, style }] }, id }
+}
+
+export function updateNamedStyle(p: VideoProject, id: string, patch: Partial<NamedStyle>): VideoProject {
+  return { ...p, namedStyles: styles(p).map((s) => (s.id === id ? { ...s, ...patch } : s)) }
+}
+
+export function removeNamedStyle(p: VideoProject, id: string): VideoProject {
+  return { ...p, namedStyles: styles(p).filter((s) => s.id !== id) }
+}
+
+/** Apply a saved style's patch to [start,end) of a textbox. */
+export function applyNamedStyle(
+  p: VideoProject,
+  slideId: string,
+  boxId: string,
+  start: number,
+  end: number,
+  styleId: string,
+): VideoProject {
+  const ns = styles(p).find((s) => s.id === styleId)
+  if (!ns) return p
+  return applyTextStyle(p, slideId, boxId, start, end, ns.style)
+}
+
+/** Patch the new-textbox format defaults (the format bar with nothing selected). */
+export function setDefaults(p: VideoProject, patch: Partial<ProjectDefaults>): VideoProject {
+  return { ...p, defaults: { ...p.defaults, ...patch } }
 }
 
 // --- voiceover ------------------------------------------------------------

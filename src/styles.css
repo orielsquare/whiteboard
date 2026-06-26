@@ -129,6 +129,71 @@ body {
   border-radius: 8px;
 }
 
+/* On-canvas text editing: a wrapper sized exactly to the canvas so the edit
+   overlay can be positioned in canvas-relative coordinates. */
+.canvas-wrap {
+  position: relative;
+}
+.tb-overlay {
+  position: absolute;
+  margin: 0;
+  padding: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
+  caret-color: #fff;
+  background: rgba(11, 13, 17, 0.5);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+  z-index: 5;
+  min-width: 8px;
+}
+.tb-overlay:focus {
+  outline-color: #7fb4ff;
+}
+
+/* The single horizontal text-formatting bar above the slide canvas. */
+.formatbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.formatbar .fmt-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.formatbar .fmt-label {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.formatbar .fmt-val {
+  min-width: 36px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+.formatbar .fmt-num {
+  width: 56px;
+}
+.formatbar .fmt-font,
+.formatbar .fmt-style {
+  max-width: 130px;
+}
+.formatbar .fmt-mode {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .hint {
   color: var(--muted);
   font-size: 12px;
@@ -325,6 +390,29 @@ body {
 .tab-on {
   color: var(--text);
   border-bottom-color: var(--accent);
+}
+
+/* Top-level tool switch (Font / Video): the prominent primary tier. */
+.tabs-top {
+  margin-bottom: 0;
+  border-bottom: 1px solid var(--line);
+}
+.tabs-top .tab {
+  font-size: 15px;
+  font-weight: 600;
+  padding: 11px 18px;
+}
+.tabs-top .tab-on {
+  border-bottom-width: 3px;
+}
+/* Sub-tab tier (within a tool): slightly lighter, sits under the loader. */
+.tabs-sub {
+  margin-top: 12px;
+  font-size: 13px;
+}
+.tabs-sub .tab {
+  padding: 8px 12px;
+  font-size: 13px;
 }
 
 /* animation preview */
@@ -576,7 +664,7 @@ body {
 
 .video-body {
   display: grid;
-  grid-template-columns: 210px 1fr 290px;
+  grid-template-columns: 232px 1fr 290px;
   gap: 14px;
   align-items: start;
 }

@@ -93,6 +93,17 @@ function fontStorePlugin(): Plugin {
             await fs.writeFile(path.join(dir, 'font.ttf'), body)
             return sendJson(res, 200, { ok: true })
           }
+          if (req.method === 'GET' && id && sub === 'font') {
+            const file = path.join(fontsDir, id, 'font.ttf')
+            try {
+              const data = await fs.readFile(file)
+              res.statusCode = 200
+              res.setHeader('content-type', 'application/octet-stream')
+              return res.end(data)
+            } catch {
+              return sendJson(res, 404, { error: 'not found' })
+            }
+          }
           return sendJson(res, 405, { error: 'method not allowed' })
         } catch (err) {
           return sendJson(res, 500, { error: String(err) })
@@ -216,7 +227,7 @@ function exportPlugin(): Plugin {
         try {
           if (req.method === 'POST' && !rest) {
             const body = JSON.parse((await readBody(req)).toString('utf8'))
-            const { project, glyphs, metrics, fps, width, speed, slideIds, name, includeAudio } = body
+            const { project, fontsById, glyphs, metrics, fps, width, speed, slideIds, name, includeAudio } = body
             const safe =
               (String(name || project?.name || 'video')
                 .replace(/[^a-z0-9-_]+/gi, '_')
@@ -226,7 +237,7 @@ function exportPlugin(): Plugin {
             // Cache-bust so edits to the exporter are picked up without a restart.
             const spec = pathToFileURL(path.join(rootDir, 'tools/videoExport.mjs')).href + '?v=' + Date.now()
             const mod = await import(spec)
-            const info = await mod.renderProjectToMp4({ project, glyphs, metrics, fps, width, speed, slideIds, includeAudio, outPath })
+            const info = await mod.renderProjectToMp4({ project, fontsById, glyphs, metrics, fps, width, speed, slideIds, includeAudio, outPath })
             const bytes = (await fs.stat(outPath)).size
             return sendJson(res, 200, { ok: true, file: safe + '.mp4', bytes, ...info })
           }

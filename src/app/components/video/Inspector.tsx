@@ -1,9 +1,7 @@
 import type { BrushSettings, BrushStyle } from '@lib/manifest/schema'
-import type { TextAlign, TransitionKind } from '@lib/project/schema'
+import type { TransitionKind } from '@lib/project/schema'
 import { useVideoStore } from '../../state/videoStore'
-import { RunEditor } from './RunEditor'
 
-const ALIGNS: TextAlign[] = ['left', 'center', 'right']
 const BRUSH_STYLES: BrushStyle[] = ['chalk', 'ink', 'marker']
 const TRANSITIONS: TransitionKind[] = ['none', 'fade', 'rubout', 'scroll-up', 'scroll-down', 'scroll-left', 'scroll-right']
 const DEFAULT_WRAP_W = 0.7
@@ -52,22 +50,7 @@ export function Inspector() {
             </button>
           </div>
 
-          <RunEditor box={box} slideId={slide.id} brushColor={project.brush.color} />
-
-          <label className="slider">
-            <span>align</span>
-            <div className="seg">
-              {ALIGNS.map((a) => (
-                <button
-                  key={a}
-                  className={box.align === a ? 'tool tool-on' : 'tool'}
-                  onClick={() => updateTextBox(slide.id, box.id, { align: a })}
-                >
-                  {a}
-                </button>
-              ))}
-            </div>
-          </label>
+          <p className="insp-tip muted">Double-click the textbox on the slide to edit its text; use the format bar above to style it.</p>
 
           <label className="toggle">
             <input
@@ -175,7 +158,7 @@ export function Inspector() {
         </>
       ) : (
         <div className="muted insp-empty">
-          Select a textbox to edit its text &amp; style, or click empty space on the slide to add one.
+          Double-click a textbox to edit its text, or click empty space on the slide to add one.
         </div>
       )}
 

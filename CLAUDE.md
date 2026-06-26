@@ -63,13 +63,18 @@ src/lib/
                 renderProject/renderSlide), transitions.ts, runs.ts, vtt.ts (WebVTT parse/serialize/etc).
                 Pure engines unit-tested in tools/{layout,runs,timing,vtt}.test.mjs (esbuild standalone).
 src/app/
-  App.tsx       shell: owns font, single shared GlyphExtractor, params, selectedChar, brush; 4 tabs.
+  App.tsx       shell: top-level Font/Video switch; owns font, single shared GlyphExtractor, params,
+                selectedChar, brush. Font side keeps the loader + sub-tabs (Stroke extraction/Editor/Animation preview).
   state/        store.ts (useEditorStore — font manifest, zundo, ensureGlyphDerived/commitDerivedGlyph),
-                videoStore.ts (useVideoStore — video project, zundo) + videoEdit.ts (pure helpers).
+                videoStore.ts (useVideoStore — video project, zundo; transient `selection` for the format bar)
+                + videoEdit.ts (pure helpers), fontRegistry.ts (useFontRegistry — prepared glyphs/metrics for
+                every referenced SAVED font, keyed by fontId; loads each font's manifest AND **derives missing
+                glyphs on demand** from its bytes via a per-font GlyphExtractor — so the Video tool renders any
+                font's text regardless of which font the Font tab has open).
   components/   EditorView, ExtractionView, PreviewView, editorCanvas, overlay; video/ (VideoView owns the
-                Layout/Order/Play/Timeline/VTT switch; SlideCanvas, SlidePanel, Inspector, RunEditor,
-                SlideOrderView/ProjectPlayer/PlaybackCanvas, AnimationOrderList, VttView, SlideVttExtract,
-                TimelineView [placeholder]).
+                Layout/Order/VTT/Timeline/Play switch; SlideCanvas, SlidePanel, Inspector, FormatBar [the one
+                horizontal text-format bar], TextBoxOverlay [contentEditable on-canvas editor], fontFaces.ts,
+                SlideOrderView/ProjectPlayer/PlaybackCanvas, AnimationOrderList, VttView, SlideVttExtract, TimelineView).
 vite.config.ts  React + fontStorePlugin (/api/fonts) + projectStorePlugin (/api/projects) +
                 exportPlugin (/api/export → MP4) + ttsPlugin (/api/tts, /api/voices, /api/voiceover/<project>/<file>).
 tools/          videoExport.mjs (headless MP4), tts.mjs (ElevenLabs TTS + voice list→ffmpeg), *.test.mjs (pure-engine tests).
@@ -90,17 +95,33 @@ public/fonts/   bundled OFL samples: Patrick Hand (handwriting), Fira Sans (sans
 - **Brush is an applied style, NOT glyph data** — it's transient app state, the picker lives in the
   Animation tab; the video project carries its own global `brush`. Never store brush in the font manifest.
 
-## The four tabs (App.tsx)
+## Two tools, top-level Font/Video switch (App.tsx)
 
-1. **Editor** — pick a glyph; reorder/flip/split/merge stroke sections (drag + buttons); per-section
+**Font tool** — keeps the font loader prominent at the top; three sub-tabs:
+1. **Stroke extraction** — read-only debug overlay of the automatic extraction; tune params (live).
+2. **Editor** — pick a glyph; reorder/flip/split/merge stroke sections (drag + buttons); per-section
    timing; brush-less neutral-pen play preview; Save font / Reload / Undo / Redo.
-2. **Stroke extraction** — read-only debug overlay of the automatic extraction; tune params (live).
 3. **Animation preview** — animate holding text with the chosen brush; reflects per-glyph edits.
-4. **Video** — slide-based animated-text editor. Its own view switch (in `VideoView`):
-   **Layout** (drag/select/add textboxes + voiceover-in-range extract), **Order** (animation order +
-   per-slide Play), **▶ Play** (project play-all + synced voiceover), **Timeline** (real-time voiceover
-   timeline: sections/zoom/leader-line drag), **VTT** (WebVTT script + ElevenLabs voice panel/TTS).
-   See HANDOVER.md for the voiceover feature notes.
+
+**Video tool** — slide-based animated-text editor; no font loader (font is a per-text formatting option
+from all SAVED fonts). Its own view switch (in `VideoView`), in order:
+**Layout** (drag/select/add textboxes; **double-click a box to edit its text in place** via `TextBoxOverlay`;
+the single horizontal `FormatBar` styles the selection / box / new-box defaults; **Cmd/Ctrl-C/X/V** copy/cut/
+paste the selected textbox across slides via a transient `clipboardBox` — deferring to the browser while a
+text field/overlay is focused), **Order** (animation order +
+per-slide Play), **VTT** (WebVTT script + ElevenLabs voice panel/TTS), **Timeline** (real-time voiceover
+timeline: sections/zoom/leader-line drag), **▶ Play** (project play-all + synced voiceover).
+See HANDOVER.md for the voiceover feature notes.
+
+**Video formatting** — one `FormatBar` above the canvas: per-run **font** (saved-fonts dropdown), size,
+colour, underline, **kerning** (`TextRun.letterSpacing`), plus per-box **line-height** (`lineHeightScale`)
+and align, plus the project **pen type** (chalk/ink/marker `brush.style`). Colour with a selection is the
+run colour; with nothing selected it's the global `brush.color`. (The old `.video-top` brush style/colour
+controls were removed — formatting lives only in the bar.) It syncs to the selection (mixed → indeterminate, via `runs.ts` `selectionStyle`) and applies via
+`applyTextStyle`; with nothing selected it edits `ProjectDefaults`. **Named styles** (`VideoProject.namedStyles`,
+per-project) save the selection's non-mixed fields as a reusable `StylePatch` and apply to a selection.
+Per-run **fonts** resolve through a `FontSet` (`layout.ts`/`render.ts`); the Video tool builds it from
+`useFontRegistry` + the live editor font; MP4 export sends `fontsById` so preview == export.
 
 **Shared across tabs** (in App): `selectedChar`, extraction `params`, `brush`, and a single
 `GlyphExtractor` (one Web Worker per font). Tuning params re-derives the active glyph centrally,
@@ -120,7 +141,9 @@ gated on `manifest.metadata.fontId === font.hash`.
 
 Font tooling (load → extract → edit → animate → save) is complete. The **Video editor (VP1–VP5) is
 complete**: slides (add/copy/delete/drag-reorder + save/load), the **Layout** view (drag/select/add
-textboxes), **inline rich text** (per-selection size/colour/underline via `runs.ts`/`RunEditor`), the
+textboxes; **direct on-canvas text editing** via `TextBoxOverlay` + the one horizontal `FormatBar`),
+**inline rich text** (per-selection font/size/colour/underline/kerning via `runs.ts`; line-height + align
+per box; **named styles** in `VideoProject.namedStyles`; per-run multi-font via `FontSet`), the
 **Order** view (per-box animation order + delays + per-slide Play), **Play** (project-level play-all
 with an All/Selected scope for single-slide or subset playback), per-slide **background colour**,
 human-style **underlines** (drawn after the word), a project **playback speed** (`playbackRate`, ×0.25–12) that

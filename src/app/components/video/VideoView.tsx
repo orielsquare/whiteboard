@@ -2,12 +2,14 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { LoadedFont } from '@lib/font/load'
 import { captionsVtt } from '@lib/project/vtt'
 import { extractionSig, type ExtractionParams, type GlyphExtractor } from '@lib/extraction'
-import type { BrushSettings, BrushStyle } from '@lib/manifest/schema'
+import type { BrushSettings } from '@lib/manifest/schema'
 import { prepareGlyph, type PreparedGlyph } from '@lib/animation/timeline'
-import type { FontMetrics } from '@lib/project/layout'
+import type { FontEntry, FontMetrics, FontSet } from '@lib/project/layout'
 import type { Aspect } from '@lib/project/schema'
 import { projectStore, type ProjectSummary } from '@lib/persistence/ProjectStore'
+import { httpStore } from '@lib/persistence/FontStore'
 import { ensureProjectGlyphsDerived, useVideoStore, videoHistory } from '../../state/videoStore'
+import { useFontRegistry } from '../../state/fontRegistry'
 import { useEditorStore } from '../../state/store'
 import { SlidePanel } from './SlidePanel'
 import { SlideCanvas } from './SlideCanvas'
@@ -16,13 +18,12 @@ import { TimelineView } from './TimelineView'
 import { VttView } from './VttView'
 
 const ASPECTS: Aspect[] = ['16:9', '9:16']
-const BRUSH_STYLES: BrushStyle[] = ['chalk', 'ink', 'marker']
 const VIEWS = [
   { id: 'layout', label: 'Layout' },
   { id: 'order', label: 'Order' },
-  { id: 'play', label: '▶ Play' },
-  { id: 'timeline', label: 'Timeline' },
   { id: 'vtt', label: 'VTT' },
+  { id: 'timeline', label: 'Timeline' },
+  { id: 'play', label: '▶ Play' },
 ] as const
 
 export function VideoView({
@@ -42,7 +43,6 @@ export function VideoView({
   const saveProject = useVideoStore((s) => s.saveProject)
   const setAspect = useVideoStore((s) => s.setAspect)
   const setBaseEmFraction = useVideoStore((s) => s.setBaseEmFraction)
-  const setBrush = useVideoStore((s) => s.setBrush)
   const slideView = useVideoStore((s) => s.slideView)
   const setSlideView = useVideoStore((s) => s.setSlideView)
 
@@ -117,6 +117,53 @@ export function VideoView({
     descender: font.font.descender,
   }
 
+  // Multi-font: assemble a FontSet for the pure pipeline. The Font-tab font is
+  // supplied live (newly-derived glyphs show at once); other referenced saved
+  // fonts come from the registry (their on-disk manifests).
+  const registryFonts = useFontRegistry((s) => s.fonts)
+  const ensureFonts = useFontRegistry((s) => s.ensureFonts)
+  const referencedKey = useMemo(() => {
+    if (!project) return ''
+    const set = new Set<string>([project.fontId])
+    for (const sl of project.slides)
+      for (const b of sl.textBoxes) for (const r of b.runs) if (r.fontId) set.add(r.fontId)
+    return [...set].sort().join(',')
+  }, [project])
+  // Per (non-editor) font, the chars it must render — the registry loads each
+  // font's manifest and derives any missing glyphs on demand from its bytes.
+  const fontCharSpecs = useMemo(() => {
+    if (!project) return [] as { id: string; chars: string[] }[]
+    const byFont = new Map<string, Set<string>>()
+    for (const sl of project.slides)
+      for (const b of sl.textBoxes)
+        for (const r of b.runs) {
+          const fid = r.fontId || project.fontId
+          if (fid === font.hash) continue // the Font-tab font derives live (App extractor)
+          let set = byFont.get(fid)
+          if (!set) byFont.set(fid, (set = new Set()))
+          for (const ch of r.text) if (ch.trim().length) set.add(ch)
+        }
+    return [...byFont].map(([id, set]) => ({ id, chars: [...set].sort() }))
+  }, [project, font.hash])
+  const fontCharSpecsKey = fontCharSpecs.map((s) => `${s.id}:${s.chars.join('')}`).join('|')
+  useEffect(() => {
+    if (fontCharSpecs.length) void ensureFonts(fontCharSpecs)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fontCharSpecsKey])
+  const fonts: FontSet = useMemo(() => {
+    const byId = new Map<string, FontEntry>()
+    byId.set(font.hash, { glyphs, metrics: safeMetrics }) // live editor font
+    for (const id of referencedKey ? referencedKey.split(',') : []) {
+      if (!id || id === font.hash) continue
+      const e = registryFonts.get(id)
+      if (e) byId.set(id, { glyphs: e.glyphs, metrics: e.metrics })
+    }
+    const defaultId = project?.fontId ?? font.hash
+    if (!byId.has(defaultId)) byId.set(defaultId, { glyphs: new Map(), metrics: safeMetrics })
+    return { byId, defaultId }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [glyphs, safeMetrics, font.hash, project?.fontId, referencedKey, registryFonts])
+
   // Bootstrap a project on first entry.
   useEffect(() => {
     if (!useVideoStore.getState().project) {
@@ -148,6 +195,32 @@ export function VideoView({
     refreshList()
   }, [])
 
+  // Textbox clipboard: Cmd/Ctrl C / X / V on the selected box (across slides).
+  // Defers to the browser while editing text (overlay / form fields).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return
+      const ae = document.activeElement as HTMLElement | null
+      if (ae && (ae.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(ae.tagName))) return
+      const k = e.key.toLowerCase()
+      if (k !== 'c' && k !== 'x' && k !== 'v') return
+      const st = useVideoStore.getState()
+      const slideId = st.selectedSlideId ?? st.project?.slides[0]?.id
+      if (!slideId) return
+      if (k === 'v') {
+        if (!st.clipboardBox) return
+        st.pasteTextBox(slideId)
+        e.preventDefault()
+      } else if (st.selectedTextBoxId) {
+        if (k === 'c') st.copyTextBox(slideId, st.selectedTextBoxId)
+        else st.cutTextBox(slideId, st.selectedTextBoxId)
+        e.preventDefault()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   const doSave = async () => {
     setStatus('saving…')
     try {
@@ -172,13 +245,26 @@ export function VideoView({
     setExportResult(null)
     setStatus('rendering MP4 — this can take a moment…')
     try {
+      // Per-run multi-font: send every referenced font's raw glyphs + metrics so
+      // the headless exporter renders each run in its own font (preview == export).
+      const referenced = new Set<string>([p.fontId])
+      for (const sl of p.slides)
+        for (const b of sl.textBoxes) for (const r of b.runs) if (r.fontId) referenced.add(r.fontId)
+      const fontsById: Record<string, { glyphs: unknown; metrics: FontMetrics }> = {}
+      for (const id of referenced) {
+        const mf = id === m.metadata.fontId ? m : await httpStore.load(id)
+        if (!mf) continue
+        fontsById[id] = {
+          glyphs: mf.glyphs,
+          metrics: { unitsPerEm: mf.metadata.unitsPerEm, ascender: mf.metadata.ascender, descender: mf.metadata.descender },
+        }
+      }
       const res = await fetch('/api/export', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           project: p,
-          glyphs: m.glyphs,
-          metrics: { unitsPerEm: m.metadata.unitsPerEm, ascender: m.metadata.ascender, descender: m.metadata.descender },
+          fontsById,
           fps: 30,
           width: 1280,
           speed: p.playbackRate ?? 1,
@@ -225,22 +311,6 @@ export function VideoView({
             onChange={(e) => setBaseEmFraction(Number(e.target.value))}
           />
         </label>
-        <div className="seg">
-          {BRUSH_STYLES.map((st) => (
-            <button
-              key={st}
-              className={project.brush.style === st ? 'tool tool-on' : 'tool'}
-              onClick={() => setBrush({ ...project.brush, style: st })}
-            >
-              {st}
-            </button>
-          ))}
-          <input
-            type="color"
-            value={project.brush.color}
-            onChange={(e) => setBrush({ ...project.brush, color: e.target.value })}
-          />
-        </div>
         <div className="spacer" />
         <button onClick={() => videoHistory.undo()} title="undo">↶</button>
         <button onClick={() => videoHistory.redo()} title="redo">↷</button>
@@ -298,13 +368,13 @@ export function VideoView({
       </div>
 
       {slideView === 'timeline' ? (
-        <TimelineView glyphs={glyphs} metrics={safeMetrics} />
+        <TimelineView fonts={fonts} />
       ) : slideView === 'vtt' ? (
         <VttView />
       ) : (
         <div className="video-body">
-          <SlidePanel glyphs={glyphs} metrics={metrics} />
-          <SlideCanvas glyphs={glyphs} metrics={safeMetrics} />
+          <SlidePanel fonts={fonts} />
+          <SlideCanvas fonts={fonts} font={font} />
           <Inspector />
         </div>
       )}

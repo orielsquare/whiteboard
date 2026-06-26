@@ -58,6 +58,27 @@ function prepareGlyphMap(seam, glyphRecord) {
   return map
 }
 
+/**
+ * Build a FontSet for the render seam. `fontsById` is the multi-font payload
+ * ({ [fontId]: { glyphs, metrics } }); `glyphs`/`metrics` are the legacy
+ * single-font fields (kept for back-compat). `defaultId` = project.fontId.
+ */
+function buildFontSet(seam, fontsById, glyphs, metrics, defaultId) {
+  const byId = new Map()
+  if (fontsById && typeof fontsById === 'object') {
+    for (const id of Object.keys(fontsById)) {
+      const f = fontsById[id]
+      if (f && f.glyphs && f.metrics) byId.set(id, { glyphs: prepareGlyphMap(seam, f.glyphs), metrics: f.metrics })
+    }
+  }
+  if (glyphs && metrics && !byId.has(defaultId)) {
+    byId.set(defaultId, { glyphs: prepareGlyphMap(seam, glyphs), metrics })
+  }
+  if (byId.size === 0) throw new Error('no fonts provided for export')
+  if (!byId.has(defaultId)) byId.set(defaultId, byId.get(byId.keys().next().value))
+  return { byId, defaultId }
+}
+
 /** Run ffmpeg with the given args, rejecting on a non-zero exit (with stderr tail). */
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
@@ -126,6 +147,7 @@ function collectAudioCues(project, audioDir) {
  */
 export async function renderProjectToMp4({
   project,
+  fontsById,
   glyphs,
   metrics,
   fps = 30,
@@ -141,7 +163,7 @@ export async function renderProjectToMp4({
   if (!outPath) throw new Error('outPath required')
 
   const seam = await loadSeam()
-  const glyphMap = prepareGlyphMap(seam, glyphs)
+  const fontSet = buildFontSet(seam, fontsById, glyphs, metrics, project.fontId)
 
   const sub = slideIds
     ? { ...project, slides: project.slides.filter((s) => slideIds.includes(s.id)) }
@@ -157,7 +179,7 @@ export async function renderProjectToMp4({
   // Speed is baked into the timeline (writing scaled, holds/transitions invariant),
   // so we render the resulting timeline at real time.
   const rate = speed > 0 ? speed : 1
-  const rc = seam.buildRenderContext(sub, glyphMap, w, metrics, rate)
+  const rc = seam.buildRenderContext(sub, fontSet, w, rate)
   const animDurationMs = seam.projectDurationMs(rc)
   const videoDurationMs = animDurationMs + tailMs
   const totalFrames = Math.max(1, Math.ceil((videoDurationMs / 1000) * fps))
@@ -242,12 +264,27 @@ if (invokedDirectly) {
     process.exit(1)
   }
   const project = JSON.parse(readFileSync(projectFile, 'utf8'))
-  const manifestPath = join(ROOT, 'fonts', project.fontId, 'manifest.json')
-  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
-  const metrics = {
-    unitsPerEm: manifest.metadata.unitsPerEm,
-    ascender: manifest.metadata.ascender,
-    descender: manifest.metadata.descender,
+  // Load every font referenced anywhere in the project (default + per-run fontIds).
+  const referenced = new Set([project.fontId])
+  for (const sl of project.slides || [])
+    for (const b of sl.textBoxes || []) for (const r of b.runs || []) if (r.fontId) referenced.add(r.fontId)
+  const fontsById = {}
+  for (const id of referenced) {
+    const manifestPath = join(ROOT, 'fonts', id, 'manifest.json')
+    let manifest
+    try {
+      manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
+    } catch {
+      throw new Error(`missing font manifest for fontId "${id}" (${manifestPath})`)
+    }
+    fontsById[id] = {
+      glyphs: manifest.glyphs,
+      metrics: {
+        unitsPerEm: manifest.metadata.unitsPerEm,
+        ascender: manifest.metadata.ascender,
+        descender: manifest.metadata.descender,
+      },
+    }
   }
   const outDir = join(ROOT, 'exports')
   mkdirSync(outDir, { recursive: true })
@@ -255,8 +292,7 @@ if (invokedDirectly) {
   const t0 = Date.now()
   const info = await renderProjectToMp4({
     project,
-    glyphs: manifest.glyphs,
-    metrics,
+    fontsById,
     width: widthArg ? Number(widthArg) : 1280,
     fps: fpsArg ? Number(fpsArg) : 30,
     speed: project.playbackRate ?? 1,

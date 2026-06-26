@@ -6,9 +6,12 @@ import { httpStore } from '@lib/persistence/FontStore'
 import { ensureGlyphDerived } from './store'
 import type { ExtractionParams, GlyphExtractor } from '@lib/extraction'
 import {
+  DEFAULT_DEFAULTS,
   newVideoProject,
   type Aspect,
+  type NamedStyle,
   type NormRect,
+  type ProjectDefaults,
   type Slide,
   type TextBox,
   type TextRun,
@@ -18,7 +21,22 @@ import {
   type VoiceoverCue,
 } from '@lib/project/schema'
 import type { BrushSettings } from '@lib/manifest/schema'
+import type { StylePatch } from '@lib/project/runs'
 import * as E from './videoEdit'
+
+/** A sub-range selection inside a textbox's flattened text (offsets). Transient
+ *  UI state — never persisted/undoable. `anchor === focus` is a bare caret. */
+export interface TextSelection {
+  boxId: string
+  anchor: number
+  focus: number
+}
+
+/** Fill any defaults a project saved before new fields existed (no migration
+ *  layer in ProjectStore — default defensively on load). */
+function normalizeProject(p: VideoProject): VideoProject {
+  return { ...p, defaults: { ...DEFAULT_DEFAULTS, ...p.defaults }, namedStyles: p.namedStyles ?? [] }
+}
 
 const nowIso = () => new Date().toISOString()
 type SlideView = 'layout' | 'order' | 'play' | 'timeline' | 'vtt'
@@ -29,12 +47,17 @@ interface VideoState {
   // transient UI state — NOT undoable, NOT persisted (see partialize)
   selectedSlideId: string | null
   selectedTextBoxId: string | null
+  /** active sub-range selection inside the selected textbox (for the format bar). */
+  selection: TextSelection | null
+  /** copy/cut buffer for a textbox (transient — survives slide switches). */
+  clipboardBox: TextBox | null
   slideView: SlideView
   /** slides ticked for scoped ("Selected") play; project order applied at play time. */
   playSelectedIds: string[]
 
   selectSlide: (id: string | null) => void
   selectTextBox: (id: string | null) => void
+  setSelection: (sel: TextSelection | null) => void
   setSlideView: (v: SlideView) => void
   togglePlaySelected: (id: string) => void
   setPlaySelected: (ids: string[]) => void
@@ -50,13 +73,29 @@ interface VideoState {
   updateTextBox: (slideId: string, boxId: string, patch: Partial<TextBox>) => void
   updateTextBoxFrame: (slideId: string, boxId: string, patch: Partial<NormRect>) => void
   updateTextBoxRuns: (slideId: string, boxId: string, runs: TextRun[]) => void
+  /** apply a run-style patch to [start,end) of a textbox (format bar). */
+  applyTextStyle: (slideId: string, boxId: string, start: number, end: number, patch: StylePatch) => void
   reorderTextBoxes: (slideId: string, orderedIds: string[]) => void
   deleteTextBox: (slideId: string, boxId: string) => void
+  // textbox clipboard (Cmd/Ctrl C / X / V); works across slides
+  copyTextBox: (slideId: string, boxId: string) => void
+  cutTextBox: (slideId: string, boxId: string) => void
+  pasteTextBox: (slideId: string) => void
 
   setAspect: (a: Aspect) => void
   setBaseEmFraction: (v: number) => void
   setPlaybackRate: (v: number) => void
   setBrush: (b: BrushSettings) => void
+  /** patch the new-textbox format defaults (format bar with nothing selected). */
+  setDefaults: (patch: Partial<ProjectDefaults>) => void
+  /** set the project default font (the fallback for runs with no fontId). */
+  setProjectFont: (fontId: string) => void
+
+  // named styles (per-project reusable text styles)
+  addNamedStyle: (name: string, style: StylePatch) => string
+  updateNamedStyle: (id: string, patch: Partial<NamedStyle>) => void
+  removeNamedStyle: (id: string) => void
+  applyNamedStyle: (slideId: string, boxId: string, start: number, end: number, styleId: string) => void
 
   setTts: (patch: Partial<TtsSettings>) => void
 
@@ -78,11 +117,19 @@ export const useVideoStore = create<VideoState>()(
       loaded: false,
       selectedSlideId: null,
       selectedTextBoxId: null,
+      selection: null,
+      clipboardBox: null,
       slideView: 'layout',
       playSelectedIds: [],
 
-      selectSlide: (id) => set({ selectedSlideId: id, selectedTextBoxId: null }),
-      selectTextBox: (id) => set({ selectedTextBoxId: id }),
+      selectSlide: (id) => set({ selectedSlideId: id, selectedTextBoxId: null, selection: null }),
+      selectTextBox: (id) =>
+        set((s) => ({
+          selectedTextBoxId: id,
+          // keep a same-box selection alive; drop it when the box changes
+          selection: s.selection && s.selection.boxId === id ? s.selection : null,
+        })),
+      setSelection: (sel) => set({ selection: sel }),
       setSlideView: (v) => set({ slideView: v }),
       togglePlaySelected: (id) =>
         set((s) => ({
@@ -141,6 +188,8 @@ export const useVideoStore = create<VideoState>()(
         set((s) => (s.project ? { project: E.updateTextBoxFrame(s.project, slideId, boxId, patch) } : s)),
       updateTextBoxRuns: (slideId, boxId, runs) =>
         set((s) => (s.project ? { project: E.updateTextBoxRuns(s.project, slideId, boxId, runs) } : s)),
+      applyTextStyle: (slideId, boxId, start, end, patch) =>
+        set((s) => (s.project ? { project: E.applyTextStyle(s.project, slideId, boxId, start, end, patch) } : s)),
       reorderTextBoxes: (slideId, orderedIds) =>
         set((s) => (s.project ? { project: E.reorderTextBoxes(s.project, slideId, orderedIds) } : s)),
       deleteTextBox: (slideId, boxId) =>
@@ -149,9 +198,34 @@ export const useVideoStore = create<VideoState>()(
             ? {
                 project: E.deleteTextBox(s.project, slideId, boxId),
                 selectedTextBoxId: s.selectedTextBoxId === boxId ? null : s.selectedTextBoxId,
+                selection: s.selection?.boxId === boxId ? null : s.selection,
               }
             : s,
         ),
+
+      copyTextBox: (slideId, boxId) => {
+        const box = get()
+          .project?.slides.find((sl) => sl.id === slideId)
+          ?.textBoxes.find((b) => b.id === boxId)
+        if (box) set({ clipboardBox: E.cloneTextBox(box) })
+      },
+      cutTextBox: (slideId, boxId) =>
+        set((s) => {
+          const box = s.project?.slides.find((sl) => sl.id === slideId)?.textBoxes.find((b) => b.id === boxId)
+          if (!s.project || !box) return s
+          return {
+            clipboardBox: E.cloneTextBox(box),
+            project: E.deleteTextBox(s.project, slideId, boxId),
+            selectedTextBoxId: s.selectedTextBoxId === boxId ? null : s.selectedTextBoxId,
+            selection: s.selection?.boxId === boxId ? null : s.selection,
+          }
+        }),
+      pasteTextBox: (slideId) =>
+        set((s) => {
+          if (!s.project || !s.clipboardBox) return s
+          const { project, boxId } = E.pasteTextBox(s.project, slideId, s.clipboardBox)
+          return { project, selectedTextBoxId: boxId, selection: null }
+        }),
 
       setAspect: (a) => set((s) => (s.project ? { project: E.setAspect(s.project, a) } : s)),
       setBaseEmFraction: (v) =>
@@ -159,6 +233,21 @@ export const useVideoStore = create<VideoState>()(
       setPlaybackRate: (v) =>
         set((s) => (s.project ? { project: E.setPlaybackRate(s.project, v) } : s)),
       setBrush: (b) => set((s) => (s.project ? { project: E.setBrush(s.project, b) } : s)),
+      setDefaults: (patch) => set((s) => (s.project ? { project: E.setDefaults(s.project, patch) } : s)),
+      setProjectFont: (fontId) => set((s) => (s.project ? { project: E.setProjectFont(s.project, fontId) } : s)),
+
+      addNamedStyle: (name, style) => {
+        const s = get()
+        if (!s.project) return ''
+        const { project, id } = E.addNamedStyle(s.project, name, style)
+        set({ project })
+        return id
+      },
+      updateNamedStyle: (id, patch) => set((s) => (s.project ? { project: E.updateNamedStyle(s.project, id, patch) } : s)),
+      removeNamedStyle: (id) => set((s) => (s.project ? { project: E.removeNamedStyle(s.project, id) } : s)),
+      applyNamedStyle: (slideId, boxId, start, end, styleId) =>
+        set((s) => (s.project ? { project: E.applyNamedStyle(s.project, slideId, boxId, start, end, styleId) } : s)),
+
       setTts: (patch) => set((s) => (s.project ? { project: E.setTts(s.project, patch) } : s)),
 
       setVoiceover: (cues) => set((s) => (s.project ? { project: E.setVoiceover(s.project, cues) } : s)),
@@ -180,18 +269,21 @@ export const useVideoStore = create<VideoState>()(
           loaded: true,
           selectedSlideId: p.slides[0]?.id ?? null,
           selectedTextBoxId: null,
+          selection: null,
           slideView: 'layout',
           playSelectedIds: [],
         })
       },
       loadProject: async (id) => {
-        const p = await projectStore.load(id)
-        if (!p) return
+        const loaded = await projectStore.load(id)
+        if (!loaded) return
+        const p = normalizeProject(loaded)
         set({
           project: p,
           loaded: true,
           selectedSlideId: p.slides[0]?.id ?? null,
           selectedTextBoxId: null,
+          selection: null,
           slideView: 'layout',
           playSelectedIds: [],
         })
@@ -199,9 +291,13 @@ export const useVideoStore = create<VideoState>()(
       saveProject: async (font) => {
         const p = get().project
         if (!p) return
-        const next = { ...p, fontId: font.hash, updatedAt: nowIso() }
+        // Don't rebrand the project's default font to whatever the Font tab has
+        // open — the default font is chosen in the Video tool (see setProjectFont).
+        const next = { ...p, updatedAt: nowIso() }
         set({ project: next })
         await projectStore.save(next)
+        // Persist the editor font's bytes so the project's default font is on disk
+        // (other referenced fonts are saved via the Font tab).
         await httpStore.saveFont(font.hash, font.buffer)
       },
     }),

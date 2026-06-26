@@ -1,8 +1,8 @@
-import { sampleGlyph, type PreparedGlyph } from '@lib/animation/timeline'
+import { sampleGlyph } from '@lib/animation/timeline'
 import type { BrushSettings } from '@lib/manifest/schema'
 import { paintStroke } from '@lib/render/brush'
 import type { Transform } from '@lib/render/ribbon'
-import { layoutTextBox, type FontMetrics, type TextBoxLayout } from './layout'
+import { layoutTextBox, type FontSet, type TextBoxLayout } from './layout'
 import type { Slide, VideoProject } from './schema'
 import { computeProjectTiming, type ProjectTiming, type SlideTiming } from './timing'
 import { composeTransition, transitionProgress } from './transitions'
@@ -23,7 +23,6 @@ export function renderTextBox(
   originPx: { x: number; y: number },
   brush: BrushSettings,
   tLocalMs: number,
-  minHalfWidth: number,
 ): void {
   // underlines first, so the ink sits on top
   for (const u of layout.underlines) {
@@ -46,7 +45,7 @@ export function renderTextBox(
     const b = inst.color ? { ...brush, color: inst.color } : brush
     for (const r of reveals) {
       if (r.revealedLen <= 0 && !r.active) continue
-      paintStroke(ctx, r.lut, r.revealedLen, tr, b, minHalfWidth, inst.seedSalt + r.id)
+      paintStroke(ctx, r.lut, r.revealedLen, tr, b, inst.minHalfWidth, inst.seedSalt + r.id)
     }
   }
 }
@@ -105,7 +104,6 @@ export function renderSlideContent(
   tLocalMs: number,
   w: number,
   brush: BrushSettings,
-  minHalfWidth: number,
   speed = 1,
 ): void {
   const starts = new Map(timing.boxes.map((b) => [b.boxId, b.startMs]))
@@ -113,7 +111,7 @@ export function renderSlideContent(
     const layout = layouts.get(box.id)
     if (!layout) continue
     const writingMs = (tLocalMs - (starts.get(box.id) ?? 0)) * speed
-    renderTextBox(ctx, layout, boxOrigin(box, w), box.brush ?? brush, writingMs, minHalfWidth)
+    renderTextBox(ctx, layout, boxOrigin(box, w), box.brush ?? brush, writingMs)
   }
 }
 
@@ -127,12 +125,11 @@ function drawSlideFull(
   w: number,
   h: number,
   brush: BrushSettings,
-  minHalfWidth: number,
   speed: number,
 ): void {
   ctx.fillStyle = slide.background
   ctx.fillRect(0, 0, w, h)
-  renderSlideContent(ctx, slide, layouts, timing, tLocalMs, w, brush, minHalfWidth, speed)
+  renderSlideContent(ctx, slide, layouts, timing, tLocalMs, w, brush, speed)
 }
 
 /** A slide's ink with the last `p` fraction of every stroke retracted (rubout). */
@@ -141,7 +138,6 @@ function renderSlideInkRubout(
   slide: Slide,
   layouts: Map<string, TextBoxLayout>,
   brush: BrushSettings,
-  minHalfWidth: number,
   w: number,
   p: number,
 ): void {
@@ -162,7 +158,7 @@ function renderSlideInkRubout(
       for (const r of reveals) {
         const len = r.revealedLen * frac
         if (len <= 0) continue
-        paintStroke(ctx, r.lut, len, tr, b, minHalfWidth, inst.seedSalt + r.id)
+        paintStroke(ctx, r.lut, len, tr, b, inst.minHalfWidth, inst.seedSalt + r.id)
       }
     }
   }
@@ -172,35 +168,32 @@ function renderSlideInkRubout(
 export interface RenderContext {
   layoutsBySlide: Map<string, Map<string, TextBoxLayout>>
   timing: ProjectTiming
-  minHalfWidth: number
   /** writing-animation speed multiplier (scales the per-box glyph-reveal clock). */
   speed: number
 }
 
 /**
  * Lay out every slide and compute timing. `speed` scales the animation (writing)
- * time only — holds + transitions stay invariant. Memoize on (project, glyphs,
- * canvasW, metrics, speed).
+ * time only — holds + transitions stay invariant. `fonts` resolves each run's
+ * font. Memoize on (project, fonts, canvasW, speed).
  */
 export function buildRenderContext(
   project: VideoProject,
-  glyphs: Map<string, PreparedGlyph>,
+  fonts: FontSet,
   canvasW: number,
-  metrics: FontMetrics,
   speed = 1,
 ): RenderContext {
   const layoutsBySlide = new Map<string, Map<string, TextBoxLayout>>()
   for (const slide of project.slides) {
     const m = new Map<string, TextBoxLayout>()
     for (const box of slide.textBoxes) {
-      m.set(box.id, layoutTextBox(box, glyphs, metrics, project.baseEmFraction, canvasW))
+      m.set(box.id, layoutTextBox(box, fonts, project.baseEmFraction, canvasW))
     }
     layoutsBySlide.set(slide.id, m)
   }
   return {
     layoutsBySlide,
     timing: computeProjectTiming(project, layoutsBySlide, speed),
-    minHalfWidth: metrics.unitsPerEm * 0.004,
     speed: speed > 0 ? speed : 1,
   }
 }
@@ -239,7 +232,7 @@ export function renderProject(
   if (vis.length === 1) {
     const v = vis[0]
     const slide = project.slides[v.i]
-    drawSlideFull(ctx, slide, rc.layoutsBySlide.get(slide.id) ?? new Map(), v.st.timing, v.tLocal, w, h, project.brush, rc.minHalfWidth, rc.speed)
+    drawSlideFull(ctx, slide, rc.layoutsBySlide.get(slide.id) ?? new Map(), v.st.timing, v.tLocal, w, h, project.brush, rc.speed)
     return
   }
 
@@ -254,14 +247,14 @@ export function renderProject(
   const p = transitionProgress(out.tLocal, out.st.timing.holdEndMs, out.st.timing.transitionMs)
 
   composeTransition(outSlide.transition.kind, ctx, w, h, p, {
-    drawIncomingFull: () => drawSlideFull(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, h, project.brush, rc.minHalfWidth, rc.speed),
-    drawOutgoingFull: () => drawSlideFull(ctx, outSlide, outLayouts, out.st.timing, out.tLocal, w, h, project.brush, rc.minHalfWidth, rc.speed),
+    drawIncomingFull: () => drawSlideFull(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, h, project.brush, rc.speed),
+    drawOutgoingFull: () => drawSlideFull(ctx, outSlide, outLayouts, out.st.timing, out.tLocal, w, h, project.brush, rc.speed),
     fillOutgoingBg: () => {
       ctx.fillStyle = outSlide.background
       ctx.fillRect(0, 0, w, h)
     },
-    drawIncomingContent: () => renderSlideContent(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, project.brush, rc.minHalfWidth, rc.speed),
-    drawOutgoingInk: () => renderSlideInkRubout(ctx, outSlide, outLayouts, project.brush, rc.minHalfWidth, w, p),
+    drawIncomingContent: () => renderSlideContent(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, project.brush, rc.speed),
+    drawOutgoingInk: () => renderSlideInkRubout(ctx, outSlide, outLayouts, project.brush, w, p),
   })
 }
 
@@ -286,7 +279,7 @@ export function renderSlide(
   ctx.clearRect(0, 0, w, h)
 
   if (st.transitionMs <= 0 || tLocalMs < st.holdEndMs) {
-    drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.minHalfWidth, rc.speed)
+    drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.speed)
     return
   }
 
@@ -298,12 +291,12 @@ export function renderSlide(
       ctx.fillStyle = slide.background
       ctx.fillRect(0, 0, w, h)
     },
-    drawOutgoingFull: () => drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.minHalfWidth, rc.speed),
+    drawOutgoingFull: () => drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.speed),
     fillOutgoingBg: () => {
       ctx.fillStyle = slide.background
       ctx.fillRect(0, 0, w, h)
     },
     drawIncomingContent: () => {},
-    drawOutgoingInk: () => renderSlideInkRubout(ctx, slide, layouts, project.brush, rc.minHalfWidth, w, p),
+    drawOutgoingInk: () => renderSlideInkRubout(ctx, slide, layouts, project.brush, w, p),
   })
 }

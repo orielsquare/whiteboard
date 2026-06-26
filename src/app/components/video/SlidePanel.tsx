@@ -14,21 +14,14 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { PreparedGlyph } from '@lib/animation/timeline'
-import type { FontMetrics } from '@lib/project/layout'
+import type { FontSet } from '@lib/project/layout'
 import type { Slide } from '@lib/project/schema'
 import { useVideoStore } from '../../state/videoStore'
 import { SlideThumbnail } from './SlideThumbnail'
 
 const EMPTY: Slide[] = []
 
-export function SlidePanel({
-  glyphs,
-  metrics,
-}: {
-  glyphs: Map<string, PreparedGlyph>
-  metrics: FontMetrics | null
-}) {
+export function SlidePanel({ fonts }: { fonts: FontSet }) {
   const slides = useVideoStore((s) => s.project?.slides ?? EMPTY)
   const selectedId = useVideoStore((s) => s.selectedSlideId)
   const select = useVideoStore((s) => s.selectSlide)
@@ -68,8 +61,7 @@ export function SlidePanel({
                 index={i}
                 selected={s.id === selectedId}
                 canDelete={slides.length > 1}
-                glyphs={glyphs}
-                metrics={metrics}
+                fonts={fonts}
                 playMode={playMode}
                 playChecked={playSelectedIds.includes(s.id)}
                 onTogglePlay={() => togglePlaySelected(s.id)}
@@ -90,8 +82,7 @@ function SlideRow({
   index,
   selected,
   canDelete,
-  glyphs,
-  metrics,
+  fonts,
   playMode,
   playChecked,
   onTogglePlay,
@@ -103,8 +94,7 @@ function SlideRow({
   index: number
   selected: boolean
   canDelete: boolean
-  glyphs: Map<string, PreparedGlyph>
-  metrics: FontMetrics | null
+  fonts: FontSet
   playMode: boolean
   playChecked: boolean
   onTogglePlay: () => void
@@ -134,15 +124,21 @@ function SlideRow({
           onChange={onTogglePlay}
         />
       )}
-      <span className="drag" title="drag to reorder" {...attributes} {...listeners}>
-        ⠿
-      </span>
+      {/* In Play mode the row is just for ticking slides to play — hide the
+          reorder/duplicate/delete controls so the thumbnail isn't squished. */}
+      {!playMode && (
+        <span className="drag" title="drag to reorder" {...attributes} {...listeners}>
+          ⠿
+        </span>
+      )}
       <span className="slide-no">{index + 1}</span>
-      <SlideThumbnail slide={slide} glyphs={glyphs} metrics={metrics} />
-      <span className="rowbtns">
-        <button title="duplicate" onClick={(e) => { stop(e); onCopy() }}>⧉</button>
-        <button title="delete" disabled={!canDelete} onClick={(e) => { stop(e); onDelete() }}>×</button>
-      </span>
+      <SlideThumbnail slide={slide} fonts={fonts} />
+      {!playMode && (
+        <span className="rowbtns">
+          <button title="duplicate" onClick={(e) => { stop(e); onCopy() }}>⧉</button>
+          <button title="delete" disabled={!canDelete} onClick={(e) => { stop(e); onDelete() }}>×</button>
+        </span>
+      )}
     </li>
   )
 }

@@ -124,6 +124,52 @@ check('styleKey color null==absent', R.styleKey({ text: 'a', color: null }) === 
   check('styleAt 0', R.runStyleAt(runs, 0).underline === true)
   check('styleAt 2 (start of 2nd run)', R.runStyleAt(runs, 2).sizeScale === 2, R.runStyleAt(runs, 2))
   check('styleAt end clamps to last', R.runStyleAt(runs, 4).sizeScale === 2)
+  check('styleAt letterSpacing default 0', R.runStyleAt(runs, 0).letterSpacing === 0, R.runStyleAt(runs, 0))
+}
+
+// letterSpacing (kerning) is a tracked style field
+check('styleKey diff letterSpacing', R.styleKey({ text: 'a', letterSpacing: 0.1 }) !== R.styleKey({ text: 'a' }))
+check('styleKey letterSpacing 0 == absent', R.styleKey({ text: 'a', letterSpacing: 0 }) === R.styleKey({ text: 'a' }))
+{
+  const r = R.applyStyleToRange([{ text: 'abc' }], 0, 3, { letterSpacing: 0.2 })
+  check('apply letterSpacing whole', eq(r, [{ text: 'abc', letterSpacing: 0.2 }]), r)
+}
+
+// selectionStyle: per-field common value or MIXED
+{
+  const runs = [{ text: 'ab', underline: true, sizeScale: 2 }, { text: 'cd', underline: true }]
+  const s = R.selectionStyle(runs, 0, 4)
+  check('selStyle underline uniform', s.underline === true, s.underline)
+  check('selStyle size mixed', s.sizeScale === R.MIXED, String(s.sizeScale))
+  check('selStyle color uniform null', s.color === null, s.color)
+}
+{
+  const runs = [{ text: 'ab', sizeScale: 2 }, { text: 'cd' }]
+  check('selStyle subrange concrete', R.selectionStyle(runs, 0, 2).sizeScale === 2, R.selectionStyle(runs, 0, 2))
+}
+{
+  const runs = [{ text: 'ab', color: '#f00' }, { text: 'cd' }]
+  check('selStyle caret insertion style', R.selectionStyle(runs, 1, 1).color === '#f00', R.selectionStyle(runs, 1, 1))
+}
+{
+  const runs = [{ text: 'ab' }, { text: 'cd', color: '#0f0' }]
+  check('selStyle color mixed', R.selectionStyle(runs, 0, 4).color === R.MIXED, String(R.selectionStyle(runs, 0, 4).color))
+}
+
+// fontId is a tracked style field (per-run font)
+check('styleKey diff fontId', R.styleKey({ text: 'a', fontId: 'X' }) !== R.styleKey({ text: 'a' }))
+check('styleKey fontId empty == absent', R.styleKey({ text: 'a', fontId: '' }) === R.styleKey({ text: 'a' }))
+{
+  const r = R.applyStyleToRange([{ text: 'abc' }], 0, 3, { fontId: 'X' })
+  check('apply fontId whole', eq(r, [{ text: 'abc', fontId: 'X' }]), r)
+  const r2 = R.applyStyleToRange(r, 0, 3, { fontId: '' }) // clear → default merges back
+  check('apply fontId clear merges', eq(r2, [{ text: 'abc' }]), r2)
+}
+{
+  const runs = [{ text: 'ab', fontId: 'X' }, { text: 'cd', fontId: 'Y' }]
+  check('selStyle fontId mixed', R.selectionStyle(runs, 0, 4).fontId === R.MIXED, String(R.selectionStyle(runs, 0, 4).fontId))
+  check('selStyle fontId uniform', R.selectionStyle(runs, 0, 2).fontId === 'X', R.selectionStyle(runs, 0, 2).fontId)
+  check('selStyle fontId default null', R.selectionStyle([{ text: 'ab' }], 0, 2).fontId === null, R.selectionStyle([{ text: 'ab' }], 0, 2).fontId)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

@@ -14,6 +14,8 @@ export interface FontStore {
   save(manifest: FontManifest): Promise<void>
   /** Persist the raw font bytes alongside the manifest so the config is portable. */
   saveFont(id: string, buffer: ArrayBuffer): Promise<void>
+  /** Fetch the raw font bytes (to build an extractor for deriving glyphs). */
+  loadFontBytes(id: string): Promise<ArrayBuffer | null>
 }
 
 const BASE = '/api/fonts'
@@ -48,5 +50,12 @@ export const httpStore: FontStore = {
       body: buffer,
     })
     if (!res.ok) throw new Error(`saveFont failed (${res.status})`)
+  },
+
+  async loadFontBytes(id) {
+    const res = await fetch(`${BASE}/${encodeURIComponent(id)}/font`)
+    if (res.status === 404) return null
+    if (!res.ok) throw new Error(`loadFontBytes failed (${res.status})`)
+    return await res.arrayBuffer()
   },
 }
