@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
 import type { LoadedFont } from '@lib/font/load'
-import { canvasSize } from '@lib/project/coords'
+import { aspectHeightUnits, canvasSize } from '@lib/project/coords'
+import { flattenSlide, projectForAspect, type FlatBox } from '@lib/project/aspect'
 import { layoutTextBox, type FontSet, type TextBoxLayout } from '@lib/project/layout'
 import { buildRenderContext, renderTextBox } from '@lib/project/render'
-import type { TextBox } from '@lib/project/schema'
 import { slideTimeWindows } from '@lib/project/timing'
 import { useVideoStore } from '../../state/videoStore'
 import { BACKING_W, boxOriginPx, clientToNorm, drawSelection, hitTest, type NormPoint } from './layoutCanvas'
@@ -15,6 +15,11 @@ import { TextBoxOverlay } from './TextBoxOverlay'
 import { registerFontFace } from './fontFaces'
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
+/** Clamp a width-units y to the visible canvas extent for the aspect [0, H]. */
+const clampY = (v: number, aspect: '16:9' | '9:16') => {
+  const m = aspectHeightUnits(aspect)
+  return v < 0 ? 0 : v > m ? m : v
+}
 
 export function SlideCanvas({
   fonts,
@@ -24,6 +29,7 @@ export function SlideCanvas({
   font: LoadedFont
 }) {
   const project = useVideoStore((s) => s.project)
+  const activeAspect = useVideoStore((s) => s.activeAspect)
   const selectedSlideId = useVideoStore((s) => s.selectedSlideId)
   const selectedTextBoxId = useVideoStore((s) => s.selectedTextBoxId)
   const slideView = useVideoStore((s) => s.slideView)
@@ -49,6 +55,9 @@ export function SlideCanvas({
   const downHitRef = useRef<string | null>(null)
 
   const slide = project ? project.slides.find((s) => s.id === selectedSlideId) ?? project.slides[0] : undefined
+  // Flattened (single-aspect) slide for all canvas geometry/layout. Box ids are
+  // preserved, so selection/edit lookups against the raw `slide` still line up.
+  const fslide = useMemo(() => (slide ? flattenSlide(slide, activeAspect) : undefined), [slide, activeAspect])
   const baseEmFraction = project?.baseEmFraction ?? 0.085
   const editingBox = editingBoxId ? slide?.textBoxes.find((b) => b.id === editingBoxId) : undefined
 
@@ -61,19 +70,19 @@ export function SlideCanvas({
   // available glyphs, size and canvas width.
   const layouts = useMemo(() => {
     const m = new Map<string, TextBoxLayout>()
-    if (!slide) return m
-    for (const box of slide.textBoxes) {
+    if (!fslide) return m
+    for (const box of fslide.textBoxes) {
       m.set(box.id, layoutTextBox(box, fonts, baseEmFraction, BACKING_W))
     }
     return m
-  }, [slide, fonts, baseEmFraction])
+  }, [fslide, fonts, baseEmFraction])
 
   // The selected slide's project-time window, for the read-only voiceover extract.
   const slideWindow = useMemo(() => {
     if (!project || !slide || slideView !== 'layout') return null
-    const rc = buildRenderContext(project, fonts, BACKING_W, project.playbackRate ?? 1)
+    const rc = buildRenderContext(projectForAspect(project, activeAspect), fonts, BACKING_W, project.playbackRate ?? 1)
     return slideTimeWindows(rc.timing).find((x) => x.slideId === slide.id) ?? null
-  }, [project, slide, fonts, slideView])
+  }, [project, slide, fonts, slideView, activeAspect])
 
   // Paint the slide. `drag`, when set, overrides one box's origin with its live
   // transient position so a drag-in-progress repaints without writing the model
@@ -82,30 +91,31 @@ export function SlideCanvas({
   const drawScene = useCallback(
     (drag?: { boxId: string; x: number; y: number } | null) => {
       const canvas = canvasRef.current
-      if (!canvas || !project || !slide) return
+      if (!canvas || !project || !fslide) return
       const ctx = canvas.getContext('2d')
       if (!ctx) return
-      const { w, h } = canvasSize(project.aspect, BACKING_W)
+      const { w, h } = canvasSize(activeAspect, BACKING_W)
       if (canvas.width !== w) canvas.width = w
       if (canvas.height !== h) canvas.height = h
       ctx.clearRect(0, 0, w, h)
-      ctx.fillStyle = slide.background
+      ctx.fillStyle = fslide.background
       ctx.fillRect(0, 0, w, h)
-      const originFor = (box: TextBox) =>
+      // drag.{x,y} are width-units (like frame), so × w matches boxOriginPx.
+      const originFor = (box: FlatBox) =>
         drag && drag.boxId === box.id ? { x: drag.x * w, y: drag.y * w } : boxOriginPx(box, w)
-      for (const box of slide.textBoxes) {
+      for (const box of fslide.textBoxes) {
         if (box.id === editingBoxId) continue // the edit overlay shows this box's text
         const layout = layouts.get(box.id)
         if (!layout) continue
         renderTextBox(ctx, layout, originFor(box), box.brush ?? project.brush, Infinity)
       }
-      const selBox = slide.textBoxes.find((b) => b.id === selectedTextBoxId)
+      const selBox = fslide.textBoxes.find((b) => b.id === selectedTextBoxId)
       if (selBox && selBox.id !== editingBoxId) {
         const l = layouts.get(selBox.id)
         if (l) drawSelection(ctx, selBox, l, w, undefined, originFor(selBox))
       }
     },
-    [project, slide, layouts, selectedTextBoxId, editingBoxId],
+    [project, fslide, activeAspect, layouts, selectedTextBoxId, editingBoxId],
   )
 
   // Static draw whenever the slide, its layouts, or the selection change.
@@ -114,7 +124,7 @@ export function SlideCanvas({
     drawScene(null)
   }, [drawScene, slideView])
 
-  if (!project || !slide) return <div className="stage video-stage">No slide.</div>
+  if (!project || !slide || !fslide) return <div className="stage video-stage">No slide.</div>
 
   const onPointerDown = (e: PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current
@@ -125,10 +135,10 @@ export function SlideCanvas({
     const p = clientToNorm(canvas, e.clientX, e.clientY)
     downNormRef.current = p
     movedRef.current = false
-    const hit = hitTest(slide, layouts, p.nx, p.ny, BACKING_W)
+    const hit = hitTest(fslide, layouts, p.nx, p.ny, BACKING_W)
     downHitRef.current = hit
     if (hit) {
-      const box = slide.textBoxes.find((b) => b.id === hit)
+      const box = fslide.textBoxes.find((b) => b.id === hit)
       if (!box) return
       selectTextBox(hit)
       // Deferred write (mirrors the timeline leader lines): we hold the grabbed
@@ -151,9 +161,10 @@ export function SlideCanvas({
       movedRef.current = true
     }
     // Local move only: update the transient position and repaint this canvas —
-    // no store write (the model and the layouts memo stay untouched).
+    // no store write (the model and the layouts memo stay untouched). y is in
+    // width-units; clamp to the active aspect's visible extent.
     d.x = clamp01(p.nx - d.offX)
-    d.y = clamp01(p.ny - d.offY)
+    d.y = clampY(p.ny - d.offY, activeAspect)
     drawScene({ boxId: d.boxId, x: d.x, y: d.y })
   }
 
@@ -177,7 +188,7 @@ export function SlideCanvas({
     if (!downHitRef.current && !movedRef.current) {
       const p = downNormRef.current
       if (selectedTextBoxId) selectTextBox(null)
-      else if (p) addTextBox(slide.id, clamp01(p.nx), clamp01(p.ny))
+      else if (p) addTextBox(slide.id, clamp01(p.nx), clampY(p.ny, activeAspect))
     }
   }
 
@@ -195,7 +206,7 @@ export function SlideCanvas({
     const canvas = canvasRef.current
     if (!canvas) return
     const p = clientToNorm(canvas, e.clientX, e.clientY)
-    const hit = hitTest(slide, layouts, p.nx, p.ny, BACKING_W)
+    const hit = hitTest(fslide, layouts, p.nx, p.ny, BACKING_W)
     if (hit) {
       selectTextBox(hit)
       setEditingBoxId(hit)
@@ -216,8 +227,8 @@ export function SlideCanvas({
               <canvas
                 ref={canvasRef}
                 className="slide-canvas-el"
-                width={canvasSize(project.aspect, BACKING_W).w}
-                height={canvasSize(project.aspect, BACKING_W).h}
+                width={canvasSize(activeAspect, BACKING_W).w}
+                height={canvasSize(activeAspect, BACKING_W).h}
                 onPointerDown={onPointerDown}
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
@@ -228,6 +239,7 @@ export function SlideCanvas({
                 <TextBoxOverlay
                   key={editingBox.id}
                   box={editingBox}
+                  aspect={activeAspect}
                   slideId={slide.id}
                   canvasEl={canvasRef.current}
                   baseEmFraction={baseEmFraction}

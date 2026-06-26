@@ -1,5 +1,6 @@
 import type { BrushSettings, BrushStyle } from '@lib/manifest/schema'
 import type { TransitionKind } from '@lib/project/schema'
+import { frameOf } from '@lib/project/aspect'
 import { useVideoStore } from '../../state/videoStore'
 
 const BRUSH_STYLES: BrushStyle[] = ['chalk', 'ink', 'marker']
@@ -9,6 +10,7 @@ const DEFAULT_WRAP_W = 0.7
 /** Right-hand panel: edits the selected textbox (text + style + frame + timing) and the slide. */
 export function Inspector() {
   const project = useVideoStore((s) => s.project)
+  const activeAspect = useVideoStore((s) => s.activeAspect)
   const selectedSlideId = useVideoStore((s) => s.selectedSlideId)
   const selectedTextBoxId = useVideoStore((s) => s.selectedTextBoxId)
   const updateTextBox = useVideoStore((s) => s.updateTextBox)
@@ -22,6 +24,7 @@ export function Inspector() {
   const slide = project.slides.find((s) => s.id === selectedSlideId) ?? project.slides[0]
   const box = slide.textBoxes.find((b) => b.id === selectedTextBoxId)
   const boxBrush = box?.brush
+  const wrapW = box ? frameOf(box, activeAspect).w : null
 
   const toggleCustomBrush = (on: boolean) => {
     if (!box) return
@@ -55,20 +58,20 @@ export function Inspector() {
           <label className="toggle">
             <input
               type="checkbox"
-              checked={box.frame.w != null}
+              checked={wrapW != null}
               onChange={(e) => updateTextBoxFrame(slide.id, box.id, { w: e.target.checked ? DEFAULT_WRAP_W : null })}
             />
             wrap to width
           </label>
-          {box.frame.w != null && (
+          {wrapW != null && (
             <label className="slider">
-              <span>width <b>{Math.round(box.frame.w * 100)}%</b></span>
+              <span>width <b>{Math.round(wrapW * 100)}%</b></span>
               <input
                 type="range"
                 min={0.15}
                 max={1}
                 step={0.01}
-                value={box.frame.w}
+                value={wrapW}
                 onChange={(e) => updateTextBoxFrame(slide.id, box.id, { w: Number(e.target.value) })}
               />
             </label>

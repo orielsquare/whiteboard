@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react'
 import { aspectHeightUnits } from '@lib/project/coords'
+import { projectForAspect } from '@lib/project/aspect'
 import type { FontSet } from '@lib/project/layout'
 import { buildRenderContext } from '@lib/project/render'
 import { slideTimeWindows } from '@lib/project/timing'
@@ -66,6 +67,7 @@ const cueLabel = (text: string): string => {
  */
 export function TimelineView({ fonts }: { fonts: FontSet }) {
   const project = useVideoStore((s) => s.project)
+  const activeAspect = useVideoStore((s) => s.activeAspect)
   const cues = useVideoStore((s) => s.project?.voiceover ?? EMPTY)
   const updateCue = useVideoStore((s) => s.updateCue)
   const addCue = useVideoStore((s) => s.addCue)
@@ -84,9 +86,9 @@ export function TimelineView({ fonts }: { fonts: FontSet }) {
   // dragging/adding/removing a cue doesn't re-lay-out the whole timeline. `slides`
   // stays referentially equal across voiceover edits (updateCue spreads the project).
   const rc = useMemo(
-    () => (project ? buildRenderContext(project, fonts, BACKING_W, playbackRate) : null),
+    () => (project ? buildRenderContext(projectForAspect(project, activeAspect), fonts, BACKING_W, playbackRate) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [project?.slides, project?.baseEmFraction, fonts, playbackRate],
+    [project?.slides, project?.baseEmFraction, fonts, playbackRate, activeAspect],
   )
   const windows = useMemo(() => (rc ? slideTimeWindows(rc.timing) : []), [rc])
   const sortedCues = useMemo(() => [...cues].sort((a, b) => a.startMs - b.startMs), [cues])
@@ -172,7 +174,7 @@ export function TimelineView({ fonts }: { fonts: FontSet }) {
   if (!project || !rc) return <div className="timelineview"><div className="placeholder">No project.</div></div>
 
   const trackWidth = Math.max(360, xOf(totalMs) + END_PAD)
-  const thumbW = THUMB_DISP_H / aspectHeightUnits(project.aspect) // rendered thumbnail width (aspect-aware)
+  const thumbW = THUMB_DISP_H / aspectHeightUnits(activeAspect) // rendered thumbnail width (aspect-aware)
   const stepSec = niceStepSec(pxPerSec)
   const ticks: number[] = []
   for (let t = 0; t <= totalMs / 1000 + 1e-6; t += stepSec) ticks.push(t)

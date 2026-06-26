@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { LoadedFont } from '@lib/font/load'
 import { captionsVtt } from '@lib/project/vtt'
+import { exportCanvasW } from '@lib/project/coords'
 import { extractionSig, type ExtractionParams, type GlyphExtractor } from '@lib/extraction'
 import type { BrushSettings } from '@lib/manifest/schema'
 import { prepareGlyph, type PreparedGlyph } from '@lib/animation/timeline'
@@ -41,7 +42,8 @@ export function VideoView({
   const newProject = useVideoStore((s) => s.newProject)
   const loadProject = useVideoStore((s) => s.loadProject)
   const saveProject = useVideoStore((s) => s.saveProject)
-  const setAspect = useVideoStore((s) => s.setAspect)
+  const activeAspect = useVideoStore((s) => s.activeAspect)
+  const setActiveAspect = useVideoStore((s) => s.setActiveAspect)
   const setBaseEmFraction = useVideoStore((s) => s.setBaseEmFraction)
   const slideView = useVideoStore((s) => s.slideView)
   const setSlideView = useVideoStore((s) => s.setSlideView)
@@ -266,7 +268,8 @@ export function VideoView({
           project: p,
           fontsById,
           fps: 30,
-          width: 1280,
+          aspect: activeAspect,
+          width: exportCanvasW(activeAspect),
           speed: p.playbackRate ?? 1,
           name: p.name,
         }),
@@ -295,7 +298,7 @@ export function VideoView({
         <strong className="proj-name">{project.name}</strong>
         <div className="seg">
           {ASPECTS.map((a) => (
-            <button key={a} className={project.aspect === a ? 'tool tool-on' : 'tool'} onClick={() => setAspect(a)}>
+            <button key={a} className={activeAspect === a ? 'tool tool-on' : 'tool'} onClick={() => setActiveAspect(a)}>
               {a}
             </button>
           ))}

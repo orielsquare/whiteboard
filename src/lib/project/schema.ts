@@ -3,14 +3,28 @@ import type { StylePatch } from './runs'
 
 /**
  * A "video project": a sequence of slides of animated handwritten text.
- * All geometry is normalized to canvas WIDTH (1.0 = full width; y is also in
- * width-units) so it is resolution- and aspect-independent. Pixels are derived
- * once per frame as `value × canvasW`.
+ * Geometry is proportional PER AXIS: `frame.x` and `frame.w` are fractions of
+ * canvas WIDTH; `frame.y` is a fraction of canvas HEIGHT. A box's frame is stored
+ * per aspect (`frame['16:9']` / `frame['9:16']`); when its position lock is on the
+ * two are identical, so "matching" needs no transform — only the per-aspect
+ * `× canvasW` (x,w) / `× canvasH` (y) at render time. See `aspect.ts` for the
+ * `projectForAspect` seam that flattens a project to the single-aspect shape the
+ * pure render/layout/timing pipeline consumes.
  */
 
-export const PROJECT_VERSION = 1 as const
+export const PROJECT_VERSION = 2 as const
 
 export type Aspect = '16:9' | '9:16'
+
+/** The two independent per-textbox locks linking the 16:9 and 9:16 cuts.
+ *  `position` links frame (x,y,w); `content` links runs/text/style. Stored once
+ *  per logical box (a lock describes the relationship between the two cuts). */
+export interface BoxLockState {
+  position: boolean
+  content: boolean
+}
+
+export const DEFAULT_LOCK: BoxLockState = { position: true, content: true }
 export type TransitionKind = 'none' | 'fade' | 'rubout' | 'scroll-up' | 'scroll-down' | 'scroll-left' | 'scroll-right'
 export type TextAlign = 'left' | 'center' | 'right'
 
@@ -29,27 +43,42 @@ export interface TextRun {
   fontId?: string
 }
 
-/** Normalized rect; basis is canvas width. `w = null` means no wrapping. */
+/** Normalized rect. `x` and `w` are fractions of canvas WIDTH; `y` is a fraction
+ *  of canvas HEIGHT (both in [0,1]). `w = null` means no wrapping. */
 export interface NormRect {
   x: number
   y: number
   w: number | null
 }
 
+/** Box content that MAY diverge between aspects when the content lock is off.
+ *  Absent from a box until it actually diverges (Phase 4 — currently unused). */
+export interface BoxContent {
+  runs: TextRun[]
+  align: TextAlign
+  lineHeightScale: number
+  brush?: BrushSettings
+}
+
 export interface TextBox {
   id: string
-  frame: NormRect
+  /** per-aspect geometry; BOTH keys always present (equal while position-locked). */
+  frame: Record<Aspect, NormRect>
   align: TextAlign
   runs: TextRun[]
   lineHeightScale: number
-  /** animation order within the slide; kept contiguous 0..n-1. */
+  /** animation order within the slide; kept contiguous 0..n-1. Always shared across aspects. */
   animOrder: number
-  /** ms before this box starts, from the previous box's animation END (first box: from slide shown). */
+  /** ms before this box starts, from the previous box's animation END (first box: from slide shown). Shared. */
   delayBeforeMs: number
-  /** handwriting cadence between glyphs in this box. */
+  /** handwriting cadence between glyphs in this box. Shared. */
   interCharDelayMs: number
   /** per-box brush override; undefined = use the project brush. A run's colour still wins. */
   brush?: BrushSettings
+  /** per-box lock override; undefined fields inherit slide then `project.lockDefault`. */
+  lock?: Partial<BoxLockState>
+  /** opt-in per-aspect content override (only when content-unlocked AND diverged; Phase 4). */
+  contentByAspect?: Partial<Record<Aspect, BoxContent>>
 }
 
 export interface ClosingTransition {
@@ -74,6 +103,8 @@ export interface Slide {
   /** ms the finished slide holds before its closing transition begins. */
   holdBeforeTransitionMs: number
   transition: ClosingTransition
+  /** slide-level lock override (the "lock/unlock all" target); per-box still wins. */
+  lock?: Partial<BoxLockState>
 }
 
 export interface ProjectDefaults {
@@ -168,7 +199,8 @@ export interface VideoProject {
   name: string
   /** the font this project animates with (=== LoadedFont.hash / manifest.metadata.fontId). */
   fontId: string
-  aspect: Aspect
+  /** default lock state new boxes inherit (and the floor of the box→slide→project resolution). */
+  lockDefault: BoxLockState
   /** global texture; a textbox or run can override it. */
   brush: BrushSettings
   /** playback/export speed multiplier (1 = real time); scales the whole video's time. */
@@ -210,6 +242,8 @@ export function makeId(): string {
   }
 }
 
+/** `x` is a fraction of width, `y` a fraction of HEIGHT (both stored identically
+ *  across aspects — a fresh box is position-linked). */
 export function newTextBox(defaults: ProjectDefaults, x: number, y: number, animOrder: number): TextBox {
   // Seed the starter run from the format defaults, omitting no-op default values
   // so the JSON stays minimal (matches runs.ts `styleOf`).
@@ -218,9 +252,10 @@ export function newTextBox(defaults: ProjectDefaults, x: number, y: number, anim
   if (defaults.runColor != null) run.color = defaults.runColor
   if (defaults.runUnderline) run.underline = true
   if (defaults.runLetterSpacing) run.letterSpacing = defaults.runLetterSpacing
+  const rect: NormRect = { x, y, w: 0.7 }
   return {
     id: makeId(),
-    frame: { x, y, w: 0.7 },
+    frame: { '16:9': { ...rect }, '9:16': { ...rect } },
     align: defaults.align,
     runs: [run],
     lineHeightScale: defaults.lineHeightScale,
@@ -231,10 +266,11 @@ export function newTextBox(defaults: ProjectDefaults, x: number, y: number, anim
 }
 
 export function newSlide(defaults: ProjectDefaults, withStarterBox = true): Slide {
+  // y is a fraction of height; 0.39 ≈ the old 0.22 width-units position in 16:9.
   return {
     id: makeId(),
     background: '#0b0d11',
-    textBoxes: withStarterBox ? [newTextBox(defaults, 0.12, 0.22, 0)] : [],
+    textBoxes: withStarterBox ? [newTextBox(defaults, 0.12, 0.39, 0)] : [],
     holdBeforeTransitionMs: defaults.holdBeforeTransitionMs,
     transition: { ...defaults.transition },
   }
@@ -247,7 +283,7 @@ export function newVideoProject(fontId: string, brush: BrushSettings, isoNow: st
     id: makeId(),
     name: 'Untitled video',
     fontId,
-    aspect: '16:9',
+    lockDefault: { ...DEFAULT_LOCK },
     brush: { ...brush },
     playbackRate: 1,
     baseEmFraction: 0.085,

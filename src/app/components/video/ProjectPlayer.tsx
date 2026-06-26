@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
+import { projectForAspect } from '@lib/project/aspect'
 import { fontFor, type FontSet } from '@lib/project/layout'
 import { buildRenderContext, projectDurationMs, renderProject } from '@lib/project/render'
 import type { VideoProject } from '@lib/project/schema'
@@ -17,6 +18,7 @@ type Scope = 'all' | 'selected'
  */
 export function ProjectPlayer({ fonts }: { fonts: FontSet }) {
   const project = useVideoStore((s) => s.project)
+  const activeAspect = useVideoStore((s) => s.activeAspect)
   const selectedSlideId = useVideoStore((s) => s.selectedSlideId)
   const playSelectedIds = useVideoStore((s) => s.playSelectedIds)
   const setPlaySelected = useVideoStore((s) => s.setPlaySelected)
@@ -32,9 +34,14 @@ export function ProjectPlayer({ fonts }: { fonts: FontSet }) {
     return { ...project, slides: project.slides.filter((s) => set.has(s.id)) }
   }, [project, scope, playSelectedIds])
 
+  // Flatten to the active aspect for the pure render pipeline.
+  const flat = useMemo(
+    () => (subProject ? projectForAspect(subProject, activeAspect) : null),
+    [subProject, activeAspect],
+  )
   const rc = useMemo(
-    () => (subProject ? buildRenderContext(subProject, fonts, BACKING_W, playbackRate) : null),
-    [subProject, fonts, playbackRate],
+    () => (flat ? buildRenderContext(flat, fonts, BACKING_W, playbackRate) : null),
+    [flat, fonts, playbackRate],
   )
   const totalMs = rc ? projectDurationMs(rc) : 0
 
@@ -49,9 +56,9 @@ export function ProjectPlayer({ fonts }: { fonts: FontSet }) {
 
   const draw = useCallback(
     (ctx: CanvasRenderingContext2D, t: number, w: number, h: number) => {
-      if (rc && subProject) renderProject(ctx, subProject, rc, t, w, h)
+      if (rc && flat) renderProject(ctx, flat, rc, t, w, h)
     },
-    [rc, subProject],
+    [rc, flat],
   )
 
   // Voiceover plays only in the full-project scope, where the clock = project time.
@@ -93,7 +100,7 @@ export function ProjectPlayer({ fonts }: { fonts: FontSet }) {
       </div>
 
       <PlaybackCanvas
-        aspect={project.aspect}
+        aspect={activeAspect}
         totalMs={totalMs}
         ready={ready}
         resetKey={resetKey}

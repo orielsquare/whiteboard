@@ -227,7 +227,7 @@ function exportPlugin(): Plugin {
         try {
           if (req.method === 'POST' && !rest) {
             const body = JSON.parse((await readBody(req)).toString('utf8'))
-            const { project, fontsById, glyphs, metrics, fps, width, speed, slideIds, name, includeAudio } = body
+            const { project, fontsById, glyphs, metrics, fps, aspect, width, speed, slideIds, name, includeAudio } = body
             const safe =
               (String(name || project?.name || 'video')
                 .replace(/[^a-z0-9-_]+/gi, '_')
@@ -237,7 +237,7 @@ function exportPlugin(): Plugin {
             // Cache-bust so edits to the exporter are picked up without a restart.
             const spec = pathToFileURL(path.join(rootDir, 'tools/videoExport.mjs')).href + '?v=' + Date.now()
             const mod = await import(spec)
-            const info = await mod.renderProjectToMp4({ project, fontsById, glyphs, metrics, fps, width, speed, slideIds, includeAudio, outPath })
+            const info = await mod.renderProjectToMp4({ project, fontsById, glyphs, metrics, fps, aspect, width, speed, slideIds, includeAudio, outPath })
             const bytes = (await fs.stat(outPath)).size
             return sendJson(res, 200, { ok: true, file: safe + '.mp4', bytes, ...info })
           }

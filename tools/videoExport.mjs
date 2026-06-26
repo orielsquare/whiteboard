@@ -27,7 +27,8 @@ async function loadSeam() {
       contents: `
         export { buildRenderContext, renderProject, projectDurationMs } from '@lib/project/render'
         export { prepareGlyph } from '@lib/animation/timeline'
-        export { canvasSize } from '@lib/project/coords'
+        export { canvasSize, exportCanvasW } from '@lib/project/coords'
+        export { projectForAspect, migrateProject } from '@lib/project/aspect'
       `,
       resolveDir: ROOT,
       loader: 'ts',
@@ -146,12 +147,13 @@ function collectAudioCues(project, audioDir) {
  * so they only line up with a full-project render).
  */
 export async function renderProjectToMp4({
-  project,
+  project: rawProject,
   fontsById,
   glyphs,
   metrics,
   fps = 30,
-  width = 1280,
+  aspect,
+  width,
   speed = 1,
   slideIds = null,
   tailMs = 600,
@@ -159,21 +161,27 @@ export async function renderProjectToMp4({
   outPath,
   onProgress,
 }) {
-  if (!project || !project.slides?.length) throw new Error('project has no slides')
+  if (!rawProject || !rawProject.slides?.length) throw new Error('project has no slides')
   if (!outPath) throw new Error('outPath required')
 
   const seam = await loadSeam()
-  const fontSet = buildFontSet(seam, fontsById, glyphs, metrics, project.fontId)
+  // Migrate (idempotent for v2) so on-disk v1 files render; pick the aspect to
+  // render (explicit arg wins, else the project's authored aspect).
+  const { project: migrated, aspect: savedAspect } = seam.migrateProject(rawProject)
+  const renderAspect = aspect === '16:9' || aspect === '9:16' ? aspect : savedAspect
+  const fontSet = buildFontSet(seam, fontsById, glyphs, metrics, migrated.fontId)
 
-  const sub = slideIds
-    ? { ...project, slides: project.slides.filter((s) => slideIds.includes(s.id)) }
-    : project
-  if (!sub.slides.length) throw new Error('no slides selected')
+  const subSlides = slideIds
+    ? { ...migrated, slides: migrated.slides.filter((s) => slideIds.includes(s.id)) }
+    : migrated
+  if (!subSlides.slides.length) throw new Error('no slides selected')
+  // Flatten to the single-aspect shape the render pipeline consumes.
+  const sub = seam.projectForAspect(subSlides, renderAspect)
 
   // even dimensions for yuv420p / libx264
-  let w = Math.round(width)
+  let w = Math.round(width || seam.exportCanvasW(renderAspect))
   if (w % 2) w -= 1
-  let h = seam.canvasSize(sub.aspect, w).h
+  let h = seam.canvasSize(renderAspect, w).h
   if (h % 2) h -= 1
 
   // Speed is baked into the timeline (writing scaled, holds/transitions invariant),
@@ -233,8 +241,8 @@ export async function renderProjectToMp4({
   let audioCues = 0
   let audioWarning = null
   if (includeAudio && !slideIds) {
-    const audioDir = join(ROOT, 'voiceover', safeSeg(project.id))
-    const cues = collectAudioCues(project, audioDir)
+    const audioDir = join(ROOT, 'voiceover', safeSeg(sub.id))
+    const cues = collectAudioCues(sub, audioDir)
     if (cues.length) {
       try {
         await muxAudioIntoVideo({ silentPath, outPath, cues, audioDir })
@@ -293,7 +301,9 @@ if (invokedDirectly) {
   const info = await renderProjectToMp4({
     project,
     fontsById,
-    width: widthArg ? Number(widthArg) : 1280,
+    // omit width → per-aspect export size (1920×1080 / 1080×1920); aspect omitted
+    // → the project's authored aspect (migrateProject reads the v1 `aspect`).
+    width: widthArg ? Number(widthArg) : undefined,
     fps: fpsArg ? Number(fpsArg) : 30,
     speed: project.playbackRate ?? 1,
     outPath,

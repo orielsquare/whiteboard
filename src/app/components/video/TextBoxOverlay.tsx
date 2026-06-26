@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { TextBox } from '@lib/project/schema'
+import type { Aspect, TextBox } from '@lib/project/schema'
+import { frameOf } from '@lib/project/aspect'
 import { runsToPlainText, setPlainTextPreservingStyles } from '@lib/project/runs'
 import { useVideoStore } from '../../state/videoStore'
 import { ensureFontFaceById, fontFamilyFor, registerFontFace } from './fontFaces'
@@ -34,6 +35,7 @@ export function restoreOverlaySelection(): void {
  */
 export function TextBoxOverlay({
   box,
+  aspect,
   slideId,
   canvasEl,
   baseEmFraction,
@@ -44,6 +46,8 @@ export function TextBoxOverlay({
   onExit,
 }: {
   box: TextBox
+  /** the active aspect, to resolve the box's per-aspect frame for positioning. */
+  aspect: Aspect
   slideId: string
   canvasEl: HTMLCanvasElement | null
   baseEmFraction: number
@@ -213,12 +217,13 @@ export function TextBoxOverlay({
     replaceSelectionWith(e.clipboardData.getData('text/plain'))
   }
 
-  const noWrap = box.frame.w == null
+  const f = frameOf(box, aspect)
+  const noWrap = f.w == null
   const style: React.CSSProperties = {
     position: 'absolute',
-    left: `${box.frame.x * clientW}px`,
-    top: `${box.frame.y * clientW}px`,
-    width: noWrap ? 'max-content' : `${box.frame.w! * clientW}px`,
+    left: `${f.x * clientW}px`,
+    top: `${f.y * clientW}px`,
+    width: noWrap ? 'max-content' : `${f.w! * clientW}px`,
     fontSize: `${baseEmFraction * clientW}px`,
     lineHeight: box.lineHeightScale,
     textAlign: box.align,

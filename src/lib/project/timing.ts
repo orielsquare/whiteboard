@@ -1,5 +1,5 @@
 import type { TextBoxLayout } from './layout'
-import type { Slide, VideoProject } from './schema'
+import type { FlatProject, FlatSlide } from './aspect'
 
 /**
  * Pure timing model. Turns laid-out slides into absolute time windows so the
@@ -36,7 +36,7 @@ export interface SlideTiming {
  * transition duration. So each box's writing occupies `contentMs / speed` of real
  * time; the transition begins after the last box finishes writing + the hold.
  */
-export function computeSlideTiming(slide: Slide, layouts: Map<string, TextBoxLayout>, speed = 1): SlideTiming {
+export function computeSlideTiming(slide: FlatSlide, layouts: Map<string, TextBoxLayout>, speed = 1): SlideTiming {
   const rate = speed > 0 ? speed : 1
   const ordered = [...slide.textBoxes].sort((a, b) => a.animOrder - b.animOrder)
   let cursor = 0
@@ -71,7 +71,7 @@ export interface ProjectTiming {
  * transition overlaps the start of N+1 (the two are visible together during it).
  */
 export function computeProjectTiming(
-  project: VideoProject,
+  project: FlatProject,
   layoutsBySlide: Map<string, Map<string, TextBoxLayout>>,
   speed = 1,
 ): ProjectTiming {

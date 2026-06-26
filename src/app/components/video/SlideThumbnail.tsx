@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { aspectHeightUnits } from '@lib/project/coords'
+import { boxForAspect } from '@lib/project/aspect'
 import { layoutTextBox, type FontSet } from '@lib/project/layout'
 import { renderTextBox } from '@lib/project/render'
 import type { Slide } from '@lib/project/schema'
@@ -21,7 +22,7 @@ export function SlideThumbnail({
   slide: Slide
   fonts: FontSet
 }) {
-  const aspect = useVideoStore((s) => s.project?.aspect ?? '16:9')
+  const aspect = useVideoStore((s) => s.activeAspect)
   const baseEmFraction = useVideoStore((s) => s.project?.baseEmFraction ?? 0.085)
   const brush = useVideoStore((s) => s.project?.brush)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
@@ -35,7 +36,7 @@ export function SlideThumbnail({
         bg: slide.background,
         br: brush && [brush.style, brush.color, brush.sizeScale, brush.opacity, brush.jitter],
         boxes: slide.textBoxes.map((b) => ({
-          f: [b.frame.x, b.frame.y, b.frame.w],
+          f: [b.frame[aspect].x, b.frame[aspect].y, b.frame[aspect].w],
           al: b.align,
           lh: b.lineHeightScale,
           d: b.interCharDelayMs,
@@ -61,8 +62,9 @@ export function SlideThumbnail({
     ctx.fillRect(0, 0, w, h)
     if (!brush) return
     for (const box of slide.textBoxes) {
-      const layout = layoutTextBox(box, fonts, baseEmFraction, w)
-      renderTextBox(ctx, layout, boxOriginPx(box, w), box.brush ?? brush, Infinity)
+      const fb = boxForAspect(box, aspect)
+      const layout = layoutTextBox(fb, fonts, baseEmFraction, w)
+      renderTextBox(ctx, layout, boxOriginPx(fb, w), fb.brush ?? brush, Infinity)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig, fonts])

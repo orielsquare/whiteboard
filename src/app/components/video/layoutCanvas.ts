@@ -1,11 +1,11 @@
-import type { Slide, TextBox } from '@lib/project/schema'
+import type { FlatBox, FlatSlide } from '@lib/project/aspect'
 import type { TextBoxLayout } from '@lib/project/layout'
 
 /**
- * Coordinate + hit-test helpers for the slide layout canvas. All project
- * geometry is normalized to canvas WIDTH (1.0 = full width; y in width-units),
- * so a single conversion pair maps pointer events ↔ normalized coords through
- * the canvas backing size + getBoundingClientRect (mirrors editorCanvas).
+ * Coordinate + hit-test helpers for the slide layout canvas. They operate on
+ * flattened (single-aspect) boxes whose `frame` is width-units (x,w fractions of
+ * width; y in width-units), so a single conversion pair maps pointer events ↔
+ * normalized coords through the canvas backing size + getBoundingClientRect.
  */
 
 /** Backing width (px) the layout/render run at; CSS scales the canvas to fit. */
@@ -30,12 +30,12 @@ export function normToCanvas(nx: number, ny: number, canvasW: number): { x: numb
 }
 
 /** A box's content origin (top-left) in canvas px. */
-export function boxOriginPx(box: TextBox, canvasW: number): { x: number; y: number } {
+export function boxOriginPx(box: FlatBox, canvasW: number): { x: number; y: number } {
   return { x: box.frame.x * canvasW, y: box.frame.y * canvasW }
 }
 
 /** A box's bounding rect in normalized (width-units) from its laid-out size. */
-export function boxBoundsNorm(box: TextBox, layout: TextBoxLayout, canvasW: number) {
+export function boxBoundsNorm(box: FlatBox, layout: TextBoxLayout, canvasW: number) {
   return {
     x: box.frame.x,
     y: box.frame.y,
@@ -50,7 +50,7 @@ export function boxBoundsNorm(box: TextBox, layout: TextBoxLayout, canvasW: numb
  * thin/empty boxes clickable.
  */
 export function hitTest(
-  slide: Slide,
+  slide: FlatSlide,
   layouts: Map<string, TextBoxLayout>,
   nx: number,
   ny: number,
@@ -73,7 +73,7 @@ export function hitTest(
 /** Draw a dashed selection ring around a box's content bounds. */
 export function drawSelection(
   ctx: CanvasRenderingContext2D,
-  box: TextBox,
+  box: FlatBox,
   layout: TextBoxLayout,
   canvasW: number,
   color = '#5b9dff',

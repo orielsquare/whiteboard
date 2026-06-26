@@ -6,7 +6,6 @@ import { httpStore } from '@lib/persistence/FontStore'
 import { ensureGlyphDerived } from './store'
 import type { ExtractionParams, GlyphExtractor } from '@lib/extraction'
 import {
-  DEFAULT_DEFAULTS,
   newVideoProject,
   type Aspect,
   type NamedStyle,
@@ -20,6 +19,7 @@ import {
   type VoiceoverAudio,
   type VoiceoverCue,
 } from '@lib/project/schema'
+import { migrateProject, toStoredY } from '@lib/project/aspect'
 import type { BrushSettings } from '@lib/manifest/schema'
 import type { StylePatch } from '@lib/project/runs'
 import * as E from './videoEdit'
@@ -32,12 +32,6 @@ export interface TextSelection {
   focus: number
 }
 
-/** Fill any defaults a project saved before new fields existed (no migration
- *  layer in ProjectStore — default defensively on load). */
-function normalizeProject(p: VideoProject): VideoProject {
-  return { ...p, defaults: { ...DEFAULT_DEFAULTS, ...p.defaults }, namedStyles: p.namedStyles ?? [] }
-}
-
 const nowIso = () => new Date().toISOString()
 type SlideView = 'layout' | 'order' | 'play' | 'timeline' | 'vtt'
 
@@ -45,6 +39,8 @@ interface VideoState {
   project: VideoProject | null
   loaded: boolean
   // transient UI state — NOT undoable, NOT persisted (see partialize)
+  /** the aspect ratio currently being edited/previewed (16:9 or 9:16). */
+  activeAspect: Aspect
   selectedSlideId: string | null
   selectedTextBoxId: string | null
   /** active sub-range selection inside the selected textbox (for the format bar). */
@@ -82,7 +78,7 @@ interface VideoState {
   cutTextBox: (slideId: string, boxId: string) => void
   pasteTextBox: (slideId: string) => void
 
-  setAspect: (a: Aspect) => void
+  setActiveAspect: (a: Aspect) => void
   setBaseEmFraction: (v: number) => void
   setPlaybackRate: (v: number) => void
   setBrush: (b: BrushSettings) => void
@@ -115,6 +111,7 @@ export const useVideoStore = create<VideoState>()(
     (set, get) => ({
       project: null,
       loaded: false,
+      activeAspect: '16:9',
       selectedSlideId: null,
       selectedTextBoxId: null,
       selection: null,
@@ -178,14 +175,20 @@ export const useVideoStore = create<VideoState>()(
       addTextBox: (slideId, x, y) => {
         const s = get()
         if (!s.project) return ''
-        const { project, boxId } = E.addTextBox(s.project, slideId, x, y)
+        // x is a fraction of width; the editor passes y in width-units → store as a fraction of height.
+        const { project, boxId } = E.addTextBox(s.project, slideId, x, toStoredY(y, s.activeAspect))
         set({ project, selectedTextBoxId: boxId })
         return boxId
       },
       updateTextBox: (slideId, boxId, patch) =>
         set((s) => (s.project ? { project: E.updateTextBox(s.project, slideId, boxId, patch) } : s)),
       updateTextBoxFrame: (slideId, boxId, patch) =>
-        set((s) => (s.project ? { project: E.updateTextBoxFrame(s.project, slideId, boxId, patch) } : s)),
+        set((s) => {
+          if (!s.project) return s
+          // The editor works in width-units for y; store it as a fraction of height.
+          const p2 = patch.y != null ? { ...patch, y: toStoredY(patch.y, s.activeAspect) } : patch
+          return { project: E.updateTextBoxFrame(s.project, slideId, boxId, p2) }
+        }),
       updateTextBoxRuns: (slideId, boxId, runs) =>
         set((s) => (s.project ? { project: E.updateTextBoxRuns(s.project, slideId, boxId, runs) } : s)),
       applyTextStyle: (slideId, boxId, start, end, patch) =>
@@ -227,7 +230,7 @@ export const useVideoStore = create<VideoState>()(
           return { project, selectedTextBoxId: boxId, selection: null }
         }),
 
-      setAspect: (a) => set((s) => (s.project ? { project: E.setAspect(s.project, a) } : s)),
+      setActiveAspect: (a) => set({ activeAspect: a }),
       setBaseEmFraction: (v) =>
         set((s) => (s.project ? { project: E.setBaseEmFraction(s.project, v) } : s)),
       setPlaybackRate: (v) =>
@@ -267,6 +270,7 @@ export const useVideoStore = create<VideoState>()(
         set({
           project: p,
           loaded: true,
+          activeAspect: '16:9',
           selectedSlideId: p.slides[0]?.id ?? null,
           selectedTextBoxId: null,
           selection: null,
@@ -277,10 +281,11 @@ export const useVideoStore = create<VideoState>()(
       loadProject: async (id) => {
         const loaded = await projectStore.load(id)
         if (!loaded) return
-        const p = normalizeProject(loaded)
+        const { project: p, aspect } = migrateProject(loaded)
         set({
           project: p,
           loaded: true,
+          activeAspect: aspect,
           selectedSlideId: p.slides[0]?.id ?? null,
           selectedTextBoxId: null,
           selection: null,

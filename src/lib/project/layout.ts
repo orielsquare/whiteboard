@@ -1,6 +1,6 @@
 import type { PreparedGlyph } from '@lib/animation/timeline'
 import type { Bbox } from '@lib/manifest/schema'
-import type { TextBox } from './schema'
+import type { FlatBox } from './aspect'
 
 /**
  * Pure text-box layout. Resolves a textbox's runs into positioned, timed glyph
@@ -133,7 +133,7 @@ function underlineDrawMs(spanEm: number): number {
  *  Each run resolves its own font from `fonts` (per-run `fontId`), so a box — even
  *  a single line — may mix fonts; metrics are taken per run/slot. */
 export function layoutTextBox(
-  box: TextBox,
+  box: FlatBox,
   fonts: FontSet,
   baseEmFraction: number,
   canvasW: number,

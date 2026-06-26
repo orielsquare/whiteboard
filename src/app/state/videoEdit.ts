@@ -2,7 +2,6 @@ import {
   makeId,
   newSlide,
   newTextBox,
-  type Aspect,
   type NamedStyle,
   type NormRect,
   type ProjectDefaults,
@@ -48,7 +47,7 @@ export function copySlide(p: VideoProject, slideId: string): { project: VideoPro
     textBoxes: src.textBoxes.map((b) => ({
       ...b,
       id: makeId(),
-      frame: { ...b.frame },
+      frame: { '16:9': { ...b.frame['16:9'] }, '9:16': { ...b.frame['9:16'] } },
       runs: b.runs.map((r) => ({ ...r })),
     })),
   }
@@ -108,6 +107,11 @@ export function updateTextBox(
   }))
 }
 
+/** Patch a box's frame. `patch.y` is in stored units (fraction of HEIGHT) — the
+ *  store converts editor width-units → fraction-of-height before calling here.
+ *  Phase 1: boxes are position-locked by default, so the patch is written into
+ *  BOTH cuts to keep them identical. (Phase 2 consults the per-box lock and writes
+ *  only the active aspect when unlocked, diverging the cuts.) */
 export function updateTextBoxFrame(
   p: VideoProject,
   slideId: string,
@@ -116,7 +120,11 @@ export function updateTextBoxFrame(
 ): VideoProject {
   return mapSlide(p, slideId, (s) => ({
     ...s,
-    textBoxes: s.textBoxes.map((b) => (b.id === boxId ? { ...b, frame: { ...b.frame, ...patch } } : b)),
+    textBoxes: s.textBoxes.map((b) =>
+      b.id === boxId
+        ? { ...b, frame: { '16:9': { ...b.frame['16:9'], ...patch }, '9:16': { ...b.frame['9:16'], ...patch } } }
+        : b,
+    ),
   }))
 }
 
@@ -170,7 +178,7 @@ const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
 export function cloneTextBox(box: TextBox): TextBox {
   return {
     ...box,
-    frame: { ...box.frame },
+    frame: { '16:9': { ...box.frame['16:9'] }, '9:16': { ...box.frame['9:16'] } },
     runs: box.runs.map((r) => ({ ...r })),
     brush: box.brush ? { ...box.brush } : undefined,
   }
@@ -185,10 +193,11 @@ export function pasteTextBox(
 ): { project: VideoProject; boxId: string } {
   const id = makeId()
   const project = mapSlide(p, slideId, (s) => {
+    const nudge = (r: NormRect): NormRect => ({ ...r, x: clamp01(r.x + 0.03), y: clamp01(r.y + 0.03) })
     const clone: TextBox = {
       ...cloneTextBox(box),
       id,
-      frame: { ...box.frame, x: clamp01(box.frame.x + 0.03), y: clamp01(box.frame.y + 0.03) },
+      frame: { '16:9': nudge(box.frame['16:9']), '9:16': nudge(box.frame['9:16']) },
       animOrder: s.textBoxes.length,
     }
     return { ...s, textBoxes: [...s.textBoxes, clone] }
@@ -198,9 +207,6 @@ export function pasteTextBox(
 
 // --- project-level --------------------------------------------------------
 
-export function setAspect(p: VideoProject, aspect: Aspect): VideoProject {
-  return { ...p, aspect }
-}
 export function setBaseEmFraction(p: VideoProject, baseEmFraction: number): VideoProject {
   return { ...p, baseEmFraction }
 }

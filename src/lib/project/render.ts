@@ -3,7 +3,7 @@ import type { BrushSettings } from '@lib/manifest/schema'
 import { paintStroke } from '@lib/render/brush'
 import type { Transform } from '@lib/render/ribbon'
 import { layoutTextBox, type FontSet, type TextBoxLayout } from './layout'
-import type { Slide, VideoProject } from './schema'
+import type { FlatProject, FlatSlide } from './aspect'
 import { computeProjectTiming, type ProjectTiming, type SlideTiming } from './timing'
 import { composeTransition, transitionProgress } from './transitions'
 
@@ -98,7 +98,7 @@ const boxOrigin = (box: { frame: { x: number; y: number } }, w: number) => ({
  */
 export function renderSlideContent(
   ctx: CanvasRenderingContext2D,
-  slide: Slide,
+  slide: FlatSlide,
   layouts: Map<string, TextBoxLayout>,
   timing: SlideTiming,
   tLocalMs: number,
@@ -118,7 +118,7 @@ export function renderSlideContent(
 /** Fill the slide background, then draw its content at `tLocalMs` (real time). */
 function drawSlideFull(
   ctx: CanvasRenderingContext2D,
-  slide: Slide,
+  slide: FlatSlide,
   layouts: Map<string, TextBoxLayout>,
   timing: SlideTiming,
   tLocalMs: number,
@@ -135,7 +135,7 @@ function drawSlideFull(
 /** A slide's ink with the last `p` fraction of every stroke retracted (rubout). */
 function renderSlideInkRubout(
   ctx: CanvasRenderingContext2D,
-  slide: Slide,
+  slide: FlatSlide,
   layouts: Map<string, TextBoxLayout>,
   brush: BrushSettings,
   w: number,
@@ -178,7 +178,7 @@ export interface RenderContext {
  * font. Memoize on (project, fonts, canvasW, speed).
  */
 export function buildRenderContext(
-  project: VideoProject,
+  project: FlatProject,
   fonts: FontSet,
   canvasW: number,
   speed = 1,
@@ -207,7 +207,7 @@ export const projectDurationMs = (rc: RenderContext): number => rc.timing.totalM
  */
 export function renderProject(
   ctx: CanvasRenderingContext2D,
-  project: VideoProject,
+  project: FlatProject,
   rc: RenderContext,
   tMs: number,
   w: number,
@@ -265,7 +265,7 @@ export function renderProject(
  */
 export function renderSlide(
   ctx: CanvasRenderingContext2D,
-  project: VideoProject,
+  project: FlatProject,
   rc: RenderContext,
   slideIndex: number,
   tLocalMs: number,

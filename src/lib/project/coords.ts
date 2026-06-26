@@ -9,3 +9,8 @@ export function aspectHeightUnits(aspect: Aspect): number {
 export function canvasSize(aspect: Aspect, canvasW: number): { w: number; h: number } {
   return { w: Math.round(canvasW), h: Math.round(canvasW * aspectHeightUnits(aspect)) }
 }
+
+/** Default export width (px) per aspect — 16:9 → 1920×1080, 9:16 → 1080×1920. */
+export function exportCanvasW(aspect: Aspect): number {
+  return aspect === '16:9' ? 1920 : 1080
+}

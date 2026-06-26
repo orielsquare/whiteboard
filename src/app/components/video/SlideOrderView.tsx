@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from 'react'
+import { projectForAspect } from '@lib/project/aspect'
 import { fontFor, type FontSet } from '@lib/project/layout'
 import { buildRenderContext, renderSlide } from '@lib/project/render'
 import { useVideoStore } from '../../state/videoStore'
@@ -14,6 +15,7 @@ import { PlaybackCanvas } from './PlaybackCanvas'
  */
 export function SlideOrderView({ fonts }: { fonts: FontSet }) {
   const project = useVideoStore((s) => s.project)
+  const activeAspect = useVideoStore((s) => s.activeAspect)
   const selectedSlideId = useVideoStore((s) => s.selectedSlideId)
   const playbackRate = useVideoStore((s) => s.project?.playbackRate ?? 1)
   const setPlaybackRate = useVideoStore((s) => s.setPlaybackRate)
@@ -21,9 +23,13 @@ export function SlideOrderView({ fonts }: { fonts: FontSet }) {
   const slideIndex = project ? Math.max(0, project.slides.findIndex((s) => s.id === selectedSlideId)) : -1
   const slide = project && slideIndex >= 0 ? project.slides[slideIndex] : undefined
 
+  const flat = useMemo(
+    () => (project ? projectForAspect(project, activeAspect) : null),
+    [project, activeAspect],
+  )
   const rc = useMemo(
-    () => (project ? buildRenderContext(project, fonts, BACKING_W, playbackRate) : null),
-    [project, fonts, playbackRate],
+    () => (flat ? buildRenderContext(flat, fonts, BACKING_W, playbackRate) : null),
+    [flat, fonts, playbackRate],
   )
   const totalMs = rc && slideIndex >= 0 ? rc.timing.slides[slideIndex]?.timing.totalMs ?? 0 : 0
 
@@ -37,9 +43,9 @@ export function SlideOrderView({ fonts }: { fonts: FontSet }) {
 
   const draw = useCallback(
     (ctx: CanvasRenderingContext2D, t: number, w: number, h: number) => {
-      if (rc && project && slideIndex >= 0) renderSlide(ctx, project, rc, slideIndex, t, w, h)
+      if (rc && flat && slideIndex >= 0) renderSlide(ctx, flat, rc, slideIndex, t, w, h)
     },
-    [rc, project, slideIndex],
+    [rc, flat, slideIndex],
   )
 
   if (!project || !slide) return <div className="stage video-stage">No slide.</div>
@@ -47,7 +53,7 @@ export function SlideOrderView({ fonts }: { fonts: FontSet }) {
   return (
     <div className="orderview">
       <PlaybackCanvas
-        aspect={project.aspect}
+        aspect={activeAspect}
         totalMs={totalMs}
         ready={ready}
         resetKey={selectedSlideId ?? ''}
