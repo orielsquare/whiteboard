@@ -14,7 +14,7 @@ import { EASING_NAMES, type EasingName } from '@lib/geometry/easing'
 import { type Transform } from '@lib/render/ribbon'
 import { prepareDrawing, type PreparedDrawing } from '@lib/drawing/timeline'
 import { renderPreparedDrawing } from '@lib/drawing/render'
-import type { DrawingPart, PartSection } from '@lib/drawing/schema'
+import type { DrawingManifest, DrawingPart, PartSection } from '@lib/drawing/schema'
 import { DEFAULT_FILL_PARAMS, DEFAULT_STROKE_PARAMS, type FillParams, type StrokeParams } from '@lib/svg/types'
 import { drawingHttpStore, type DrawingSummary } from '@lib/persistence/DrawingStore'
 import { drawingHistory, useDrawingStore, type OrderDim } from '../../state/drawingStore'
@@ -97,6 +97,41 @@ export function DrawingView({
       setSaveStatus(`save failed: ${e}`)
     }
   }
+  // Save a copy: write the current drawing under its own id (so no edits are lost),
+  // then a duplicate under a fresh id + new name, and switch the editor to the copy.
+  const doSaveAs = async () => {
+    const m = useDrawingStore.getState().manifest
+    if (!m) return
+    const entered = window.prompt('Save a copy as:', `${m.metadata.name} copy`)
+    if (!entered || !entered.trim()) return
+    const name = entered.trim()
+    setSaveStatus('saving copy…')
+    try {
+      const now = new Date().toISOString()
+      const rid = (() => {
+        try { return crypto.randomUUID().slice(0, 8) } catch { return Math.random().toString(36).slice(2, 10) }
+      })()
+      const cur: DrawingManifest = { ...m, updatedAt: now }
+      await drawingHttpStore.save(cur) // keep the original intact with its current state
+      const newId = `${m.metadata.drawingId}-${rid}`
+      const copy: DrawingManifest = {
+        ...cur,
+        metadata: { ...cur.metadata, drawingId: newId, hash: newId, name },
+        createdAt: now,
+        updatedAt: now,
+      }
+      await drawingHttpStore.save(copy)
+      // switch the editor to the copy (clean history; refresh the Video cache)
+      loadManifest(copy)
+      setSelId(null)
+      drawingHistory.clear()
+      useDrawingRegistry.getState().refreshFromManifest(copy)
+      setSaveStatus(null)
+      refreshSaved()
+    } catch (e) {
+      setSaveStatus(`copy failed: ${e}`)
+    }
+  }
   const doOpen = async (id: string) => {
     if (!id) return
     try {
@@ -134,6 +169,9 @@ export function DrawingView({
   const speedRef = useRef(1)
   const loopRef = useRef(true)
   const brushRef = useRef(brush)
+  // geometry of the currently-selected stroke sections, for the canvas glow overlay
+  // (a ref so the rAF loop reads it without re-subscribing per frame).
+  const highlightRef = useRef<PartSection['points'][]>([])
 
   playingRef.current = isPlaying
   speedRef.current = speed
@@ -153,6 +191,13 @@ export function DrawingView({
     tRef.current = 0
     setIsPlaying(true)
   }, [viewBox])
+
+  // Track the selected part's selected sections so the canvas can glow them. Updated
+  // imperatively (no re-render) — the rAF loop overlays them every frame.
+  useEffect(() => {
+    const part = parts?.find((p) => p.id === selId)
+    highlightRef.current = part ? part.sections.filter((s) => selSecIds.includes(s.id)).map((s) => s.points) : []
+  }, [parts, selId, selSecIds])
 
   useEffect(() => {
     let raf = 0
@@ -175,7 +220,7 @@ export function DrawingView({
             }
           }
         }
-        drawFrame(canvasRef.current, tl, transformRef.current, tRef.current, brushRef.current, minHalfRef.current)
+        drawFrame(canvasRef.current, tl, transformRef.current, tRef.current, brushRef.current, minHalfRef.current, highlightRef.current)
         if (now - lastProgress > 80) {
           lastProgress = now
           setProgress(tRef.current)
@@ -248,6 +293,9 @@ export function DrawingView({
         <button className="primary" onClick={doSave} disabled={!dirty} title={dirty ? 'Save drawing to Drive' : 'No unsaved changes'}>
           💾 Save
         </button>
+        {manifest && (
+          <button onClick={doSaveAs} title="Save a copy under a new name">⎘ Save a copy</button>
+        )}
         <label className="field">
           <span>Open</span>
           <select value="" onChange={(e) => { void doOpen(e.target.value); e.target.value = '' }}>
@@ -692,6 +740,7 @@ function drawFrame(
   t: number,
   brush: BrushSettings,
   minHalfWidth: number,
+  highlight: readonly { x: number; y: number }[][],
 ) {
   if (!canvas) return
   const ctx = canvas.getContext('2d')
@@ -700,4 +749,45 @@ function drawFrame(
   ctx.fillStyle = '#0b0d11'
   ctx.fillRect(0, 0, canvas.width, canvas.height)
   renderPreparedDrawing(ctx, tl, tr, brush, minHalfWidth, t)
+  if (highlight.length) drawHighlight(ctx, highlight, tr)
+}
+
+/** Glow overlay marking the selected stroke sections (a soft accent halo + a crisp
+ *  core), drawn on top of the ink so the user can see exactly which strokes are
+ *  selected for split/merge/flip/etc. */
+function drawHighlight(
+  ctx: CanvasRenderingContext2D,
+  sections: readonly { x: number; y: number }[][],
+  tr: Transform,
+) {
+  const ACCENT = '#7aa2ff'
+  ctx.save()
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+  ctx.strokeStyle = ACCENT
+  const trace = () => {
+    for (const pts of sections) {
+      if (!pts.length) continue
+      ctx.beginPath()
+      if (pts.length === 1) {
+        ctx.arc(pts[0].x * tr.scale + tr.ox, pts[0].y * tr.scale + tr.oy, 3, 0, Math.PI * 2)
+      } else {
+        ctx.moveTo(pts[0].x * tr.scale + tr.ox, pts[0].y * tr.scale + tr.oy)
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x * tr.scale + tr.ox, pts[i].y * tr.scale + tr.oy)
+      }
+      ctx.stroke()
+    }
+  }
+  // soft blurred halo around each stroke (lets the ink show through)
+  ctx.shadowColor = ACCENT
+  ctx.shadowBlur = 14
+  ctx.globalAlpha = 0.32
+  ctx.lineWidth = 7
+  trace()
+  // crisp accent core so the selection is unambiguous
+  ctx.shadowBlur = 0
+  ctx.globalAlpha = 0.95
+  ctx.lineWidth = 1.75
+  trace()
+  ctx.restore()
 }
