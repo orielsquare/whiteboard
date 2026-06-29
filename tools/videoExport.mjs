@@ -231,12 +231,21 @@ export async function renderProjectToMp4({
     'ffmpeg',
     [
       '-y',
-      '-f', 'image2pipe',
+      // Feed RAW RGBA frames straight from the canvas instead of PNGs. Per-frame PNG
+      // (zlib) encoding is the dominant per-frame CPU cost — skipping it is a big win
+      // on small / shared-core hosts (e.g. a burstable e2-small). The pipe carries
+      // more bytes but no compression work.
+      '-f', 'rawvideo',
+      '-pixel_format', 'rgba',
+      '-video_size', `${w}x${h}`,
       '-framerate', String(fps),
       '-i', '-',
       '-c:v', 'libx264',
       '-pix_fmt', 'yuv420p',
-      '-preset', 'medium',
+      // 'veryfast' encodes far quicker than x264's 'medium' default with only a
+      // modest size bump — these flat-colour handwriting frames compress easily.
+      // Override with WHITEBOARD_X264_PRESET (e.g. 'medium' for a smaller file).
+      '-preset', process.env.WHITEBOARD_X264_PRESET || 'veryfast',
       '-movflags', '+faststart',
       silentPath,
     ],
@@ -254,8 +263,10 @@ export async function renderProjectToMp4({
   for (let i = 0; i < totalFrames; i++) {
     const animT = Math.min((i / fps) * 1000, lastAnimMs)
     seam.renderProject(ctx, sub, rc, animT, w, h)
-    const png = canvas.toBuffer('image/png')
-    if (!ff.stdin.write(png)) await new Promise((r) => ff.stdin.once('drain', r))
+    // Raw RGBA pixels (no PNG encode). getImageData returns straight, non-premultiplied
+    // RGBA — exactly what ffmpeg's `-pixel_format rgba` expects.
+    const frame = Buffer.from(ctx.getImageData(0, 0, w, h).data.buffer)
+    if (!ff.stdin.write(frame)) await new Promise((r) => ff.stdin.once('drain', r))
     if (onProgress && (i % 10 === 0 || i === totalFrames - 1)) onProgress((i + 1) / totalFrames)
   }
   ff.stdin.end()

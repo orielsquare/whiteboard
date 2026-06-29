@@ -110,6 +110,8 @@ export function VideoView({
   const [nameDraft, setNameDraft] = useState('')
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState<number | null>(null)
+  // Export resolution: full (1080p) or downscaled (720p — ~2× fewer pixels, faster).
+  const [exportQuality, setExportQuality] = useState<'1080p' | '720p'>('1080p')
   const [exportResult, setExportResult] = useState<
     {
       file: string
@@ -440,7 +442,11 @@ export function VideoView({
           drawingsById,
           fps: 30,
           aspect: activeAspect,
-          width: exportCanvasW(activeAspect),
+          // 720p downscales the full export width by 2/3 (e.g. 1920→1280) for a much
+          // faster render; the renderer rounds to even dimensions.
+          width: exportQuality === '720p'
+            ? Math.round((exportCanvasW(activeAspect) * 2) / 3)
+            : exportCanvasW(activeAspect),
           speed: p.playbackRate ?? 1,
           name: p.name,
         }),
@@ -566,6 +572,17 @@ export function VideoView({
           )}
         </div>
         <button onClick={() => { newProject(font.hash, brush); videoHistory.clear(); setNameDraft('Untitled video') }}>New</button>
+        <label className="field export-quality" title="Export resolution — 720p renders roughly 2× faster (smaller file)">
+          <span>quality</span>
+          <select
+            value={exportQuality}
+            onChange={(e) => setExportQuality(e.target.value as '1080p' | '720p')}
+            disabled={exporting}
+          >
+            <option value="1080p">1080p</option>
+            <option value="720p">720p · faster</option>
+          </select>
+        </label>
         <button onClick={doExport} disabled={exporting} title="render to MP4 (download only — not saved to Drive)">
           {exporting
             ? exportProgress != null
