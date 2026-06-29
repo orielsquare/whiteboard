@@ -153,5 +153,22 @@ const layouts = (entries) => new Map(entries.map(([id, contentMs]) => [id, { con
   check('9 box still timed', t.boxes[0].startMs === 100 && t.boxes[0].endMs === 400, t.boxes[0])
 }
 
+// 10) per-drawing speed shrinks the drawing's content window (the global rate still applies)
+{
+  const s = {
+    id: 's', textBoxes: [],
+    drawings: [{ id: 'D', animOrder: 0, delayBeforeMs: 0, speed: 2 }],
+    holdBeforeTransitionMs: 0, transition: { kind: 'none', durationMs: 0 },
+  }
+  const dur = new Map([['D', 600]])
+  const t1 = T.computeSlideTiming(s, new Map(), dur, 1)
+  check('10 speed×2 halves the window (600→300)', t1.drawings[0].endMs === 300, t1.drawings[0])
+  const t2 = T.computeSlideTiming(s, new Map(), dur, 2)
+  check('10 speed×2 + rate×2 → 150', t2.drawings[0].endMs === 150, t2.drawings[0])
+  // a drawing with no speed field behaves as ×1
+  const sNo = { ...s, drawings: [{ id: 'D', animOrder: 0, delayBeforeMs: 0 }] }
+  check('10 no speed → ×1 (600)', T.computeSlideTiming(sNo, new Map(), dur, 1).drawings[0].endMs === 600)
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)

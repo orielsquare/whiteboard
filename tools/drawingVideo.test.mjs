@@ -163,5 +163,24 @@ check('3 centre dark at t=8 (not yet drawn)', maxLumaAround(MID_X, MID_Y, 6) < 6
   check('4 missing drawing paints nothing (dark centre)', maxLumaAround(MID_X, MID_Y, 8) < 60, maxLumaAround(MID_X, MID_Y, 8))
 }
 
+// 5) per-drawing speed: a ×2 drawing reaches its centre in half the time
+{
+  const fast = seam.projectForAspect(
+    seam.migrateProject({
+      ...rawProject,
+      slides: [{ ...rawProject.slides[0], drawings: [{ ...rawProject.slides[0].drawings[0], speed: 2 }] }],
+    }).project,
+    '16:9',
+  )
+  const rcFast = seam.buildRenderContext(fast, fontSet, drawingSet, w, 1)
+  ctx.clearRect(0, 0, w, h)
+  seam.renderProject(ctx, fast, rcFast, 140, w, h)
+  check('5 speed×2 → centre drawn by t=140', maxLumaAround(MID_X, MID_Y, 8) > 180, maxLumaAround(MID_X, MID_Y, 8))
+  // the unscaled (×1) drawing has NOT reached the centre at the same instant
+  ctx.clearRect(0, 0, w, h)
+  seam.renderProject(ctx, flat, rc, 140, w, h)
+  check('5 speed×1 → centre not yet drawn at t=140', maxLumaAround(MID_X, MID_Y, 6) < 60, maxLumaAround(MID_X, MID_Y, 6))
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed ? 1 : 0)

@@ -52,6 +52,7 @@ export type Playback =
   | { kind: 'project' }
   | { kind: 'slide'; slideId: string }
   | { kind: 'box'; slideId: string; boxId: string }
+  | { kind: 'drawing'; slideId: string; drawingId: string }
 
 interface VideoState {
   project: VideoProject | null

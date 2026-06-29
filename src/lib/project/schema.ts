@@ -115,6 +115,9 @@ export interface SlideDrawing {
   animOrder: number
   /** ms before this drawing starts, from the previous item's animation END. */
   delayBeforeMs: number
+  /** per-drawing relative draw speed (×); >1 draws faster. Combines with the
+   *  project playbackRate. Absent ⇒ 1. */
+  speed?: number
 }
 
 export interface Slide {

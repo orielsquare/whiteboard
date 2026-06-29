@@ -35,23 +35,7 @@ export function Inspector() {
   // --- Placed-drawing properties (a drawing is selected) ------------------
   if (drawing) {
     const dw = drawing.frame[activeAspect].w ?? 0.3
-    // Move this drawing earlier/later in the slide's shared animation order by
-    // swapping its animOrder with the adjacent item (box or drawing).
-    const moveOrder = (dir: -1 | 1) => {
-      const items = [
-        ...slide.textBoxes.map((b) => ({ kind: 'box' as const, id: b.id, animOrder: b.animOrder })),
-        ...(slide.drawings ?? []).map((d) => ({ kind: 'draw' as const, id: d.id, animOrder: d.animOrder })),
-      ].sort((a, b) => a.animOrder - b.animOrder)
-      const i = items.findIndex((it) => it.kind === 'draw' && it.id === drawing.id)
-      const j = i + dir
-      if (i < 0 || j < 0 || j >= items.length) return
-      const a = items[i]
-      const b = items[j]
-      const setOrder = (it: (typeof items)[number], order: number) =>
-        it.kind === 'box' ? updateTextBox(slide.id, it.id, { animOrder: order }) : updateDrawing(slide.id, it.id, { animOrder: order })
-      setOrder(a, b.animOrder)
-      setOrder(b, a.animOrder)
-    }
+    const dspeed = drawing.speed ?? 1
     return (
       <aside className="inspector">
         <div className="insp-head">
@@ -60,23 +44,21 @@ export function Inspector() {
             × Delete
           </button>
         </div>
-        <p className="insp-tip muted">{drawing.name ?? 'drawing'} — drag it on the slide to position. It draws in turn with the text by its animation order.</p>
+        <p className="insp-tip muted">{drawing.name ?? 'drawing'} — drag it on the slide to position; drag it in the Elements list to set when it draws.</p>
         <label className="slider">
           <span>width <b>{Math.round(dw * 100)}%</b></span>
           <input type="range" min={0.05} max={1} step={0.01} value={dw}
             onChange={(e) => updateDrawingFrame(slide.id, drawing.id, { w: Number(e.target.value) })} />
         </label>
         <label className="slider">
+          <span>draw speed <b>×{dspeed.toFixed(2)}</b></span>
+          <input type="range" min={0.25} max={4} step={0.05} value={dspeed}
+            onChange={(e) => updateDrawing(slide.id, drawing.id, { speed: Number(e.target.value) })} />
+        </label>
+        <label className="slider">
           <span>time before drawing <b>{drawing.delayBeforeMs}ms</b></span>
           <input type="range" min={0} max={3000} step={50} value={drawing.delayBeforeMs}
             onChange={(e) => updateDrawing(slide.id, drawing.id, { delayBeforeMs: Number(e.target.value) })} />
-        </label>
-        <label className="slider">
-          <span>animation order</span>
-          <div className="toolrow">
-            <button className="tool" title="draw earlier" onClick={() => moveOrder(-1)}>↑ earlier</button>
-            <button className="tool" title="draw later" onClick={() => moveOrder(1)}>↓ later</button>
-          </div>
         </label>
       </aside>
     )

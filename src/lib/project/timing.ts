@@ -70,7 +70,8 @@ export function computeSlideTiming(
       id: d.id,
       animOrder: d.animOrder,
       delayBeforeMs: d.delayBeforeMs,
-      contentMs: drawingDurations.get(d.id) ?? 0,
+      // per-drawing speed shrinks its content window (the global rate scales it again below)
+      contentMs: (drawingDurations.get(d.id) ?? 0) / (d.speed && d.speed > 0 ? d.speed : 1),
     })),
   ].sort((a, b) => a.animOrder - b.animOrder)
 

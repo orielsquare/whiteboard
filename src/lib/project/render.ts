@@ -153,7 +153,10 @@ export function renderSlideContent(
     } else if (it.drawing) {
       const entry = drawings.get(it.drawing.id)
       if (!entry) continue
-      const writingMs = (tLocalMs - (drawStarts.get(it.drawing.id) ?? 0)) * speed
+      // writing scales by the global speed AND the per-drawing relative speed,
+      // matching the (totalMs / drawingSpeed) content window from the timing.
+      const dSpeed = it.drawing.speed && it.drawing.speed > 0 ? it.drawing.speed : 1
+      const writingMs = (tLocalMs - (drawStarts.get(it.drawing.id) ?? 0)) * speed * dSpeed
       paintDrawingInstance(ctx, entry, it.drawing.frame, w, brush, writingMs)
     }
   }

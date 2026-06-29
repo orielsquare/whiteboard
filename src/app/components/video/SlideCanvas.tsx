@@ -125,6 +125,23 @@ export function SlideCanvas({
       } else if (playback.kind === 'slide') {
         const idx = flatProject.slides.findIndex((s) => s.id === playback.slideId)
         if (idx >= 0) renderSlide(ctx, flatProject, rc, idx, t, w, h)
+      } else if (playback.kind === 'drawing') {
+        const fs = flatProject.slides.find((s) => s.id === playback.slideId)
+        const entry = rc.drawingsBySlide.get(playback.slideId)?.get(playback.drawingId)
+        const fd = fs?.drawings.find((d) => d.id === playback.drawingId)
+        ctx.clearRect(0, 0, w, h)
+        if (fs) {
+          ctx.fillStyle = fs.background
+          ctx.fillRect(0, 0, w, h)
+        }
+        if (entry && fd) {
+          const fw = fd.frame.w
+          if (fw != null && fw > 0) {
+            const tr = drawingTransform(entry.viewBox, fd.frame.x * w, fd.frame.y * w, fw * w)
+            const dSpeed = fd.speed && fd.speed > 0 ? fd.speed : 1
+            renderPreparedDrawing(ctx, entry.prepared, tr, flatProject.brush, drawingMinHalfWidth(entry.viewBox), t * rc.speed * dSpeed)
+          }
+        }
       } else {
         const fs = flatProject.slides.find((s) => s.id === playback.slideId)
         const layout = rc.layoutsBySlide.get(playback.slideId)?.get(playback.boxId)
@@ -146,9 +163,15 @@ export function SlideCanvas({
     if (!rc || !playback) return 0
     if (playback.kind === 'project') return rc.timing.totalMs
     if (playback.kind === 'slide') return rc.timing.slides.find((s) => s.slideId === playback.slideId)?.timing.totalMs ?? 0
-    // real-time window = unscaled writing duration ÷ speed (rc.speed is sanitized > 0)
+    if (playback.kind === 'drawing') {
+      const entry = rc.drawingsBySlide.get(playback.slideId)?.get(playback.drawingId)
+      const fd = flatProject?.slides.find((s) => s.id === playback.slideId)?.drawings.find((d) => d.id === playback.drawingId)
+      const dSpeed = fd?.speed && fd.speed > 0 ? fd.speed : 1
+      return entry ? entry.prepared.totalMs / dSpeed / rc.speed : 0
+    }
+    // box: real-time window = unscaled writing duration ÷ speed (rc.speed sanitized > 0)
     return (rc.layoutsBySlide.get(playback.slideId)?.get(playback.boxId)?.contentMs ?? 0) / rc.speed
-  }, [rc, playback])
+  }, [rc, playback, flatProject])
   // Voiceover plays only for whole-project playback (cues are project-time).
   const audioCues = useMemo<AudioCue[] | undefined>(() => {
     if (playback?.kind !== 'project' || !project) return undefined
@@ -249,7 +272,9 @@ export function SlideCanvas({
       ? 'the project'
       : playback.kind === 'slide'
         ? `slide ${project.slides.findIndex((s) => s.id === playback.slideId) + 1}`
-        : 'this textbox'
+        : playback.kind === 'drawing'
+          ? 'this drawing'
+          : 'this textbox'
 
   // The canvas spaces lines by (ascender+|descender|)/upm × lineHeightScale; pass
   // that em-ratio to the overlay so its CSS line-height matches (editing a box

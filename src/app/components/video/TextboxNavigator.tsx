@@ -148,7 +148,15 @@ export function TextboxNavigator() {
                     drawing={it.drawing}
                     index={i}
                     selected={it.id === selectedDrawingId}
+                    playing={playback?.kind === 'drawing' && playback.slideId === slide.id && playback.drawingId === it.id}
                     onSelect={() => selectDrawing(it.id)}
+                    onTogglePlay={() =>
+                      setPlayback(
+                        playback?.kind === 'drawing' && playback.slideId === slide.id && playback.drawingId === it.id
+                          ? null
+                          : { kind: 'drawing', slideId: slide.id, drawingId: it.id },
+                      )
+                    }
                     onDelete={() => removeDrawing(slide.id, it.id)}
                   />
                 ),
@@ -222,13 +230,17 @@ function DrawingRow({
   drawing,
   index,
   selected,
+  playing,
   onSelect,
+  onTogglePlay,
   onDelete,
 }: {
   drawing: SlideDrawing
   index: number
   selected: boolean
+  playing: boolean
   onSelect: () => void
+  onTogglePlay: () => void
   onDelete: () => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: drawing.id })
@@ -240,6 +252,9 @@ function DrawingRow({
       <span className="order-no">{index + 1}</span>
       <span className="order-label" title="drawing">▦ {drawing.name ?? 'drawing'}</span>
       <span className="rowbtns">
+        <button className={playing ? 'on' : ''} title={playing ? 'stop' : 'play this drawing (loops)'} onClick={(e) => { stop(e); onTogglePlay() }}>
+          {playing ? '■' : '▶'}
+        </button>
         <button title="remove drawing from slide" onClick={(e) => { stop(e); onDelete() }}>×</button>
       </span>
       <span className="lockcols" />
