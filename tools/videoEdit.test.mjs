@@ -195,5 +195,46 @@ const box0 = (p) => p.slides[0].textBoxes[0]
   ok(!('drawings' in cp.project.slides.find((s) => s.id === cp.slideId)), 'copySlide → drawing-less slide omits drawings field')
 }
 
+// --- drawing locks: position links frames across aspects; format is a flag ---
+{
+  const draw0 = (p) => p.slides[0].drawings[0]
+  const withDrawing = () => E.addDrawing(mkProject([mkBox({ id: 'A', animOrder: 0 })]), 's', 'dwg', 'D', 0.3, 0.1, 0.3).project
+
+  // unlink position → lock.position=false; editing the active aspect diverges
+  let p = withDrawing()
+  const id = draw0(p).id
+  p = E.setDrawingPositionLink(p, 's', id, false, '16:9')
+  ok(draw0(p).lock && draw0(p).lock.position === false, 'drawing unlink → lock.position=false')
+  p = E.updateDrawingFrame(p, 's', id, { y: 0.9 }, ['16:9'])
+  ok(draw0(p).frame['16:9'].y === 0.9 && draw0(p).frame['9:16'].y === 0.1, 'drawing edit while unlinked diverges')
+  // relink (active 16:9) → other aspect converges, override cleared
+  const relink = E.setDrawingPositionLink(p, 's', id, true, '16:9')
+  ok(relink.slides[0].drawings[0].lock.position === true, 'drawing relink → lock.position=true')
+  approx(draw0(relink).frame['9:16'].y, 0.9, 'drawing relink converges other aspect (active wins)')
+
+  // format link is a plain stored flag (no content to converge)
+  const fp = withDrawing()
+  const fid = draw0(fp).id
+  const f = E.setDrawingFormatLink(fp, 's', fid, false)
+  ok(draw0(f).lock.content === false, 'drawing setFormatLink(false) → lock.content=false')
+  const f2 = E.setDrawingFormatLink(f, 's', fid, true)
+  ok(draw0(f2).lock.content === true, 'drawing setFormatLink(true) → lock.content=true')
+
+  // slide-level position "link all" converges drawings too (active wins) + clears override
+  let p2 = withDrawing()
+  const id2 = draw0(p2).id
+  p2 = E.setDrawingPositionLink(p2, 's', id2, false, '16:9')
+  p2 = E.updateDrawingFrame(p2, 's', id2, { y: 0.7 }, ['16:9'])
+  const sl = E.setSlidePositionLink(p2, 's', true, '16:9')
+  approx(sl.slides[0].drawings[0].frame['9:16'].y, 0.7, 'slide link-all converges the drawing too')
+  ok(!sl.slides[0].drawings[0].lock, 'slide link-all clears the drawing position override')
+
+  // slide-level format "link all" clears a drawing's content override
+  let p3 = withDrawing()
+  p3 = E.setDrawingFormatLink(p3, 's', draw0(p3).id, false)
+  const sf = E.setSlideFormatLink(p3, 's', true, '16:9')
+  ok(!sf.slides[0].drawings[0].lock, 'slide format link-all clears the drawing content override')
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed) process.exit(1)

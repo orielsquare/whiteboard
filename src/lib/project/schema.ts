@@ -118,6 +118,10 @@ export interface SlideDrawing {
   /** per-drawing relative draw speed (×); >1 draws faster. Combines with the
    *  project playbackRate. Absent ⇒ 1. */
   speed?: number
+  /** per-drawing lock override (mirrors TextBox.lock): `position` links the frame
+   *  across aspects; `content` is kept for UI parity but redundant (a drawing has no
+   *  per-aspect content). Undefined fields inherit slide then `project.lockDefault`. */
+  lock?: Partial<BoxLockState>
 }
 
 export interface Slide {

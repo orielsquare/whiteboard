@@ -93,12 +93,13 @@ export function toStoredY(yWidthUnits: number, aspect: Aspect): number {
   return yWidthUnits / aspectHeightUnits(aspect)
 }
 
-/** Resolve a box's effective lock: box → slide → project default. */
-export function effLock(p: VideoProject, slide: Slide, box: TextBox): BoxLockState {
+/** Resolve an element's effective lock: element → slide → project default. Works
+ *  for textboxes AND placed drawings (both carry an optional `lock`). */
+export function effLock(p: VideoProject, slide: Slide, item: { lock?: Partial<BoxLockState> }): BoxLockState {
   const def = p.lockDefault ?? DEFAULT_LOCK
   return {
-    position: box.lock?.position ?? slide.lock?.position ?? def.position,
-    content: box.lock?.content ?? slide.lock?.content ?? def.content,
+    position: item.lock?.position ?? slide.lock?.position ?? def.position,
+    content: item.lock?.content ?? slide.lock?.content ?? def.content,
   }
 }
 
@@ -151,10 +152,11 @@ export function migrateProject(raw: VideoProject): { project: VideoProject; aspe
 }
 
 const EPS = 0.002
-/** Whether a box's two cuts differ in geometry (the position lock is "broken"). */
-export function framesDiverge(box: TextBox): boolean {
-  const a = box.frame['16:9']
-  const b = box.frame['9:16']
+/** Whether an element's two cuts differ in geometry (the position lock is "broken").
+ *  Works for textboxes AND placed drawings (both carry a per-aspect `frame`). */
+export function framesDiverge(item: { frame: Record<Aspect, NormRect> }): boolean {
+  const a = item.frame['16:9']
+  const b = item.frame['9:16']
   const wDiff = (a.w == null) !== (b.w == null) || (a.w != null && b.w != null && Math.abs(a.w - b.w) > EPS)
   return Math.abs(a.x - b.x) > EPS || Math.abs(a.y - b.y) > EPS || wDiff
 }

@@ -263,22 +263,47 @@ export function setBoxPositionLink(
   }))
 }
 
-/** Set every box on a slide's position link: set `slide.lock.position`, clear each
- *  box's own position override (so they inherit uniformly), and on link converge
- *  every box (active aspect wins). */
+/** Converge an element's frame onto the active aspect when (re)linking position:
+ *  the active cut is copied onto the other so the two stay identical. */
+function convergeFrame<T extends { frame: Record<Aspect, NormRect> }>(item: T, activeAspect: Aspect): T {
+  return { ...item, frame: { ...item.frame, [otherAspect(activeAspect)]: { ...item.frame[activeAspect] } } }
+}
+
+/** Set every element on a slide's position link: set `slide.lock.position`, clear
+ *  each element's own position override (so they inherit uniformly), and on link
+ *  converge every element (active aspect wins). Covers textboxes AND drawings. */
 function linkSlidePositions(s: Slide, linked: boolean, activeAspect: Aspect): Slide {
+  const relink = <T extends { lock?: Partial<BoxLockState>; frame: Record<Aspect, NormRect> }>(item: T): T => {
+    const lock = { ...item.lock }
+    delete lock.position
+    const next = linked ? convergeFrame(item, activeAspect) : item
+    return { ...next, lock: cleanLock(lock) }
+  }
   return {
     ...s,
     lock: cleanLock({ ...s.lock, position: linked }),
-    textBoxes: s.textBoxes.map((b) => {
-      const lock = { ...b.lock }
-      delete lock.position
-      const frame = linked
-        ? { ...b.frame, [otherAspect(activeAspect)]: { ...b.frame[activeAspect] } }
-        : b.frame
-      return { ...b, lock: cleanLock(lock), frame }
-    }),
+    textBoxes: s.textBoxes.map(relink),
+    ...(s.drawings ? { drawings: s.drawings.map(relink) } : {}),
   }
+}
+
+/** Set a placed drawing's position link explicitly (mirrors setBoxPositionLink —
+ *  linking a diverged drawing converges it, active aspect wins). */
+export function setDrawingPositionLink(
+  p: VideoProject,
+  slideId: string,
+  drawingId: string,
+  linked: boolean,
+  activeAspect: Aspect,
+): VideoProject {
+  return mapSlide(p, slideId, (s) => ({
+    ...s,
+    drawings: (s.drawings ?? []).map((d) => {
+      if (d.id !== drawingId) return d
+      const lock = cleanLock({ ...d.lock, position: linked })
+      return linked ? { ...convergeFrame(d, activeAspect), lock } : { ...d, lock }
+    }),
+  }))
 }
 
 /** Slide-level "link/unlink all positions". */
@@ -334,7 +359,27 @@ function linkSlideFormats(s: Slide, linked: boolean, activeAspect: Aspect): Slid
       const cleaned = cleanLock(lock)
       return linked ? { ...convergeContent(b, activeAspect), lock: cleaned } : { ...b, lock: cleaned }
     }),
+    // Drawings have no per-aspect content to converge — just clear the override so
+    // they inherit the slide's format-link uniformly (kept for UI parity).
+    ...(s.drawings
+      ? {
+          drawings: s.drawings.map((d) => {
+            const lock = { ...d.lock }
+            delete lock.content
+            return { ...d, lock: cleanLock(lock) }
+          }),
+        }
+      : {}),
   }
+}
+
+/** Set a placed drawing's format link (a stored flag only — a drawing has no
+ *  per-aspect content, so nothing diverges or converges). */
+export function setDrawingFormatLink(p: VideoProject, slideId: string, drawingId: string, linked: boolean): VideoProject {
+  return mapSlide(p, slideId, (s) => ({
+    ...s,
+    drawings: (s.drawings ?? []).map((d) => (d.id === drawingId ? { ...d, lock: cleanLock({ ...d.lock, content: linked }) } : d)),
+  }))
 }
 
 /** Slide-level "link/unlink all formats". */

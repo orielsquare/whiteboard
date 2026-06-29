@@ -32,11 +32,12 @@ export function TextboxNavigator() {
   const selectDrawing = useVideoStore((s) => s.selectDrawing)
   const selectedDrawingId = useVideoStore((s) => s.selectedDrawingId)
   const addDrawing = useVideoStore((s) => s.addDrawing)
-  const removeDrawing = useVideoStore((s) => s.removeDrawing)
   const setBoxPositionLink = useVideoStore((s) => s.setBoxPositionLink)
   const setSlidePositionLink = useVideoStore((s) => s.setSlidePositionLink)
   const setBoxFormatLink = useVideoStore((s) => s.setBoxFormatLink)
   const setSlideFormatLink = useVideoStore((s) => s.setSlideFormatLink)
+  const setDrawingPositionLink = useVideoStore((s) => s.setDrawingPositionLink)
+  const setDrawingFormatLink = useVideoStore((s) => s.setDrawingFormatLink)
   const playback = useVideoStore((s) => s.playback)
   const setPlayback = useVideoStore((s) => s.setPlayback)
   const { confirm, modal } = useConfirm()
@@ -75,17 +76,21 @@ export function TextboxNavigator() {
     if (d) addDrawing(slide.id, d.id, d.name, 0.35, 0.12, 0.3)
   }
 
-  const posHeader = aggregateLock(boxes.map((b) => effLock(project, slide, b).position))
-  const fmtHeader = aggregateLock(boxes.map((b) => effLock(project, slide, b).content))
+  const drawings = slide.drawings ?? []
+  // Headers aggregate over BOTH textboxes and drawings (both carry the locks).
+  const lockables = [...boxes, ...drawings]
+  const posHeader = aggregateLock(lockables.map((it) => effLock(project, slide, it).position))
+  const fmtHeader = aggregateLock(lockables.map((it) => effLock(project, slide, it).content))
 
   const togglePosHeader = async () => {
     if (posHeader === 'on') return setSlidePositionLink(slide.id, false)
-    const reverts = boxes.filter(framesDiverge).length
+    const reverts = lockables.filter(framesDiverge).length
     if (reverts > 0 && !(await confirm(linkWarning(reverts, 'position')))) return
     setSlidePositionLink(slide.id, true)
   }
   const toggleFmtHeader = async () => {
     if (fmtHeader === 'on') return setSlideFormatLink(slide.id, false)
+    // only textboxes can diverge in content (drawings have none)
     const reverts = boxes.filter(contentsDiverge).length
     if (reverts > 0 && !(await confirm(linkWarning(reverts, 'format')))) return
     setSlideFormatLink(slide.id, true)
@@ -100,6 +105,14 @@ export function TextboxNavigator() {
     if (contentsDiverge(b) && !(await confirm(linkWarning(1, 'format')))) return
     setBoxFormatLink(slide.id, b.id, true)
   }
+  const toggleDrawingPos = async (d: SlideDrawing) => {
+    if (effLock(project, slide, d).position) return setDrawingPositionLink(slide.id, d.id, false)
+    if (framesDiverge(d) && !(await confirm(linkWarning(1, 'position')))) return
+    setDrawingPositionLink(slide.id, d.id, true)
+  }
+  // Format is redundant for drawings (no per-aspect content) — a plain toggle, no warning.
+  const toggleDrawingFmt = (d: SlideDrawing) =>
+    setDrawingFormatLink(slide.id, d.id, !effLock(project, slide, d).content)
 
   return (
     <div className="navlist-wrap">
@@ -148,6 +161,9 @@ export function TextboxNavigator() {
                     drawing={it.drawing}
                     index={i}
                     selected={it.id === selectedDrawingId}
+                    posLinked={effLock(project, slide, it.drawing).position}
+                    fmtLinked={effLock(project, slide, it.drawing).content}
+                    diverged={framesDiverge(it.drawing)}
                     playing={playback?.kind === 'drawing' && playback.slideId === slide.id && playback.drawingId === it.id}
                     onSelect={() => selectDrawing(it.id)}
                     onTogglePlay={() =>
@@ -157,7 +173,8 @@ export function TextboxNavigator() {
                           : { kind: 'drawing', slideId: slide.id, drawingId: it.id },
                       )
                     }
-                    onDelete={() => removeDrawing(slide.id, it.id)}
+                    onTogglePos={() => toggleDrawingPos(it.drawing)}
+                    onToggleFmt={() => toggleDrawingFmt(it.drawing)}
                   />
                 ),
               )}
@@ -172,7 +189,7 @@ export function TextboxNavigator() {
 }
 
 function linkWarning(count: number, kind: 'position' | 'format'): string {
-  const n = count === 1 ? 'this textbox’s' : `${count} textbox(es)’`
+  const n = count === 1 ? 'this element’s' : `${count} element(s)’`
   return `Re-linking will change the other aspect ratio’s ${kind} to match this one for ${n} layout. This can’t be undone separately per aspect. Continue?`
 }
 
@@ -225,23 +242,32 @@ function OrderRow({
   )
 }
 
-/** A placed-drawing row in the Elements list (no per-aspect locks; a ▦ marks it). */
+/** A placed-drawing row in the Elements list: a ▦ marks it; it carries the same
+ *  position/format padlocks as a textbox (delete lives in the properties panel). */
 function DrawingRow({
   drawing,
   index,
   selected,
+  posLinked,
+  fmtLinked,
+  diverged,
   playing,
   onSelect,
   onTogglePlay,
-  onDelete,
+  onTogglePos,
+  onToggleFmt,
 }: {
   drawing: SlideDrawing
   index: number
   selected: boolean
+  posLinked: boolean
+  fmtLinked: boolean
+  diverged: boolean
   playing: boolean
   onSelect: () => void
   onTogglePlay: () => void
-  onDelete: () => void
+  onTogglePos: () => void
+  onToggleFmt: () => void
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: drawing.id })
   const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.6 : 1 }
@@ -250,14 +276,18 @@ function DrawingRow({
     <li ref={setNodeRef} style={style} className={selected ? 'order-row sel' : 'order-row'} onClick={onSelect}>
       <span className="drag" title="drag to reorder" {...attributes} {...listeners}>⠿</span>
       <span className="order-no">{index + 1}</span>
-      <span className="order-label" title="drawing">▦ {drawing.name ?? 'drawing'}</span>
+      <span className={diverged ? 'order-label diverged' : 'order-label'} title={diverged ? 'Position differs between the two aspect ratios' : 'drawing'}>
+        ▦ {drawing.name ?? 'drawing'}
+      </span>
       <span className="rowbtns">
         <button className={playing ? 'on' : ''} title={playing ? 'stop' : 'play this drawing (loops)'} onClick={(e) => { stop(e); onTogglePlay() }}>
           {playing ? '■' : '▶'}
         </button>
-        <button title="remove drawing from slide" onClick={(e) => { stop(e); onDelete() }}>×</button>
       </span>
-      <span className="lockcols" />
+      <span className="lockcols">
+        <LockButton kind="p" state={posLinked ? 'on' : 'off'} title={posLinked ? 'Position — linked across aspect ratios (click to unlink)' : 'Position — separate per aspect ratio (click to re-link)'} onClick={onTogglePos} />
+        <LockButton kind="f" state={fmtLinked ? 'on' : 'off'} title="Format — drawings have no per-aspect content (redundant; kept for parity)" onClick={onToggleFmt} />
+      </span>
     </li>
   )
 }

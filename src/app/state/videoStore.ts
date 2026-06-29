@@ -113,6 +113,10 @@ interface VideoState {
   setSlidePositionLink: (slideId: string, linked: boolean) => void
   /** link/unlink every box's position across the whole project. */
   setProjectPositionLink: (linked: boolean) => void
+  /** link/unlink a placed drawing's position across aspects (linking converges, active wins). */
+  setDrawingPositionLink: (slideId: string, drawingId: string, linked: boolean) => void
+  /** link/unlink a placed drawing's format flag (redundant — kept for UI parity). */
+  setDrawingFormatLink: (slideId: string, drawingId: string, linked: boolean) => void
   /** link/unlink a box's format (content) across aspects (linking converges, active wins). */
   setBoxFormatLink: (slideId: string, boxId: string, linked: boolean) => void
   /** link/unlink every box's format on a slide. */
@@ -250,10 +254,15 @@ export const useVideoStore = create<VideoState>()(
       updateDrawingFrame: (slideId, instanceId, patch) =>
         set((s) => {
           if (!s.project) return s
-          // Editor works in width-units for y → store as a fraction of height. Placed
-          // drawings are position-linked, so write BOTH aspects (one set() ≡ one undo).
+          const slide = s.project.slides.find((sl) => sl.id === slideId)
+          const drawing = slide?.drawings?.find((d) => d.id === instanceId)
+          if (!slide || !drawing) return s
+          // Editor works in width-units for y → store as a fraction of height.
           const p2 = patch.y != null ? { ...patch, y: toStoredY(patch.y, s.activeAspect) } : patch
-          return { project: E.updateDrawingFrame(s.project, slideId, instanceId, p2, ASPECTS) }
+          // Position-locked → write BOTH cuts (stay identical); unlocked → only the
+          // active aspect (the cuts diverge). One set() ≡ one undo.
+          const targets = effLock(s.project, slide, drawing).position ? ASPECTS : [s.activeAspect]
+          return { project: E.updateDrawingFrame(s.project, slideId, instanceId, p2, targets) }
         }),
       updateDrawing: (slideId, instanceId, patch) =>
         set((s) => (s.project ? { project: E.updateDrawing(s.project, slideId, instanceId, patch) } : s)),
@@ -313,6 +322,10 @@ export const useVideoStore = create<VideoState>()(
         ),
       setProjectPositionLink: (linked) =>
         set((s) => (s.project ? { project: E.setProjectPositionLink(s.project, linked, s.activeAspect) } : s)),
+      setDrawingPositionLink: (slideId, drawingId, linked) =>
+        set((s) => (s.project ? { project: E.setDrawingPositionLink(s.project, slideId, drawingId, linked, s.activeAspect) } : s)),
+      setDrawingFormatLink: (slideId, drawingId, linked) =>
+        set((s) => (s.project ? { project: E.setDrawingFormatLink(s.project, slideId, drawingId, linked) } : s)),
       setBoxFormatLink: (slideId, boxId, linked) =>
         set((s) => (s.project ? { project: E.setBoxFormatLink(s.project, slideId, boxId, linked, s.activeAspect) } : s)),
       setSlideFormatLink: (slideId, linked) =>
