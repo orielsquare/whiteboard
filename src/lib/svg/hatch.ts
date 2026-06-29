@@ -13,13 +13,21 @@ import type { FillParams, GenSection, StrokePoint } from './types'
  *
  * Approach: pick the hatch direction `u` (and unit perpendicular `v`), march one
  * scan line per `spacing` across the shape's `v`-extent, analytically intersect
- * each line with every polygon edge, pair the sorted crossings (even-odd) into
- * inside segments, and emit each segment as its OWN section. Keeping lines
- * separate (rather than merging into one zigzag) is what makes the "colouring-in"
- * work: each line is a separate ribbon fill, so where `line width > spacing` they
- * overlap and build up evenly under a <1 alpha. Boustrophedon order (alternate
- * direction per line) keeps the reveal a natural back-and-forth sweep and gives
- * downstream per-stroke fill easing a real per-line cadence.
+ * each line with every polygon edge, and pair the sorted crossings (even-odd) into
+ * inside segments. Rather than drawing each line flat, the strokes are TILTED into a
+ * continuous ZIG-ZAG: we walk ADJACENT scan lines and emit one "tooth" per gap, each
+ * climbing the full `spacing` from one line's boundary crossing to the next line's.
+ * The tooth direction alternates per gap (boustrophedon): an up-RIGHT tooth is a
+ * "zig" (angled just ABOVE the basic hatch direction); the next up-LEFT tooth is a
+ * "zag" (just BELOW it). Because each tooth ends exactly where the next begins (a
+ * shared boundary crossing), the pen traces one unbroken zig-zag sweep — the end of
+ * one line is the start of the next — and because both endpoints are real crossings
+ * the teeth never overshoot the shape. Segments are paired by left-to-right column
+ * index, so a hole's two sides zig-zag independently (the gap across the hole is
+ * never bridged). Each tooth is its OWN section (not a single merged path), which
+ * preserves the timeline's per-line reveal cadence and keeps each a separate ribbon
+ * fill, so where `line width > spacing` they overlap and build up evenly under a <1
+ * alpha. Pure (analytic scanline; no canvas).
  */
 export function generateHatch(polygons: Vec2[][], params: FillParams): GenSection[] {
   const { angleDeg, spacingPx, lineWidthPx } = params
@@ -81,7 +89,6 @@ export function generateHatch(polygons: Vec2[][], params: FillParams): GenSectio
     if (segs.length) lines.push({ d, segs })
   }
 
-  // Emit one section PER hatch line (no merged zigzag), in boustrophedon order.
   const pointAt = (a: number, d: number): StrokePoint => ({
     x: u.x * a + v.x * d,
     y: u.y * a + v.y * d,
@@ -89,21 +96,36 @@ export function generateHatch(polygons: Vec2[][], params: FillParams): GenSectio
   })
   const sections: GenSection[] = []
   let runSeed = 0x9e3779b9
-  lines.forEach((ln, idx) => {
-    const fwd = idx % 2 === 0
-    const ordered = fwd ? ln.segs : [...ln.segs].reverse()
-    for (const s of ordered) {
-      const p0 = pointAt(fwd ? s.aIn : s.aOut, ln.d)
-      const p1 = pointAt(fwd ? s.aOut : s.aIn, ln.d)
-      // With wobble, subdivide the line and nudge interior vertices perpendicular
-      // by a bounded, detrended random walk (pinned at both ends) → a hand stroke.
-      const points =
-        wobbleDeg > 0
-          ? wobbleRun(p0, p1, wobbleDeg, lineWidthPx, spacingPx, makeRng((runSeed = (runSeed + 0x6d2b79f5) | 0)))
-          : [p0, p1]
-      sections.push({ points, kind: 'line', role: 'fill' })
+  const emitTooth = (p0: StrokePoint, p1: StrokePoint): void => {
+    // With wobble, subdivide the tooth and nudge interior vertices perpendicular by
+    // a bounded, detrended random walk (pinned at both ends) → a hand stroke.
+    const points =
+      wobbleDeg > 0
+        ? wobbleRun(p0, p1, wobbleDeg, lineWidthPx, spacingPx, makeRng((runSeed = (runSeed + 0x6d2b79f5) | 0)))
+        : [p0, p1]
+    sections.push({ points, kind: 'line', role: 'fill' })
+  }
+
+  // Too thin to zig-zag (a single scan line) → lay that line down flat.
+  if (lines.length === 1) {
+    for (const s of lines[0].segs) emitTooth(pointAt(s.aIn, lines[0].d), pointAt(s.aOut, lines[0].d))
+  }
+  // One tooth per gap between adjacent scan lines, paired by column. Even gaps climb
+  // up-RIGHT (in→out, a "zig"); odd gaps climb up-LEFT (out→in, a "zag"). Consecutive
+  // teeth share the boundary crossing on line `b`, so the zig-zag is unbroken.
+  for (let i = 0; i + 1 < lines.length; i++) {
+    const a = lines[i]
+    const b = lines[i + 1]
+    const zig = i % 2 === 0
+    const cols = Math.min(a.segs.length, b.segs.length)
+    for (let j = 0; j < cols; j++) {
+      const sa = a.segs[j]
+      const sb = b.segs[j]
+      const p0 = pointAt(zig ? sa.aIn : sa.aOut, a.d)
+      const p1 = pointAt(zig ? sb.aOut : sb.aIn, b.d)
+      emitTooth(p0, p1)
     }
-  })
+  }
   return sections
 }
 

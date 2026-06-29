@@ -18,6 +18,7 @@ import type { DrawingPart } from '@lib/drawing/schema'
 import { DEFAULT_FILL_PARAMS, DEFAULT_STROKE_PARAMS, type FillParams, type StrokeParams } from '@lib/svg/types'
 import { drawingHttpStore, type DrawingSummary } from '@lib/persistence/DrawingStore'
 import { drawingHistory, useDrawingStore, type OrderDim } from '../../state/drawingStore'
+import { useDrawingRegistry } from '../../state/drawingRegistry'
 
 const BRUSH_STYLES: BrushStyle[] = ['chalk', 'ink', 'marker']
 const END_HOLD_MS = 700
@@ -75,6 +76,9 @@ export function DrawingView({
     try {
       await drawingHttpStore.save(m)
       markSaved()
+      // Refresh the Video tool's cache so any slide already using this drawing
+      // re-renders the just-saved version (no stale copy on the canvas).
+      useDrawingRegistry.getState().refreshFromManifest(m)
       setSaveStatus(null)
       refreshSaved()
     } catch (e) {
@@ -491,8 +495,8 @@ function FillEditor({ value, onChange }: { value: FillParams; onChange: (p: Fill
   return (
     <div className="timing">
       <Slider label="angle" min={-90} max={90} step={5} value={value.angleDeg} suffix="°" onChange={(v) => onChange({ ...value, angleDeg: v })} />
-      <Slider label="spacing" min={2} max={20} step={0.5} value={value.spacingPx} onChange={(v) => onChange({ ...value, spacingPx: v })} />
-      <Slider label="line width" min={0.5} max={8} step={0.5} value={value.lineWidthPx} onChange={(v) => onChange({ ...value, lineWidthPx: v })} />
+      <Slider label="spacing" min={2} max={30} step={0.5} value={value.spacingPx} onChange={(v) => onChange({ ...value, spacingPx: v })} />
+      <Slider label="line width" min={0.5} max={12} step={0.5} value={value.lineWidthPx} onChange={(v) => onChange({ ...value, lineWidthPx: v })} />
       <Slider label="spacing wobble" min={0} max={1} step={0.05} value={value.jitter ?? 0} onChange={(v) => onChange({ ...value, jitter: v })} />
       <Slider label="line wobble" min={0} max={2} step={0.1} value={value.lineWobbleDeg ?? 0} suffix="°" onChange={(v) => onChange({ ...value, lineWobbleDeg: v })} />
     </div>
@@ -502,6 +506,7 @@ function FillEditor({ value, onChange }: { value: FillParams; onChange: (p: Fill
 function StrokeEditor({ value, onChange }: { value: StrokeParams; onChange: (p: StrokeParams) => void }) {
   return (
     <div className="timing">
+      <Slider label="stroke width" min={0.25} max={4} step={0.05} value={value.widthScale ?? 1} suffix="×" onChange={(v) => onChange({ ...value, widthScale: v })} />
       <Slider label="sampling" min={1} max={10} step={0.5} value={value.resampleSpacingPx} onChange={(v) => onChange({ ...value, resampleSpacingPx: v })} />
       <Slider label="min width" min={0.2} max={6} step={0.2} value={value.minWidthPx ?? 1} onChange={(v) => onChange({ ...value, minWidthPx: v })} />
     </div>

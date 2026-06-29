@@ -33,6 +33,8 @@ export interface StrokeParams {
   resampleSpacingPx: number
   /** Floor on pen width (viewBox units). */
   minWidthPx?: number
+  /** Multiplier on the outline pen width (the SVG stroke-width). Absent ⇒ 1. */
+  widthScale?: number
 }
 
 export type SectionRole = 'outline' | 'fill'
@@ -56,6 +58,7 @@ export const DEFAULT_FILL_PARAMS: FillParams = {
 export const DEFAULT_STROKE_PARAMS: StrokeParams = {
   resampleSpacingPx: 3,
   minWidthPx: 1,
+  widthScale: 1,
 }
 
 /** Stable signature of the fill params (staleness detection, like `extractionSig`). */
@@ -65,5 +68,5 @@ export function fillSig(p: FillParams): string {
 
 /** Stable signature of the stroke-sampling params. */
 export function strokeSig(p: StrokeParams): string {
-  return [p.resampleSpacingPx, p.minWidthPx ?? 0].join('|')
+  return [p.resampleSpacingPx, p.minWidthPx ?? 0, p.widthScale ?? 1].join('|')
 }

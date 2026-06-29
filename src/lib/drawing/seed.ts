@@ -136,6 +136,21 @@ export function buildElementParts(el: DrawingElement, sections: { outline: PartS
   return parts
 }
 
+/** Reconcile freshly-built parts for an element against its EXISTING parts: a kind
+ *  that still exists keeps ALL of its editorial state (id, name, colour, alpha,
+ *  visibility, timing, z) and takes only the re-derived geometry; a newly-appearing
+ *  kind keeps its fresh default. Used when toggling `outlineFill`, which structurally
+ *  adds or removes the outline part but must NEVER reset the surviving shading part
+ *  (its name, colour, timing, … stay exactly as the user left them). */
+export function reconcileElementParts(prev: DrawingPart[], fresh: DrawingPart[]): DrawingPart[] {
+  const prevByKind = new Map<PartKind, DrawingPart>()
+  for (const p of prev) if (!prevByKind.has(p.kind)) prevByKind.set(p.kind, p)
+  return fresh.map((fp) => {
+    const keep = prevByKind.get(fp.kind)
+    return keep ? { ...keep, sections: fp.sections } : fp
+  })
+}
+
 export function seedDrawingManifest(
   parsed: ParsedSvg,
   name: string,

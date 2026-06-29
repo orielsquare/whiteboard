@@ -55,6 +55,25 @@ const square = (lo, hi) => [
   check('1 all points inside', pts.every((p) => p.x >= -0.5 && p.x <= 100.5 && p.y >= -0.5 && p.y <= 100.5))
 }
 
+// 1z) zig-zag continuity: with one segment per scanline (10 scanlines), the fill is
+//     a continuous zig-zag — one tooth per gap (9), each tooth ending exactly where
+//     the next begins, and each tooth climbing a row (a tilted diagonal, not flat).
+{
+  const secs = generateHatch([square(0, 100)], { angleDeg: 0, spacingPx: 10, lineWidthPx: 2, jitter: 0 })
+  check('1z one tooth per gap', secs.length === 9, secs.length)
+  let joined = 0
+  for (let i = 0; i + 1 < secs.length; i++) {
+    const end = secs[i].points.at(-1)
+    const start = secs[i + 1].points[0]
+    if (approx(end.x, start.x) && approx(end.y, start.y)) joined++
+  }
+  check('1z consecutive teeth joined', joined === secs.length - 1, joined)
+  // each tooth climbs one row, and the slope flips zig→zag between teeth
+  const slope = (s) => (s.points.at(-1).y - s.points[0].y) / (s.points.at(-1).x - s.points[0].x)
+  check('1z tooth tilts (not flat)', Math.abs(slope(secs[0])) > 0.01, slope(secs[0]))
+  check('1z zig then zag', slope(secs[0]) * slope(secs[1]) < 0, [slope(secs[0]), slope(secs[1])])
+}
+
 // 2) vertical hatch (angle 90): scanlines stride across x instead
 {
   const secs = generateHatch([square(0, 100)], { angleDeg: 90, spacingPx: 10, lineWidthPx: 1 })
@@ -105,10 +124,18 @@ const square = (lo, hi) => [
   const ptsW = allPoints(wob)
   check('5b wobble subdivides', ptsW.length > ptsS.length * 2, [ptsS.length, ptsW.length])
   check('5b within bounds', ptsW.every((p) => p.x >= -3 && p.x <= 103 && p.y >= -3 && p.y <= 103))
-  // a horizontal scanline sits at y≈d; wobble offsets perpendicular (in y) must
-  // stay within the band (spacing*0.35 = 3.5), so points never reach the next line
-  const nearestLineDist = ptsW.map((p) => Math.abs(((p.y - 5) % 10 + 10) % 10)).map((m) => Math.min(m, 10 - m))
-  check('5b stays within band', Math.max(...nearestLineDist) <= 3.6, Math.max(...nearestLineDist))
+  // each wobble tooth stays within the band (spacing*0.35 = 3.5) of the straight line
+  // through its OWN endpoints — the random walk is clamped + detrended, so no drift.
+  let maxDev = 0
+  for (const s of wob) {
+    const a0 = s.points[0], b0 = s.points.at(-1)
+    const dx = b0.x - a0.x, dy = b0.y - a0.y, L = Math.hypot(dx, dy) || 1
+    for (const p of s.points) {
+      const dev = Math.abs(((p.x - a0.x) * dy - (p.y - a0.y) * dx) / L)
+      if (dev > maxDev) maxDev = dev
+    }
+  }
+  check('5b stays within band', maxDev <= 3.6, maxDev)
   // deterministic: same params → identical geometry
   const wob2 = generateHatch([square(0, 100)], { ...opts, lineWobbleDeg: 1.5 })
   check('5b deterministic', JSON.stringify(wob) === JSON.stringify(wob2))

@@ -31,7 +31,23 @@ export function App() {
   const [font, setFont] = useState<LoadedFont | null>(null)
   const [source, setSource] = useState(BUNDLED[0].url)
   const [error, setError] = useState<string | null>(null)
-  const [topTab, setTopTab] = useState<TopTab>('font')
+  const [topTab, setTopTab] = useState<TopTab>(() => {
+    try {
+      const saved = localStorage.getItem('wb.topTab')
+      if (saved === 'font' || saved === 'video' || saved === 'draw') return saved
+    } catch {
+      /* localStorage unavailable */
+    }
+    return 'font'
+  })
+  // Reopen on the same top tool after a browser refresh.
+  useEffect(() => {
+    try {
+      localStorage.setItem('wb.topTab', topTab)
+    } catch {
+      /* ignore */
+    }
+  }, [topTab])
   const [fontSubTab, setFontSubTab] = useState<FontSubTab>('glyphs')
 
   // Shared across tabs: the active character and the brush. selectedChar + brush

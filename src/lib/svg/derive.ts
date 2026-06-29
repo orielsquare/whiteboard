@@ -30,7 +30,8 @@ export function deriveSections(el: ParsedElement, opts: DeriveOptions = {}): Gen
 
   const drawOutline = el.hasStroke || (el.hasFill && !!opts.outlineFill)
   if (drawOutline) {
-    const width = el.hasStroke ? el.strokeWidth : Math.max(sp.minWidthPx ?? 1, fp.lineWidthPx)
+    const baseWidth = el.hasStroke ? el.strokeWidth : Math.max(sp.minWidthPx ?? 1, fp.lineWidthPx)
+    const width = baseWidth * (sp.widthScale ?? 1)
     for (const subpath of el.subpaths) {
       const sec = strokeFromPolyline(subpath.points, width, sp, subpath.closed)
       if (sec) out.push(sec)

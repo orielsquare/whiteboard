@@ -3,7 +3,7 @@ import { temporal } from 'zundo'
 import { hashStr } from '@lib/geometry/rng'
 import { parseSvg, type ParsedElement, type ParsedSvg } from '@lib/svg/parse'
 import type { FillParams, StrokeParams } from '@lib/svg/types'
-import { buildElementParts, rederiveElement, seedDrawingManifest, withContiguousZ } from '@lib/drawing/seed'
+import { buildElementParts, reconcileElementParts, rederiveElement, seedDrawingManifest, withContiguousZ } from '@lib/drawing/seed'
 import type { DrawingElement, DrawingManifest, DrawingPart, PartKind, PartTiming } from '@lib/drawing/schema'
 
 export type OrderDim = 'draw' | 'z'
@@ -230,7 +230,10 @@ function replaceElementGeometry(
 }
 
 /** Structural change (outlineFill toggled adds/removes the outline part): rebuild
- *  this element's parts in place where its block currently sits. */
+ *  this element's parts in place where its block currently sits — but PRESERVE the
+ *  edits on any part whose kind survives the toggle (its name/colour/alpha/timing/
+ *  visibility/z), swapping in only the re-derived geometry. Only a newly-appearing
+ *  kind (e.g. the boundary the toggle just added) gets a fresh default part. */
 function rebuildElementParts(
   s: DrawingState,
   elementId: string,
@@ -244,13 +247,17 @@ function rebuildElementParts(
   if (!pe) return s
   const { outline, fill, derivedSig } = rederiveElement(el, pe)
   const fresh = buildElementParts(el, { outline, fill })
+  // Preserve the edits on any part whose kind survives the toggle; only a newly
+  // appearing kind (the boundary just added) gets a fresh default part.
+  const prevParts = s.manifest.parts.filter((p) => p.elementId === elementId)
+  const rebuilt = reconcileElementParts(prevParts, fresh)
   const elements = [...s.manifest.elements]
   elements[ei] = { ...el, derivedSig }
-  // Splice the fresh parts where this element's first existing part is (else append).
+  // Splice the rebuilt parts where this element's first existing part is (else append).
   const firstIdx = s.manifest.parts.findIndex((p) => p.elementId === elementId)
   const kept = s.manifest.parts.filter((p) => p.elementId !== elementId)
   const at = firstIdx < 0 ? kept.length : Math.min(firstIdx, kept.length)
-  const parts = withContiguousZ([...kept.slice(0, at), ...fresh, ...kept.slice(at)])
+  const parts = withContiguousZ([...kept.slice(0, at), ...rebuilt, ...kept.slice(at)])
   return bump(s, { ...s.manifest, elements, parts })
 }
 

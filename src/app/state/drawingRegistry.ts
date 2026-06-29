@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { prepareDrawing } from '@lib/drawing/timeline'
 import { drawingHttpStore } from '@lib/persistence/DrawingStore'
 import type { PreparedDrawingEntry } from '@lib/drawing/render'
+import type { DrawingManifest } from '@lib/drawing/schema'
 
 /**
  * Cache of prepared placed-drawing geometry for every SAVED drawing the Video
@@ -16,6 +17,11 @@ export interface DrawingRegistryState {
   ensureDrawings: (ids: string[]) => Promise<void>
   /** Drop a cached drawing so the next ensure re-loads it (e.g. after a re-save). */
   invalidate: (id: string) => void
+  /** Replace a cached entry directly from an (in-memory) manifest — called when a
+   *  drawing is saved, so any Video view already showing it re-renders the new
+   *  version without a round-trip. The drawingId is stable across part edits (it's
+   *  the SVG-source hash), so the slide's reference stays valid. */
+  refreshFromManifest: (manifest: DrawingManifest) => void
 }
 
 const inFlight = new Set<string>()
@@ -50,5 +56,16 @@ export const useDrawingRegistry = create<DrawingRegistryState>((set, get) => ({
       const next = new Map(s.drawings)
       next.delete(id)
       return { drawings: next }
+    }),
+  refreshFromManifest: (manifest) =>
+    set((s) => {
+      let entry: PreparedDrawingEntry
+      try {
+        entry = { prepared: prepareDrawing(manifest.parts), viewBox: manifest.metadata.viewBox }
+      } catch {
+        return s
+      }
+      // New Map ⇒ the DrawingSet reference changes ⇒ buildRenderContext re-runs.
+      return { drawings: new Map(s.drawings).set(manifest.metadata.drawingId, entry) }
     }),
 }))
