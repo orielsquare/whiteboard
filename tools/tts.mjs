@@ -3,8 +3,9 @@
 // Auth is an API key from the ELEVENLABS_API_KEY env var (server-side only — never
 // sent to the browser). The accent comes from the chosen voice; v2/Flash/Turbo
 // models are steered with voice_settings, the v3 model with a free-text `direction`
-// (audio-tag cues) prepended to the text. ElevenLabs returns mp3 (or pcm) which
-// ffmpeg encodes to .m4a. Used by the dev-server /api/tts + /api/voices routes.
+// applied as an inline **audio tag** — a square-bracketed cue v3 interprets but does
+// NOT speak (see buildTtsText). ElevenLabs returns mp3 (or pcm) which ffmpeg encodes
+// to .m4a. Used by the dev-server /api/tts + /api/voices routes.
 import { spawn } from 'node:child_process'
 
 const BASE = process.env.ELEVENLABS_BASE_URL || 'https://api.elevenlabs.io'
@@ -66,9 +67,25 @@ function encodeToM4a(audio, outPath) {
 }
 
 /**
+ * Build the `text` sent to ElevenLabs. For v3, a delivery `direction` is applied as
+ * an inline **audio tag**: a square-bracketed natural-language cue (e.g. `[warmly]`)
+ * that v3 interprets but does NOT read aloud. A bare direction is wrapped in `[…]`
+ * so it isn't spoken; a direction that already contains a `[` is passed through (the
+ * user wrote their own tags). Non-v3 models have no audio tags, so the direction is
+ * ignored (it would otherwise be read out). Pure — unit-tested in tools/tts.test.mjs.
+ */
+export function buildTtsText(text, isV3, direction) {
+  const t = String(text ?? '')
+  const dir = direction && String(direction).trim() ? String(direction).trim() : ''
+  if (!isV3 || !dir) return t
+  const tag = dir.includes('[') ? dir : `[${dir}]`
+  return `${tag} ${t}`
+}
+
+/**
  * Synthesize `text` in the given ElevenLabs `voiceId` + `model` into `outPath`
- * (.m4a). v3 uses the free-text `direction` (prepended); other models use
- * `settings` (voice_settings). Returns { durationMs, voiceId, model }.
+ * (.m4a). v3 applies the `direction` as an inline audio tag (see buildTtsText);
+ * other models use `settings` (voice_settings). Returns { durationMs, voiceId, model }.
  */
 export async function generateTts({ text, voiceId, model, direction, settings, outPath }) {
   if (!text || !String(text).trim()) throw new Error('Cue has no text to synthesize.')
@@ -77,9 +94,7 @@ export async function generateTts({ text, voiceId, model, direction, settings, o
   const modelId = model || 'eleven_multilingual_v2'
   const isV3 = modelId === 'eleven_v3'
 
-  // v3 takes inline delivery direction (audio-tag cues); other models ignore it.
-  const dir = direction && String(direction).trim() ? String(direction).trim() : ''
-  const content = isV3 && dir ? `${dir} ${text}` : String(text)
+  const content = buildTtsText(text, isV3, direction)
 
   const body = { text: content, model_id: modelId }
   if (!isV3 && settings) {

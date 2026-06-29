@@ -29,6 +29,58 @@ const VIEWS = [
   { id: 'timeline', label: 'Timeline' },
 ] as const
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
+/** Read a Response as JSON, tolerating a NON-JSON body (e.g. a reverse proxy's HTML
+ *  502/504 page) — return a shaped error instead of throwing a cryptic
+ *  "Unexpected token '<'" SyntaxError. */
+async function readJsonSafe(res: Response): Promise<Record<string, unknown>> {
+  const text = await res.text()
+  try {
+    return JSON.parse(text) as Record<string, unknown>
+  } catch {
+    const snippet = text.replace(/\s+/g, ' ').trim().slice(0, 140)
+    return { error: `HTTP ${res.status} ${res.statusText}${snippet ? ` — ${snippet}` : ''}` }
+  }
+}
+
+/** Poll an export job until it finishes, reporting 0..1 progress. Each poll is a
+ *  short request, so a long render never trips the proxy timeout. Tolerates a few
+ *  transient gateway errors before giving up. */
+async function pollExportStatus(
+  jobId: string,
+  onProgress: (p: number) => void,
+): Promise<Record<string, unknown>> {
+  const statusUrl = `${apiUrl('/api/export')}/status/${encodeURIComponent(jobId)}`
+  let misses = 0
+  for (;;) {
+    await sleep(1200)
+    let res: Response
+    try {
+      res = await apiFetch(statusUrl)
+    } catch {
+      if (++misses > 8) return { status: 'error', error: 'lost connection to the server while rendering' }
+      continue
+    }
+    if (res.status === 404) return { status: 'error', error: 'the export job expired or was lost (server restart?)' }
+    if (!res.ok) {
+      // transient gateway hiccup (502/503/504) — retry a bounded number of times
+      if (++misses > 8) {
+        const d = await readJsonSafe(res)
+        return { status: 'error', error: (d.error as string) ?? `status check failed (HTTP ${res.status})` }
+      }
+      continue
+    }
+    misses = 0
+    const data = await readJsonSafe(res)
+    if (data.status === 'rendering') {
+      onProgress(typeof data.progress === 'number' ? data.progress : 0)
+      continue
+    }
+    return data // 'done' or 'error'
+  }
+}
+
 export function VideoView({
   font,
   extractor,
@@ -57,6 +109,7 @@ export function VideoView({
   // doesn't spam the undo history per keystroke.
   const [nameDraft, setNameDraft] = useState('')
   const [exporting, setExporting] = useState(false)
+  const [exportProgress, setExportProgress] = useState<number | null>(null)
   const [exportResult, setExportResult] = useState<
     {
       file: string
@@ -330,7 +383,8 @@ export function VideoView({
     if (!p || !m) return
     setExporting(true)
     setExportResult(null)
-    setStatus('rendering MP4 — this can take a moment…')
+    setExportProgress(null)
+    setStatus('preparing fonts & drawings…')
     try {
       // Per-run multi-font: send every referenced font's raw glyphs + metrics so
       // the headless exporter renders each run in its own font (preview == export).
@@ -338,37 +392,45 @@ export function VideoView({
       for (const sl of p.slides)
         for (const b of sl.textBoxes) for (const r of b.runs) if (r.fontId) referenced.add(r.fontId)
       const fontsById: Record<string, { glyphs: unknown; metrics: FontMetrics }> = {}
-      for (const id of referenced) {
-        const mf = id === m.metadata.fontId ? m : await httpStore.load(id)
-        if (!mf) continue
-        fontsById[id] = {
-          glyphs: mf.glyphs,
-          metrics: {
-            unitsPerEm: mf.metadata.unitsPerEm,
-            ascender: mf.metadata.ascender,
-            descender: mf.metadata.descender,
-            // keep the live font's real space advance even if its manifest predates it
-            spaceAdvance: mf.metadata.spaceAdvance ?? (id === font.hash ? font.spaceAdvance : undefined),
-          },
-        }
-      }
+      // load referenced fonts in parallel (a slow Drive backend shouldn't serialize)
+      await Promise.all(
+        [...referenced].map(async (id) => {
+          const mf = id === m.metadata.fontId ? m : await httpStore.load(id)
+          if (!mf) return
+          fontsById[id] = {
+            glyphs: mf.glyphs,
+            metrics: {
+              unitsPerEm: mf.metadata.unitsPerEm,
+              ascender: mf.metadata.ascender,
+              descender: mf.metadata.descender,
+              // keep the live font's real space advance even if its manifest predates it
+              spaceAdvance: mf.metadata.spaceAdvance ?? (id === font.hash ? font.spaceAdvance : undefined),
+            },
+          }
+        }),
+      )
       // Placed drawings: send every referenced drawing's manifest so the headless
-      // exporter can prepare + render them (preview == export).
+      // exporter can prepare + render them (preview == export). Loaded in parallel.
       const drawingIds = new Set<string>()
       for (const sl of p.slides) for (const d of sl.drawings ?? []) drawingIds.add(d.drawingId)
       const drawingsById: Record<string, unknown> = {}
-      for (const id of drawingIds) {
-        try {
-          const dm = await drawingHttpStore.load(id)
-          if (dm) drawingsById[id] = dm
-        } catch {
-          /* missing drawing — exporter skips it */
-        }
-      }
+      await Promise.all(
+        [...drawingIds].map(async (id) => {
+          try {
+            const dm = await drawingHttpStore.load(id)
+            if (dm) drawingsById[id] = dm
+          } catch {
+            /* missing drawing — exporter skips it */
+          }
+        }),
+      )
 
       // text/plain so the builder's global 1 MB JSON parser skips this large
       // payload (it bundles every referenced font's glyph data); the route reads
-      // the raw body.
+      // the raw body. The render runs as a BACKGROUND JOB on the server — POST
+      // returns a jobId immediately, then we poll for progress (so a long render
+      // never trips the reverse-proxy request timeout).
+      setStatus('starting render…')
       const res = await apiFetch(apiUrl('/api/export'), {
         method: 'POST',
         headers: { 'content-type': 'text/plain;charset=utf-8' },
@@ -383,19 +445,30 @@ export function VideoView({
           name: p.name,
         }),
       })
-      const data = await res.json()
-      if (data.ok) {
+      const start = await readJsonSafe(res)
+      if (!res.ok || start.ok !== true || typeof start.jobId !== 'string') {
+        setStatus('export failed: ' + ((start.error as string) ?? `HTTP ${res.status}`))
+        return
+      }
+      setStatus('rendering MP4…')
+      setExportProgress(0)
+      const result = await pollExportStatus(start.jobId, (pr) => setExportProgress(pr))
+      if (result.status === 'done') {
         // snapshot the captions from the project we just rendered, so they match the MP4
         const vo = p.voiceover ?? []
-        setExportResult({ ...data, captionsVtt: vo.length ? captionsVtt(vo) : null })
+        setExportResult({
+          ...(result as unknown as NonNullable<typeof exportResult>),
+          captionsVtt: vo.length ? captionsVtt(vo) : null,
+        })
         setStatus(null)
       } else {
-        setStatus('export failed: ' + (data.error ?? 'unknown'))
+        setStatus('export failed: ' + ((result.error as string) ?? 'unknown'))
       }
     } catch (e) {
       setStatus('export failed: ' + e)
     } finally {
       setExporting(false)
+      setExportProgress(null)
     }
   }
 
@@ -494,10 +567,26 @@ export function VideoView({
         </div>
         <button onClick={() => { newProject(font.hash, brush); videoHistory.clear(); setNameDraft('Untitled video') }}>New</button>
         <button onClick={doExport} disabled={exporting} title="render to MP4 (download only — not saved to Drive)">
-          {exporting ? '⏳ Exporting…' : '🎬 Export MP4'}
+          {exporting
+            ? exportProgress != null
+              ? `⏳ ${Math.round(exportProgress * 100)}%`
+              : '⏳ Exporting…'
+            : '🎬 Export MP4'}
         </button>
       </div>
       {status && <div className="savestatus">{status}</div>}
+      {exporting && exportProgress != null && (
+        <div
+          className="export-progress"
+          role="progressbar"
+          aria-valuenow={Math.round(exportProgress * 100)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
+          <div className="export-progress-fill" style={{ width: `${Math.max(2, Math.round(exportProgress * 100))}%` }} />
+          <span className="export-progress-pct">{Math.round(exportProgress * 100)}%</span>
+        </div>
+      )}
       {exportResult && (
         <div className="exportresult">
           <div className="exportresult-info">

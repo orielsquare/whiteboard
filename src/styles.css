@@ -499,6 +499,33 @@ body {
   margin-bottom: 10px;
 }
 
+/* MP4 export progress bar (shown while the background render is polled). */
+.export-progress {
+  position: relative;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--panel-2, #1a1d23);
+  border: 1px solid var(--line, #2a2e37);
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+.export-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent, #7aa2ff), var(--accent-2, #9ad));
+  transition: width 0.3s ease;
+}
+.export-progress-pct {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text, #e8eaed);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
 .editor-body {
   display: grid;
   grid-template-columns: 1fr 300px;

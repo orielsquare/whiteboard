@@ -286,7 +286,7 @@ export function VttView() {
           <textarea
             rows={2}
             spellCheck
-            placeholder="e.g. [warmly] [slowly] — audio-tag delivery cues for the v3 model."
+            placeholder="e.g. warmly, slowly — or audio-tag cues like [whispering]. Steers delivery; not read aloud."
             value={tts.direction}
             onChange={(e) => setTts({ direction: e.target.value })}
           />
@@ -302,7 +302,7 @@ export function VttView() {
 
       <p className="vtt-voice-hint muted">
         Synthesized with <b>ElevenLabs</b> — the accent comes from the voice (▶ previews it, free). {isV3
-          ? 'v3 takes a free-text direction (audio-tag cues like [whispering]).'
+          ? 'v3 reads the Direction as audio-tag cues (e.g. [whispering]) that steer delivery; bare words are auto-wrapped in brackets so they’re never spoken.'
           : 'Stability lower = more expressive; Style adds emphasis; Speed bakes in the pace.'}{' '}
         {voicesError && <span className="vtt-voice-warn">⚠ {voicesError}</span>}
       </p>
