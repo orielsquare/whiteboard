@@ -74,6 +74,29 @@ const square = (lo, hi) => [
   check('1z zig then zag', slope(secs[0]) * slope(secs[1]) < 0, [slope(secs[0]), slope(secs[1])])
 }
 
+// 1c) disjoint columns draw one-at-a-time: two side-by-side rectangles share every
+//     scanline (2 columns per line). Column-major emission must output one column's
+//     whole zig-zag chain before the other (so the reveal sweeps one region at a
+//     time, not all columns at once). Distinguishes column-major from gap-major order.
+{
+  const left = [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 40 }, { x: 0, y: 40 }]
+  const right = [{ x: 60, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 40 }, { x: 60, y: 40 }]
+  const secs = generateHatch([left, right], { angleDeg: 0, spacingPx: 10, lineWidthPx: 2, jitter: 0 })
+  // a "break" is where a section's end ≠ the next section's start (a chain boundary)
+  let breaks = 0, breakAt = -1
+  for (let i = 0; i + 1 < secs.length; i++) {
+    const e = secs[i].points.at(-1), s = secs[i + 1].points[0]
+    if (!(approx(e.x, s.x) && approx(e.y, s.y))) { breaks++; breakAt = i + 1 }
+  }
+  check('1c exactly one chain break (two runs)', breaks === 1, breaks)
+  check('1c columns split evenly', breakAt === secs.length / 2, [breakAt, secs.length])
+  // each run stays on its own side (left run x≤40, right run x≥60) — not interleaved
+  const firstRun = secs.slice(0, breakAt).flatMap((s) => s.points)
+  const secondRun = secs.slice(breakAt).flatMap((s) => s.points)
+  check('1c first run is the left column', firstRun.every((p) => p.x <= 40.001), Math.max(...firstRun.map((p) => p.x)))
+  check('1c second run is the right column', secondRun.every((p) => p.x >= 59.999), Math.min(...secondRun.map((p) => p.x)))
+}
+
 // 2) vertical hatch (angle 90): scanlines stride across x instead
 {
   const secs = generateHatch([square(0, 100)], { angleDeg: 90, spacingPx: 10, lineWidthPx: 1 })

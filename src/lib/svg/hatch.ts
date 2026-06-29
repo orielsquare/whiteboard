@@ -23,11 +23,13 @@ import type { FillParams, GenSection, StrokePoint } from './types'
  * shared boundary crossing), the pen traces one unbroken zig-zag sweep — the end of
  * one line is the start of the next — and because both endpoints are real crossings
  * the teeth never overshoot the shape. Segments are paired by left-to-right column
- * index, so a hole's two sides zig-zag independently (the gap across the hole is
- * never bridged). Each tooth is its OWN section (not a single merged path), which
- * preserves the timeline's per-line reveal cadence and keeps each a separate ribbon
- * fill, so where `line width > spacing` they overlap and build up evenly under a <1
- * alpha. Pure (analytic scanline; no canvas).
+ * index, so a hole's two sides (or any disjoint regions a scan line crosses) zig-zag
+ * independently. The teeth are emitted COLUMN-MAJOR — one column's whole chain top to
+ * bottom before the next starts — so the reveal sweeps one connected region at a time
+ * rather than growing every column at once. Each tooth is its OWN section (not a
+ * single merged path), which preserves the timeline's per-line reveal cadence and
+ * keeps each a separate ribbon fill, so where `line width > spacing` they overlap and
+ * build up evenly under a <1 alpha. Pure (analytic scanline; no canvas).
  */
 export function generateHatch(polygons: Vec2[][], params: FillParams): GenSection[] {
   const { angleDeg, spacingPx, lineWidthPx } = params
@@ -94,36 +96,53 @@ export function generateHatch(polygons: Vec2[][], params: FillParams): GenSectio
     y: u.y * a + v.y * d,
     width: lineWidthPx,
   })
-  const sections: GenSection[] = []
   let runSeed = 0x9e3779b9
-  const emitTooth = (p0: StrokePoint, p1: StrokePoint): void => {
-    // With wobble, subdivide the tooth and nudge interior vertices perpendicular by
-    // a bounded, detrended random walk (pinned at both ends) → a hand stroke.
-    const points =
-      wobbleDeg > 0
-        ? wobbleRun(p0, p1, wobbleDeg, lineWidthPx, spacingPx, makeRng((runSeed = (runSeed + 0x6d2b79f5) | 0)))
-        : [p0, p1]
-    sections.push({ points, kind: 'line', role: 'fill' })
-  }
+  // One "tooth" (one inside segment of one gap); with wobble, subdivide and nudge
+  // interior vertices perpendicular by a bounded, detrended random walk (pinned at
+  // both ends) → a hand stroke.
+  const makeTooth = (p0: StrokePoint, p1: StrokePoint): StrokePoint[] =>
+    wobbleDeg > 0
+      ? wobbleRun(p0, p1, wobbleDeg, lineWidthPx, spacingPx, makeRng((runSeed = (runSeed + 0x6d2b79f5) | 0)))
+      : [p0, p1]
+
+  const sections: GenSection[] = []
+  const push = (points: StrokePoint[]): void => void sections.push({ points, kind: 'line', role: 'fill' })
 
   // Too thin to zig-zag (a single scan line) → lay that line down flat.
   if (lines.length === 1) {
-    for (const s of lines[0].segs) emitTooth(pointAt(s.aIn, lines[0].d), pointAt(s.aOut, lines[0].d))
+    for (const s of lines[0].segs) push(makeTooth(pointAt(s.aIn, lines[0].d), pointAt(s.aOut, lines[0].d)))
+    return sections
   }
-  // One tooth per gap between adjacent scan lines, paired by column. Even gaps climb
-  // up-RIGHT (in→out, a "zig"); odd gaps climb up-LEFT (out→in, a "zag"). Consecutive
-  // teeth share the boundary crossing on line `b`, so the zig-zag is unbroken.
+
+  // Build one tooth per gap between adjacent scan lines, paired by left-to-right
+  // column. Even gaps climb up-RIGHT (in→out, a "zig"); odd gaps climb up-LEFT
+  // (out→in, a "zag"). Teeth in the same column on consecutive gaps share a boundary
+  // crossing on line `b`, so a column is one unbroken zig-zag.
+  const gapTeeth: StrokePoint[][][] = []
   for (let i = 0; i + 1 < lines.length; i++) {
     const a = lines[i]
     const b = lines[i + 1]
     const zig = i % 2 === 0
     const cols = Math.min(a.segs.length, b.segs.length)
+    const row: StrokePoint[][] = []
     for (let j = 0; j < cols; j++) {
       const sa = a.segs[j]
       const sb = b.segs[j]
-      const p0 = pointAt(zig ? sa.aIn : sa.aOut, a.d)
-      const p1 = pointAt(zig ? sb.aOut : sb.aIn, b.d)
-      emitTooth(p0, p1)
+      row.push(makeTooth(pointAt(zig ? sa.aIn : sa.aOut, a.d), pointAt(zig ? sb.aOut : sb.aIn, b.d)))
+    }
+    gapTeeth.push(row)
+  }
+
+  // Emit COLUMN-MAJOR: walk each column straight down for as long as it exists, so a
+  // disjoint region's entire zig-zag is drawn before the next one starts — the fill
+  // animates one continuous sweep at a time, not every column growing at once.
+  const consumed = gapTeeth.map((row) => row.map(() => false))
+  for (let i = 0; i < gapTeeth.length; i++) {
+    for (let j = 0; j < gapTeeth[i].length; j++) {
+      for (let k = i; k < gapTeeth.length && j < gapTeeth[k].length && !consumed[k][j]; k++) {
+        consumed[k][j] = true
+        push(gapTeeth[k][j])
+      }
     }
   }
   return sections
