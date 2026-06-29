@@ -119,7 +119,7 @@ export function rederiveElement(
 ): { outline: PartSection[]; fill: PartSection[]; derivedSig: string } {
   const sp = el.strokeParams ?? DEFAULT_STROKE_PARAMS
   const fp = el.fillParams ?? DEFAULT_FILL_PARAMS
-  const gen = deriveSections(pe, { strokeParams: sp, fillParams: fp, outlineFill: el.outlineFill })
+  const gen = deriveSections(pe, { strokeParams: sp, fillParams: fp, outlineFill: el.outlineFill, asOutline: el.asOutline })
   return {
     outline: sectionsForKind(el.id, 'outline', gen),
     fill: sectionsForKind(el.id, 'fill', gen),

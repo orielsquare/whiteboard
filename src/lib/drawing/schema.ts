@@ -70,6 +70,9 @@ export interface DrawingElement {
   hasFill: boolean
   /** when true, a fill-only shape also traces its boundary (adds an outline part). */
   outlineFill?: boolean
+  /** when true, a fill is drawn as its traced boundary path INSTEAD of hatch shading
+   *  ("coerce the fill into a path"); the shading part keeps its identity. */
+  asOutline?: boolean
   /** signature of the params the parts were derived from (`elementSig`). */
   derivedSig?: string
   strokeParams?: StrokeParams

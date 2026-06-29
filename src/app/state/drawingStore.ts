@@ -4,6 +4,14 @@ import { hashStr } from '@lib/geometry/rng'
 import { parseSvg, type ParsedElement, type ParsedSvg } from '@lib/svg/parse'
 import type { FillParams, StrokeParams } from '@lib/svg/types'
 import { buildElementParts, reconcileElementParts, rederiveElement, seedDrawingManifest, withContiguousZ } from '@lib/drawing/seed'
+import {
+  deleteSection as secDelete,
+  flipSection as secFlip,
+  mergeSections as secMerge,
+  moveSection as secMove,
+  reorderSections as secReorder,
+  splitSection as secSplit,
+} from '@lib/drawing/partEdit'
 import type { DrawingElement, DrawingManifest, DrawingPart, PartKind, PartTiming } from '@lib/drawing/schema'
 
 export type OrderDim = 'draw' | 'z'
@@ -51,6 +59,18 @@ interface DrawingState {
   setElementFillParams: (elementId: string, params: FillParams) => void
   setElementStrokeParams: (elementId: string, params: StrokeParams) => void
   setElementOutlineFill: (elementId: string, on: boolean) => void
+  /** draw a fill as its traced boundary path instead of hatch shading (and back). */
+  setElementAsOutline: (elementId: string, on: boolean) => void
+  /** Re-derive an element's geometry from its current params, refreshing the parts'
+   *  sections (discards manual per-section splits/merges; keeps name/colour/timing). */
+  rederiveElement: (elementId: string) => void
+  // per-section stroke editing within a part (break up / merge / reorder strokes)
+  movePartSection: (partId: string, sectionId: string, dir: -1 | 1) => void
+  flipPartSection: (partId: string, sectionId: string) => void
+  deletePartSection: (partId: string, sectionId: string) => void
+  splitPartSection: (partId: string, sectionId: string) => void
+  mergePartSections: (partId: string, idA: string, idB: string) => void
+  reorderPartSections: (partId: string, orderedIds: string[]) => void
   setName: (name: string) => void
   markSaved: () => void
   clear: () => void
@@ -193,6 +213,26 @@ export const useDrawingStore = create<DrawingState>()(
 
       setElementOutlineFill: (elementId, on) =>
         set((s) => rebuildElementParts(s, elementId, (el) => ({ ...el, outlineFill: on }))),
+
+      // Geometry swap (kinds unchanged: a fill part keeps its identity, its sections
+      // become the traced boundary or the hatch), so part edits are preserved.
+      setElementAsOutline: (elementId, on) =>
+        set((s) => replaceElementGeometry(s, elementId, (el) => ({ ...el, asOutline: on }))),
+
+      rederiveElement: (elementId) => set((s) => replaceElementGeometry(s, elementId, (el) => el)),
+
+      movePartSection: (partId, sectionId, dir) =>
+        set((s) => patchPart(s, partId, (p) => ({ ...p, sections: secMove(p.sections, sectionId, dir) }))),
+      flipPartSection: (partId, sectionId) =>
+        set((s) => patchPart(s, partId, (p) => ({ ...p, sections: secFlip(p.sections, sectionId) }))),
+      deletePartSection: (partId, sectionId) =>
+        set((s) => patchPart(s, partId, (p) => ({ ...p, sections: secDelete(p.sections, sectionId) }))),
+      splitPartSection: (partId, sectionId) =>
+        set((s) => patchPart(s, partId, (p) => ({ ...p, sections: secSplit(p.sections, sectionId) }))),
+      mergePartSections: (partId, idA, idB) =>
+        set((s) => patchPart(s, partId, (p) => ({ ...p, sections: secMerge(p.sections, idA, idB) }))),
+      reorderPartSections: (partId, orderedIds) =>
+        set((s) => patchPart(s, partId, (p) => ({ ...p, sections: secReorder(p.sections, orderedIds) }))),
 
       setName: (name) =>
         set((s) => (s.manifest ? bump(s, { ...s.manifest, metadata: { ...s.manifest.metadata, name } }) : s)),

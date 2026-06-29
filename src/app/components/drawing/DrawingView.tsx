@@ -14,7 +14,7 @@ import { EASING_NAMES, type EasingName } from '@lib/geometry/easing'
 import { type Transform } from '@lib/render/ribbon'
 import { prepareDrawing, type PreparedDrawing } from '@lib/drawing/timeline'
 import { renderPreparedDrawing } from '@lib/drawing/render'
-import type { DrawingPart } from '@lib/drawing/schema'
+import type { DrawingPart, PartSection } from '@lib/drawing/schema'
 import { DEFAULT_FILL_PARAMS, DEFAULT_STROKE_PARAMS, type FillParams, type StrokeParams } from '@lib/svg/types'
 import { drawingHttpStore, type DrawingSummary } from '@lib/persistence/DrawingStore'
 import { drawingHistory, useDrawingStore, type OrderDim } from '../../state/drawingStore'
@@ -53,12 +53,21 @@ export function DrawingView({
   const setFillParams = useDrawingStore((s) => s.setElementFillParams)
   const setStrokeParams = useDrawingStore((s) => s.setElementStrokeParams)
   const setOutlineFill = useDrawingStore((s) => s.setElementOutlineFill)
+  const setAsOutline = useDrawingStore((s) => s.setElementAsOutline)
+  const rederiveElement = useDrawingStore((s) => s.rederiveElement)
+  const movePartSection = useDrawingStore((s) => s.movePartSection)
+  const flipPartSection = useDrawingStore((s) => s.flipPartSection)
+  const deletePartSection = useDrawingStore((s) => s.deletePartSection)
+  const splitPartSection = useDrawingStore((s) => s.splitPartSection)
+  const mergePartSections = useDrawingStore((s) => s.mergePartSections)
+  const reorderPartSections = useDrawingStore((s) => s.reorderPartSections)
   const loadManifest = useDrawingStore((s) => s.loadManifest)
   const markSaved = useDrawingStore((s) => s.markSaved)
   const setName = useDrawingStore((s) => s.setName)
   const dirty = useDrawingStore((s) => (s.manifest ? s.editRev !== s.savedRev : false))
 
   const [selId, setSelId] = useState<string | null>(null)
+  const [selSecIds, setSelSecIds] = useState<string[]>([])
   const [sortDim, setSortDim] = useState<OrderDim>('draw')
   const [pasteOpen, setPasteOpen] = useState(false)
   const [pasteText, setPasteText] = useState('')
@@ -68,6 +77,9 @@ export function DrawingView({
   // Refresh the saved-drawings list (on mount + after each save).
   const refreshSaved = () => { void drawingHttpStore.list().then(setSaved).catch(() => {}) }
   useEffect(refreshSaved, [])
+
+  // Clear the per-section selection whenever the selected part changes.
+  useEffect(() => { setSelSecIds([]) }, [selId])
 
   const doSave = async () => {
     const m = useDrawingStore.getState().manifest
@@ -350,6 +362,7 @@ export function DrawingView({
                 <div className="parts-head" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <h3 style={{ margin: 0 }}>{selected.name}</h3>
                   <span className="spacer" />
+                  <button className="tool" title="re-derive this shape's strokes from its current settings (discards manual stroke edits)" onClick={() => rederiveElement(selectedEl.id)}>↻ Re-derive</button>
                   <button className="tool" title="copy this part's colour, alpha, timing & geometry" onClick={() => copyPartStyle(selected.id)}>⧉ Copy</button>
                   <button className="tool" disabled={!styleClipboard} title="paste copied settings onto this part" onClick={() => pastePartStyle(selected.id)}>⤓ Paste</button>
                 </div>
@@ -385,19 +398,49 @@ export function DrawingView({
                     onChange={(v) => setPartOpacity(selected.id, v / 100)} />
                 </div>
 
-                <h3>{selected.kind === 'fill' ? 'Hatch geometry' : 'Outline geometry'}</h3>
-                {selected.kind === 'fill' ? (
-                  <FillEditor value={selectedEl.fillParams ?? DEFAULT_FILL_PARAMS} onChange={(p) => setFillParams(selectedEl.id, p)} />
-                ) : (
-                  <StrokeEditor value={selectedEl.strokeParams ?? DEFAULT_STROKE_PARAMS} onChange={(p) => setStrokeParams(selectedEl.id, p)} />
-                )}
+                {(() => {
+                  // A fill drawn as a path uses the stroke (resampling/width) controls;
+                  // an outline part always does; a normal fill uses the hatch controls.
+                  const asStroke = selected.kind !== 'fill' || !!selectedEl.asOutline
+                  return (
+                    <>
+                      <h3>{asStroke ? 'Outline geometry' : 'Hatch geometry'}</h3>
+                      {asStroke ? (
+                        <StrokeEditor value={selectedEl.strokeParams ?? DEFAULT_STROKE_PARAMS} onChange={(p) => setStrokeParams(selectedEl.id, p)} />
+                      ) : (
+                        <FillEditor value={selectedEl.fillParams ?? DEFAULT_FILL_PARAMS} onChange={(p) => setFillParams(selectedEl.id, p)} />
+                      )}
+                    </>
+                  )
+                })()}
 
                 {selected.kind === 'fill' && !selectedEl.hasOutline && (
-                  <label className="toggle" style={{ marginTop: 8 }}>
-                    <input type="checkbox" checked={!!selectedEl.outlineFill} onChange={(e) => setOutlineFill(selectedEl.id, e.target.checked)} />
-                    Sketch boundary before shading
-                  </label>
+                  <div className="timing" style={{ marginTop: 8 }}>
+                    <label className="toggle">
+                      <input type="checkbox" checked={!!selectedEl.asOutline} onChange={(e) => setAsOutline(selectedEl.id, e.target.checked)} />
+                      Draw as path (trace boundary, no shading)
+                    </label>
+                    {!selectedEl.asOutline && (
+                      <label className="toggle">
+                        <input type="checkbox" checked={!!selectedEl.outlineFill} onChange={(e) => setOutlineFill(selectedEl.id, e.target.checked)} />
+                        Sketch boundary before shading
+                      </label>
+                    )}
+                  </div>
                 )}
+
+                <SectionEditor
+                  part={selected}
+                  selIds={selSecIds}
+                  setSelIds={setSelSecIds}
+                  sensors={sensors}
+                  onReorder={(ids) => reorderPartSections(selected.id, ids)}
+                  onMove={(id, dir) => movePartSection(selected.id, id, dir)}
+                  onFlip={(id) => flipPartSection(selected.id, id)}
+                  onDelete={(id) => { deletePartSection(selected.id, id); setSelSecIds((p) => p.filter((x) => x !== id)) }}
+                  onSplit={(id) => { splitPartSection(selected.id, id); setSelSecIds([]) }}
+                  onMerge={(a, b) => { mergePartSections(selected.id, a, b); setSelSecIds([]) }}
+                />
               </div>
             ) : (
               <div className="muted">select a part to edit its timing, colour and geometry</div>
@@ -486,6 +529,112 @@ function PartRow({
           onClick={(e) => { stop(e); onToggleVisible() }}>{p.visible ? '👁' : '🚫'}</button>
         <button title="move earlier" disabled={first} onClick={(e) => { stop(e); onMove(-1) }}>↑</button>
         <button title="move later" disabled={last} onClick={(e) => { stop(e); onMove(1) }}>↓</button>
+      </span>
+    </li>
+  )
+}
+
+function SectionEditor({
+  part,
+  selIds,
+  setSelIds,
+  sensors,
+  onReorder,
+  onMove,
+  onFlip,
+  onDelete,
+  onSplit,
+  onMerge,
+}: {
+  part: DrawingPart
+  selIds: string[]
+  setSelIds: (fn: (prev: string[]) => string[]) => void
+  sensors: ReturnType<typeof useSensors>
+  onReorder: (ids: string[]) => void
+  onMove: (id: string, dir: -1 | 1) => void
+  onFlip: (id: string) => void
+  onDelete: (id: string) => void
+  onSplit: (id: string) => void
+  onMerge: (a: string, b: string) => void
+}) {
+  const ids = part.sections.map((s) => s.id)
+  const onDragEnd = (e: DragEndEvent) => {
+    const { active, over } = e
+    if (!over || active.id === over.id) return
+    const oldI = ids.indexOf(String(active.id))
+    const newI = ids.indexOf(String(over.id))
+    if (oldI < 0 || newI < 0) return
+    onReorder(arrayMove(ids, oldI, newI))
+  }
+  const toggle = (id: string) => setSelIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  return (
+    <>
+      <div className="parts-head" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <h3 style={{ margin: 0 }}>Strokes ({part.sections.length})</h3>
+        <span className="spacer" />
+        <button className="tool" disabled={selIds.length !== 1} title="split the selected stroke at its midpoint" onClick={() => onSplit(selIds[0])}>✂ Split</button>
+        <button className="tool" disabled={selIds.length < 2} title="merge the two selected strokes" onClick={() => onMerge(selIds[0], selIds[1])}>⤙ Merge</button>
+      </div>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+        <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+          <ol className="sectionlist editlist">
+            {part.sections.map((sec, i) => (
+              <SecRow
+                key={sec.id}
+                sec={sec}
+                pos={i}
+                selected={selIds.includes(sec.id)}
+                onSelect={() => toggle(sec.id)}
+                onMove={(dir) => onMove(sec.id, dir)}
+                onFlip={() => onFlip(sec.id)}
+                onDelete={() => onDelete(sec.id)}
+                first={i === 0}
+                last={i === part.sections.length - 1}
+              />
+            ))}
+          </ol>
+        </SortableContext>
+      </DndContext>
+    </>
+  )
+}
+
+function SecRow({
+  sec,
+  pos,
+  selected,
+  onSelect,
+  onMove,
+  onFlip,
+  onDelete,
+  first,
+  last,
+}: {
+  sec: PartSection
+  pos: number
+  selected: boolean
+  onSelect: () => void
+  onMove: (dir: -1 | 1) => void
+  onFlip: () => void
+  onDelete: () => void
+  first: boolean
+  last: boolean
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: sec.id })
+  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.6 : 1 }
+  const stop = (e: MouseEvent) => e.stopPropagation()
+  return (
+    <li ref={setNodeRef} style={style} className={selected ? 'sel' : ''} onClick={onSelect}>
+      <span className="drag" title="drag to reorder" {...attributes} {...listeners}>⠿</span>
+      <span className="ord">{pos + 1}</span>
+      <span className="sk">{sec.kind}</span>
+      <span className="muted" style={{ fontSize: 11 }}>{sec.points.length}pt</span>
+      <span className="spacer" />
+      <span className="rowbtns">
+        <button title="move earlier" disabled={first} onClick={(e) => { stop(e); onMove(-1) }}>↑</button>
+        <button title="move later" disabled={last} onClick={(e) => { stop(e); onMove(1) }}>↓</button>
+        <button title="flip direction" onClick={(e) => { stop(e); onFlip() }}>⇄</button>
+        <button title="delete" onClick={(e) => { stop(e); onDelete() }}>×</button>
       </span>
     </li>
   )

@@ -506,6 +506,14 @@ body {
   align-items: start;
 }
 
+/* Drawing tool: pin the preview so the (often tall) properties panel scrolls
+   past it — the canvas stays in view as the user scrolls down the inspector. */
+.drawing-tool .editor-body .stage-overlay {
+  position: sticky;
+  top: 12px;
+  align-self: start;
+}
+
 .toolrow {
   display: flex;
   flex-wrap: wrap;
