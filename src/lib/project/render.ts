@@ -2,11 +2,38 @@ import { sampleGlyph } from '@lib/animation/timeline'
 import type { BrushSettings } from '@lib/manifest/schema'
 import { paintStroke } from '@lib/render/brush'
 import type { Transform } from '@lib/render/ribbon'
+import {
+  drawingMinHalfWidth,
+  drawingTransform,
+  renderPreparedDrawing,
+  type DrawingSet,
+  type PreparedDrawingEntry,
+} from '@lib/drawing/render'
 import { layoutTextBox, type FontSet, type TextBoxLayout } from './layout'
 import { aspectWidthFraction } from './coords'
 import type { FlatProject, FlatSlide } from './aspect'
+import type { NormRect } from './schema'
 import { computeProjectTiming, type ProjectTiming, type SlideTiming } from './timing'
 import { composeTransition, transitionProgress } from './transitions'
+
+const EMPTY_DRAWINGS: Map<string, PreparedDrawingEntry> = new Map()
+
+/** Paint one placed drawing into its frame rect (px). `t` is writing time (ms
+ *  since it began); `ruboutFrac` retracts the tail (closing-transition rubout). */
+function paintDrawingInstance(
+  ctx: CanvasRenderingContext2D,
+  entry: PreparedDrawingEntry,
+  frame: NormRect,
+  w: number,
+  brush: BrushSettings,
+  t: number,
+  ruboutFrac = 0,
+): void {
+  const fw = frame.w
+  if (fw == null || fw <= 0) return
+  const tr = drawingTransform(entry.viewBox, frame.x * w, frame.y * w, fw * w)
+  renderPreparedDrawing(ctx, entry.prepared, tr, brush, drawingMinHalfWidth(entry.viewBox), t, ruboutFrac)
+}
 
 /**
  * Render a laid-out textbox at local time `tLocalMs` (ms since the box began
@@ -106,13 +133,29 @@ export function renderSlideContent(
   w: number,
   brush: BrushSettings,
   speed = 1,
+  drawings: Map<string, PreparedDrawingEntry> = EMPTY_DRAWINGS,
 ): void {
-  const starts = new Map(timing.boxes.map((b) => [b.boxId, b.startMs]))
-  for (const box of slide.textBoxes) {
-    const layout = layouts.get(box.id)
-    if (!layout) continue
-    const writingMs = (tLocalMs - (starts.get(box.id) ?? 0)) * speed
-    renderTextBox(ctx, layout, boxOrigin(box, w), box.brush ?? brush, writingMs)
+  const boxStarts = new Map(timing.boxes.map((b) => [b.boxId, b.startMs]))
+  const drawStarts = new Map(timing.drawings.map((d) => [d.id, d.startMs]))
+  // Paint boxes + drawings interleaved by their shared animOrder, so a later
+  // animOrder paints on top of an earlier one (text over a drawing or vice versa).
+  const items: { animOrder: number; box?: FlatSlide['textBoxes'][number]; drawing?: FlatSlide['drawings'][number] }[] = [
+    ...slide.textBoxes.map((b) => ({ animOrder: b.animOrder, box: b })),
+    ...(slide.drawings ?? []).map((d) => ({ animOrder: d.animOrder, drawing: d })),
+  ]
+  items.sort((a, b) => a.animOrder - b.animOrder)
+  for (const it of items) {
+    if (it.box) {
+      const layout = layouts.get(it.box.id)
+      if (!layout) continue
+      const writingMs = (tLocalMs - (boxStarts.get(it.box.id) ?? 0)) * speed
+      renderTextBox(ctx, layout, boxOrigin(it.box, w), it.box.brush ?? brush, writingMs)
+    } else if (it.drawing) {
+      const entry = drawings.get(it.drawing.id)
+      if (!entry) continue
+      const writingMs = (tLocalMs - (drawStarts.get(it.drawing.id) ?? 0)) * speed
+      paintDrawingInstance(ctx, entry, it.drawing.frame, w, brush, writingMs)
+    }
   }
 }
 
@@ -127,10 +170,11 @@ function drawSlideFull(
   h: number,
   brush: BrushSettings,
   speed: number,
+  drawings: Map<string, PreparedDrawingEntry> = EMPTY_DRAWINGS,
 ): void {
   ctx.fillStyle = slide.background
   ctx.fillRect(0, 0, w, h)
-  renderSlideContent(ctx, slide, layouts, timing, tLocalMs, w, brush, speed)
+  renderSlideContent(ctx, slide, layouts, timing, tLocalMs, w, brush, speed, drawings)
 }
 
 /** A slide's ink with the last `p` fraction of every stroke retracted (rubout). */
@@ -141,6 +185,7 @@ function renderSlideInkRubout(
   brush: BrushSettings,
   w: number,
   p: number,
+  drawings: Map<string, PreparedDrawingEntry> = EMPTY_DRAWINGS,
 ): void {
   const frac = 1 - p
   if (frac <= 0) return
@@ -163,11 +208,18 @@ function renderSlideInkRubout(
       }
     }
   }
+  // Placed drawings retract their tails by the same fraction (fully drawn → erase p).
+  for (const d of slide.drawings ?? []) {
+    const entry = drawings.get(d.id)
+    if (entry) paintDrawingInstance(ctx, entry, d.frame, w, brush, Infinity, p)
+  }
 }
 
 /** Pre-computed layouts + timing for a project. Build once; sample every frame. */
 export interface RenderContext {
   layoutsBySlide: Map<string, Map<string, TextBoxLayout>>
+  /** prepared placed drawings per slide, keyed slideId → SlideDrawing instance id. */
+  drawingsBySlide: Map<string, Map<string, PreparedDrawingEntry>>
   timing: ProjectTiming
   /** writing-animation speed multiplier (scales the per-box glyph-reveal clock). */
   speed: number
@@ -176,11 +228,13 @@ export interface RenderContext {
 /**
  * Lay out every slide and compute timing. `speed` scales the animation (writing)
  * time only — holds + transitions stay invariant. `fonts` resolves each run's
- * font. Memoize on (project, fonts, canvasW, speed).
+ * font; `drawings` resolves each placed drawing's prepared geometry by drawingId.
+ * Memoize on (project, fonts, drawings, canvasW, speed).
  */
 export function buildRenderContext(
   project: FlatProject,
   fonts: FontSet,
+  drawings: DrawingSet,
   canvasW: number,
   speed = 1,
 ): RenderContext {
@@ -189,16 +243,31 @@ export function buildRenderContext(
   // canvasW — i.e. a portrait box wraps onto more lines.
   const emBasisW = canvasW / aspectWidthFraction(project.aspect)
   const layoutsBySlide = new Map<string, Map<string, TextBoxLayout>>()
+  const drawingsBySlide = new Map<string, Map<string, PreparedDrawingEntry>>()
+  const drawingDurationsBySlide = new Map<string, Map<string, number>>()
   for (const slide of project.slides) {
     const m = new Map<string, TextBoxLayout>()
     for (const box of slide.textBoxes) {
       m.set(box.id, layoutTextBox(box, fonts, project.baseEmFraction, canvasW, emBasisW))
     }
     layoutsBySlide.set(slide.id, m)
+
+    // Resolve each placed drawing to its prepared geometry (skip unresolved ones).
+    const dm = new Map<string, PreparedDrawingEntry>()
+    const dur = new Map<string, number>()
+    for (const d of slide.drawings ?? []) {
+      const entry = drawings.get(d.drawingId)
+      if (!entry) continue
+      dm.set(d.id, entry)
+      dur.set(d.id, entry.prepared.totalMs)
+    }
+    drawingsBySlide.set(slide.id, dm)
+    drawingDurationsBySlide.set(slide.id, dur)
   }
   return {
     layoutsBySlide,
-    timing: computeProjectTiming(project, layoutsBySlide, speed),
+    drawingsBySlide,
+    timing: computeProjectTiming(project, layoutsBySlide, drawingDurationsBySlide, speed),
     speed: speed > 0 ? speed : 1,
   }
 }
@@ -237,7 +306,7 @@ export function renderProject(
   if (vis.length === 1) {
     const v = vis[0]
     const slide = project.slides[v.i]
-    drawSlideFull(ctx, slide, rc.layoutsBySlide.get(slide.id) ?? new Map(), v.st.timing, v.tLocal, w, h, project.brush, rc.speed)
+    drawSlideFull(ctx, slide, rc.layoutsBySlide.get(slide.id) ?? new Map(), v.st.timing, v.tLocal, w, h, project.brush, rc.speed, rc.drawingsBySlide.get(slide.id) ?? EMPTY_DRAWINGS)
     return
   }
 
@@ -249,17 +318,19 @@ export function renderProject(
   const incSlide = project.slides[inc.i]
   const outLayouts = rc.layoutsBySlide.get(outSlide.id) ?? new Map()
   const incLayouts = rc.layoutsBySlide.get(incSlide.id) ?? new Map()
+  const outDrawings = rc.drawingsBySlide.get(outSlide.id) ?? EMPTY_DRAWINGS
+  const incDrawings = rc.drawingsBySlide.get(incSlide.id) ?? EMPTY_DRAWINGS
   const p = transitionProgress(out.tLocal, out.st.timing.holdEndMs, out.st.timing.transitionMs)
 
   composeTransition(outSlide.transition.kind, ctx, w, h, p, {
-    drawIncomingFull: () => drawSlideFull(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, h, project.brush, rc.speed),
-    drawOutgoingFull: () => drawSlideFull(ctx, outSlide, outLayouts, out.st.timing, out.tLocal, w, h, project.brush, rc.speed),
+    drawIncomingFull: () => drawSlideFull(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, h, project.brush, rc.speed, incDrawings),
+    drawOutgoingFull: () => drawSlideFull(ctx, outSlide, outLayouts, out.st.timing, out.tLocal, w, h, project.brush, rc.speed, outDrawings),
     fillOutgoingBg: () => {
       ctx.fillStyle = outSlide.background
       ctx.fillRect(0, 0, w, h)
     },
-    drawIncomingContent: () => renderSlideContent(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, project.brush, rc.speed),
-    drawOutgoingInk: () => renderSlideInkRubout(ctx, outSlide, outLayouts, project.brush, w, p),
+    drawIncomingContent: () => renderSlideContent(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, project.brush, rc.speed, incDrawings),
+    drawOutgoingInk: () => renderSlideInkRubout(ctx, outSlide, outLayouts, project.brush, w, p, outDrawings),
   })
 }
 
@@ -280,11 +351,12 @@ export function renderSlide(
   const slide = project.slides[slideIndex]
   if (!slide) return
   const layouts = rc.layoutsBySlide.get(slide.id) ?? new Map()
+  const drawings = rc.drawingsBySlide.get(slide.id) ?? EMPTY_DRAWINGS
   const st = rc.timing.slides[slideIndex].timing
   ctx.clearRect(0, 0, w, h)
 
   if (st.transitionMs <= 0 || tLocalMs < st.holdEndMs) {
-    drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.speed)
+    drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.speed, drawings)
     return
   }
 
@@ -296,12 +368,12 @@ export function renderSlide(
       ctx.fillStyle = slide.background
       ctx.fillRect(0, 0, w, h)
     },
-    drawOutgoingFull: () => drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.speed),
+    drawOutgoingFull: () => drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.speed, drawings),
     fillOutgoingBg: () => {
       ctx.fillStyle = slide.background
       ctx.fillRect(0, 0, w, h)
     },
     drawIncomingContent: () => {},
-    drawOutgoingInk: () => renderSlideInkRubout(ctx, slide, layouts, project.brush, w, p),
+    drawOutgoingInk: () => renderSlideInkRubout(ctx, slide, layouts, project.brush, w, p, drawings),
   })
 }

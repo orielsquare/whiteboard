@@ -96,10 +96,33 @@ export interface NamedStyle {
   style: StylePatch
 }
 
+/** A placed drawing on a slide: references a SAVED drawing artifact (by id),
+ *  positioned with a per-aspect frame, and animated in turn with the text via a
+ *  shared `animOrder`. The per-part stacking (zOrder) lives inside the drawing
+ *  itself; `animOrder` only decides when it draws relative to the textboxes. */
+export interface SlideDrawing {
+  id: string
+  /** the saved drawing's id (=== DrawingManifest.metadata.drawingId). */
+  drawingId: string
+  /** cached display name (the live name still comes from the saved file). */
+  name?: string
+  /** per-aspect placement; `x`/`w` are fractions of canvas WIDTH, `y` a fraction
+   *  of canvas HEIGHT (same convention as TextBox.frame). Height follows the
+   *  drawing's viewBox aspect, so only width is stored. */
+  frame: Record<Aspect, NormRect>
+  /** animation order within the slide, SHARED with textBoxes (so a drawing can
+   *  draw before/after/between text). Kept contiguous across boxes + drawings. */
+  animOrder: number
+  /** ms before this drawing starts, from the previous item's animation END. */
+  delayBeforeMs: number
+}
+
 export interface Slide {
   id: string
   background: string
   textBoxes: TextBox[]
+  /** placed drawings (SVG animations) on this slide; share animOrder with textBoxes. */
+  drawings?: SlideDrawing[]
   /** ms the finished slide holds before its closing transition begins. */
   holdBeforeTransitionMs: number
   transition: ClosingTransition
@@ -262,6 +285,28 @@ export function newTextBox(defaults: ProjectDefaults, x: number, y: number, anim
     animOrder,
     delayBeforeMs: defaults.delayBeforeMs,
     interCharDelayMs: defaults.interCharDelayMs,
+  }
+}
+
+/** A freshly-placed drawing: position-linked across aspects (both frames equal),
+ *  default delay, given the next animation slot. `w` is a width fraction. */
+export function newSlideDrawing(
+  drawingId: string,
+  name: string,
+  x: number,
+  y: number,
+  w: number,
+  animOrder: number,
+  delayBeforeMs = 300,
+): SlideDrawing {
+  const rect: NormRect = { x, y, w }
+  return {
+    id: makeId(),
+    drawingId,
+    name,
+    frame: { '16:9': { ...rect }, '9:16': { ...rect } },
+    animOrder,
+    delayBeforeMs,
   }
 }
 

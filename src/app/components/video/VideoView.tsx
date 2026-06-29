@@ -9,9 +9,11 @@ import type { FontEntry, FontMetrics, FontSet } from '@lib/project/layout'
 import type { Aspect } from '@lib/project/schema'
 import { projectStore, type ProjectSummary } from '@lib/persistence/ProjectStore'
 import { httpStore } from '@lib/persistence/FontStore'
+import { drawingHttpStore } from '@lib/persistence/DrawingStore'
 import { apiUrl, apiFetch } from '@lib/persistence/apiBase'
 import { ensureProjectGlyphsDerived, useVideoStore, videoHistory } from '../../state/videoStore'
 import { useFontRegistry } from '../../state/fontRegistry'
+import { useDrawingRegistry } from '../../state/drawingRegistry'
 import { useEditorStore } from '../../state/store'
 import { NavigatorPanel } from './NavigatorPanel'
 import { SlideCanvas } from './SlideCanvas'
@@ -183,6 +185,20 @@ export function VideoView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [glyphs, safeMetrics, font.hash, project?.fontId, referencedKey, registryFonts])
 
+  // Placed drawings: load + prepare every drawing referenced by the project's
+  // slides, keyed by drawingId (mirrors the font registry). The map IS a DrawingSet.
+  const registryDrawings = useDrawingRegistry((s) => s.drawings)
+  const ensureDrawings = useDrawingRegistry((s) => s.ensureDrawings)
+  const drawingIdsKey = useMemo(() => {
+    if (!project) return ''
+    const ids = new Set<string>()
+    for (const sl of project.slides) for (const d of sl.drawings ?? []) ids.add(d.drawingId)
+    return [...ids].sort().join(',')
+  }, [project])
+  useEffect(() => {
+    if (drawingIdsKey) void ensureDrawings(drawingIdsKey.split(','))
+  }, [drawingIdsKey, ensureDrawings])
+
   // Bootstrap a project on first entry.
   useEffect(() => {
     if (!useVideoStore.getState().project) {
@@ -336,6 +352,20 @@ export function VideoView({
           },
         }
       }
+      // Placed drawings: send every referenced drawing's manifest so the headless
+      // exporter can prepare + render them (preview == export).
+      const drawingIds = new Set<string>()
+      for (const sl of p.slides) for (const d of sl.drawings ?? []) drawingIds.add(d.drawingId)
+      const drawingsById: Record<string, unknown> = {}
+      for (const id of drawingIds) {
+        try {
+          const dm = await drawingHttpStore.load(id)
+          if (dm) drawingsById[id] = dm
+        } catch {
+          /* missing drawing — exporter skips it */
+        }
+      }
+
       // text/plain so the builder's global 1 MB JSON parser skips this large
       // payload (it bundles every referenced font's glyph data); the route reads
       // the raw body.
@@ -345,6 +375,7 @@ export function VideoView({
         body: JSON.stringify({
           project: p,
           fontsById,
+          drawingsById,
           fps: 30,
           aspect: activeAspect,
           width: exportCanvasW(activeAspect),
@@ -506,16 +537,16 @@ export function VideoView({
       </div>
 
       {slideView === 'timeline' ? (
-        <TimelineView fonts={fonts} />
+        <TimelineView fonts={fonts} drawings={registryDrawings} />
       ) : slideView === 'vtt' ? (
         <VttView />
       ) : (
         <div className="video-body">
           <NavigatorPanel fonts={fonts} />
-          <SlideCanvas fonts={fonts} font={font} />
+          <SlideCanvas fonts={fonts} font={font} drawings={registryDrawings} />
           <div className="inspector-col">
             <Inspector />
-            <VoiceoverExtractPanel fonts={fonts} />
+            <VoiceoverExtractPanel fonts={fonts} drawings={registryDrawings} />
           </div>
         </div>
       )}

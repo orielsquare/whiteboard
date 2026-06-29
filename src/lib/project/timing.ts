@@ -15,10 +15,20 @@ export interface BoxTiming {
   endMs: number
 }
 
+/** Slide-local timing for a placed drawing (parallel to BoxTiming). */
+export interface DrawingTiming {
+  /** the SlideDrawing instance id. */
+  id: string
+  startMs: number
+  endMs: number
+}
+
 export interface SlideTiming {
   /** boxes in animation order, with absolute (slide-local) start/end. */
   boxes: BoxTiming[]
-  /** when the last box finishes (ms). */
+  /** placed drawings, with absolute (slide-local) start/end (interleaved with boxes by animOrder). */
+  drawings: DrawingTiming[]
+  /** when the last box/drawing finishes (ms). */
   contentEndMs: number
   /** when the slide's hold ends and its closing transition begins (ms). */
   holdEndMs: number
@@ -36,22 +46,49 @@ export interface SlideTiming {
  * transition duration. So each box's writing occupies `contentMs / speed` of real
  * time; the transition begins after the last box finishes writing + the hold.
  */
-export function computeSlideTiming(slide: FlatSlide, layouts: Map<string, TextBoxLayout>, speed = 1): SlideTiming {
+export function computeSlideTiming(
+  slide: FlatSlide,
+  layouts: Map<string, TextBoxLayout>,
+  drawingDurations: Map<string, number> = new Map(),
+  speed = 1,
+): SlideTiming {
   const rate = speed > 0 ? speed : 1
-  const ordered = [...slide.textBoxes].sort((a, b) => a.animOrder - b.animOrder)
+  // One animation sequence over boxes AND drawings, ordered by the shared
+  // animOrder. A drawing's "writing" (its pen reveal) scales by speed exactly
+  // like a textbox's; its delay (like a box's) is invariant.
+  type Item = { kind: 'box' | 'drawing'; id: string; animOrder: number; delayBeforeMs: number; contentMs: number }
+  const items: Item[] = [
+    ...slide.textBoxes.map((b) => ({
+      kind: 'box' as const,
+      id: b.id,
+      animOrder: b.animOrder,
+      delayBeforeMs: b.delayBeforeMs,
+      contentMs: layouts.get(b.id)?.contentMs ?? 0,
+    })),
+    ...(slide.drawings ?? []).map((d) => ({
+      kind: 'drawing' as const,
+      id: d.id,
+      animOrder: d.animOrder,
+      delayBeforeMs: d.delayBeforeMs,
+      contentMs: drawingDurations.get(d.id) ?? 0,
+    })),
+  ].sort((a, b) => a.animOrder - b.animOrder)
+
   let cursor = 0
   const boxes: BoxTiming[] = []
-  for (const box of ordered) {
-    const writingMs = (layouts.get(box.id)?.contentMs ?? 0) / rate // only the writing scales
-    const startMs = cursor + box.delayBeforeMs // delay invariant
+  const drawings: DrawingTiming[] = []
+  for (const it of items) {
+    const writingMs = it.contentMs / rate // only the writing scales
+    const startMs = cursor + it.delayBeforeMs // delay invariant
     const endMs = startMs + writingMs
-    boxes.push({ boxId: box.id, startMs, endMs })
+    if (it.kind === 'box') boxes.push({ boxId: it.id, startMs, endMs })
+    else drawings.push({ id: it.id, startMs, endMs })
     cursor = endMs
   }
   const contentEndMs = cursor
   const holdEndMs = contentEndMs + slide.holdBeforeTransitionMs // hold invariant
   const transitionMs = slide.transition.kind === 'none' ? 0 : slide.transition.durationMs // invariant
-  return { boxes, contentEndMs, holdEndMs, transitionMs, totalMs: holdEndMs + transitionMs }
+  return { boxes, drawings, contentEndMs, holdEndMs, transitionMs, totalMs: holdEndMs + transitionMs }
 }
 
 export interface ProjectSlideTiming {
@@ -73,12 +110,18 @@ export interface ProjectTiming {
 export function computeProjectTiming(
   project: FlatProject,
   layoutsBySlide: Map<string, Map<string, TextBoxLayout>>,
+  drawingDurationsBySlide: Map<string, Map<string, number>> = new Map(),
   speed = 1,
 ): ProjectTiming {
   let cursor = 0
   const slides: ProjectSlideTiming[] = []
   for (const slide of project.slides) {
-    const timing = computeSlideTiming(slide, layoutsBySlide.get(slide.id) ?? new Map(), speed)
+    const timing = computeSlideTiming(
+      slide,
+      layoutsBySlide.get(slide.id) ?? new Map(),
+      drawingDurationsBySlide.get(slide.id) ?? new Map(),
+      speed,
+    )
     slides.push({ slideId: slide.id, startMs: cursor, timing })
     cursor += timing.holdEndMs // next slide starts as this one's transition begins
   }

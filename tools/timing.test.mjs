@@ -87,8 +87,8 @@ const layouts = (entries) => new Map(entries.map(([id, contentMs]) => [id, { con
 {
   const s = slide('s', [box('a', 0, 100)], 1000, { kind: 'fade', durationMs: 600 })
   const lay = layouts([['a', 500]])
-  const t1 = T.computeSlideTiming(s, lay, 1)
-  const t2 = T.computeSlideTiming(s, lay, 2)
+  const t1 = T.computeSlideTiming(s, lay, new Map(), 1)
+  const t2 = T.computeSlideTiming(s, lay, new Map(), 2)
   // speed 1: delay 100, writing 500 → end 600, contentEnd 600, holdEnd 1600, total 2200
   check('6 speed1 start=100', t1.boxes[0].startMs === 100, t1.boxes[0].startMs)
   check('6 speed1 contentEnd=600', t1.contentEndMs === 600, t1.contentEndMs)
@@ -109,8 +109,8 @@ const layouts = (entries) => new Map(entries.map(([id, contentMs]) => [id, { con
 {
   const s = slide('s', [box('A', 0, 200), box('B', 1, 300)], 0, { kind: 'none', durationMs: 0 })
   const lay = layouts([['A', 400], ['B', 600]])
-  const t1 = T.computeSlideTiming(s, lay, 1)
-  const t2 = T.computeSlideTiming(s, lay, 2)
+  const t1 = T.computeSlideTiming(s, lay, new Map(), 1)
+  const t2 = T.computeSlideTiming(s, lay, new Map(), 2)
   // speed1: A start200 end600; B start = 600+300=900, end 1500
   check('7 s1 A=[200,600]', t1.boxes[0].startMs === 200 && t1.boxes[0].endMs === 600, t1.boxes[0])
   check('7 s1 B=[900,1500]', t1.boxes[1].startMs === 900 && t1.boxes[1].endMs === 1500, t1.boxes[1])
@@ -118,6 +118,39 @@ const layouts = (entries) => new Map(entries.map(([id, contentMs]) => [id, { con
   check('7 s2 A=[200,400]', t2.boxes[0].startMs === 200 && t2.boxes[0].endMs === 400, t2.boxes[0])
   check('7 s2 B start=700 (delay invariant)', t2.boxes[1].startMs === 700, t2.boxes[1].startMs)
   check('7 s2 B end=1000', t2.boxes[1].endMs === 1000, t2.boxes[1].endMs)
+}
+
+// 8) placed drawings interleave with boxes by shared animOrder; drawing writing
+//    scales by speed (like text), its delay invariant
+{
+  // box A (order 0, content 400), drawing D (order 1, delay 50, content 600), box B (order 2, content 200)
+  const s = {
+    id: 's',
+    textBoxes: [box('A', 0, 0), box('B', 2, 100)],
+    drawings: [{ id: 'D', animOrder: 1, delayBeforeMs: 50 }],
+    holdBeforeTransitionMs: 0,
+    transition: { kind: 'none', durationMs: 0 },
+  }
+  const lay = layouts([['A', 400], ['B', 200]])
+  const dur = new Map([['D', 600]])
+  const t1 = T.computeSlideTiming(s, lay, dur, 1)
+  // A: [0,400]; D: start 400+50=450, end 1050; B: start 1050+100=1150, end 1350
+  check('8 A=[0,400]', t1.boxes[0].startMs === 0 && t1.boxes[0].endMs === 400, t1.boxes[0])
+  check('8 D=[450,1050]', t1.drawings[0].id === 'D' && t1.drawings[0].startMs === 450 && t1.drawings[0].endMs === 1050, t1.drawings[0])
+  check('8 B=[1150,1350]', t1.boxes[1].startMs === 1150 && t1.boxes[1].endMs === 1350, t1.boxes[1])
+  check('8 contentEnd=1350', t1.contentEndMs === 1350, t1.contentEndMs)
+  // speed 2: writing halves, delays invariant. A:[0,200]; D: start 200+50=250 end 250+300=550; B: start 550+100=650 end 750
+  const t2 = T.computeSlideTiming(s, lay, dur, 2)
+  check('8 speed2 D=[250,550]', t2.drawings[0].startMs === 250 && t2.drawings[0].endMs === 550, t2.drawings[0])
+  check('8 speed2 B start=650', t2.boxes[1].startMs === 650, t2.boxes[1].startMs)
+}
+
+// 9) a slide with no drawings field still works (back-compat)
+{
+  const s = slide('s', [box('a', 0, 100)], 0, { kind: 'none', durationMs: 0 })
+  const t = T.computeSlideTiming(s, layouts([['a', 300]]))
+  check('9 no-drawings drawings=[]', Array.isArray(t.drawings) && t.drawings.length === 0, t.drawings)
+  check('9 box still timed', t.boxes[0].startMs === 100 && t.boxes[0].endMs === 400, t.boxes[0])
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

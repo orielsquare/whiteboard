@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent } from 'react'
 import type { LoadedFont } from '@lib/font/load'
 import { aspectHeightUnits, canvasSize } from '@lib/project/coords'
-import { contentOf, flattenSlide, framesDiverge, projectForAspect, type FlatBox } from '@lib/project/aspect'
+import { contentOf, flattenSlide, framesDiverge, projectForAspect, type FlatBox, type FlatDrawing } from '@lib/project/aspect'
 import { fontFor, type FontSet, type TextBoxLayout } from '@lib/project/layout'
+import {
+  drawingHeightPx,
+  drawingMinHalfWidth,
+  drawingTransform,
+  renderPreparedDrawing,
+  type DrawingSet,
+} from '@lib/drawing/render'
 import { buildRenderContext, renderProject, renderSlide, renderTextBox } from '@lib/project/render'
 import { useVideoStore } from '../../state/videoStore'
-import { boxOriginPx, clientToNorm, drawSelection, hitTest, previewCanvasW, type NormPoint } from './layoutCanvas'
+import { clientToNorm, drawSelection, hitTest, previewCanvasW, type NormPoint } from './layoutCanvas'
 import { FormatBar } from './FormatBar'
 import { TextBoxOverlay } from './TextBoxOverlay'
 import { Transport } from './Transport'
@@ -21,6 +28,16 @@ const clampY = (v: number, aspect: '16:9' | '9:16') => {
 }
 const EMPTY_LAYOUTS: Map<string, TextBoxLayout> = new Map()
 
+/** A dashed selection ring around a placed drawing's bounding rect (px). */
+function drawRectRing(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, color: string): void {
+  ctx.save()
+  ctx.strokeStyle = color
+  ctx.lineWidth = 1.5
+  ctx.setLineDash([5, 4])
+  ctx.strokeRect(x - 2, y - 2, w + 4, h + 4)
+  ctx.restore()
+}
+
 /**
  * The editor's central stage: ONE canvas that is editable when idle (drag/select/
  * add/double-click-to-edit) and plays the selected scope when `playback` is set
@@ -30,9 +47,11 @@ const EMPTY_LAYOUTS: Map<string, TextBoxLayout> = new Map()
 export function SlideCanvas({
   fonts,
   font,
+  drawings,
 }: {
   fonts: FontSet
   font: LoadedFont
+  drawings: DrawingSet
 }) {
   const project = useVideoStore((s) => s.project)
   const activeAspect = useVideoStore((s) => s.activeAspect)
@@ -45,6 +64,9 @@ export function SlideCanvas({
   const selectTextBox = useVideoStore((s) => s.selectTextBox)
   const addTextBox = useVideoStore((s) => s.addTextBox)
   const updateTextBoxFrame = useVideoStore((s) => s.updateTextBoxFrame)
+  const selectedDrawingId = useVideoStore((s) => s.selectedDrawingId)
+  const selectDrawing = useVideoStore((s) => s.selectDrawing)
+  const updateDrawingFrame = useVideoStore((s) => s.updateDrawingFrame)
 
   // The box currently in text-edit mode (double-click to enter). Separate from
   // mere selection: a selected box can be dragged; an editing box shows the
@@ -58,7 +80,7 @@ export function SlideCanvas({
   }, [font.hash, font.buffer])
   // Live drag: the grabbed box's id, the pointer→origin offset, and the box's
   // current transient position (normalized). Written to the store only on release.
-  const dragRef = useRef<{ boxId: string; offX: number; offY: number; x: number; y: number } | null>(null)
+  const dragRef = useRef<{ kind: 'box' | 'drawing'; id: string; offX: number; offY: number; x: number; y: number } | null>(null)
   const movedRef = useRef(false)
   const downNormRef = useRef<NormPoint | null>(null)
   const downHitRef = useRef<string | null>(null)
@@ -80,8 +102,8 @@ export function SlideCanvas({
   // voiceover extract AND inline playback; the editing layouts reuse its per-slide map.
   const flatProject = useMemo(() => (project ? projectForAspect(project, activeAspect) : null), [project, activeAspect])
   const rc = useMemo(
-    () => (flatProject ? buildRenderContext(flatProject, fonts, previewW, playbackRate) : null),
-    [flatProject, fonts, previewW, playbackRate],
+    () => (flatProject ? buildRenderContext(flatProject, fonts, drawings, previewW, playbackRate) : null),
+    [flatProject, fonts, drawings, previewW, playbackRate],
   )
   const layouts = useMemo(
     () => (slide && rc ? rc.layoutsBySlide.get(slide.id) ?? EMPTY_LAYOUTS : EMPTY_LAYOUTS),
@@ -150,7 +172,7 @@ export function SlideCanvas({
   // box's origin with its live transient position so a drag repaints without a
   // store write (and without re-deriving layouts).
   const drawScene = useCallback(
-    (drag?: { boxId: string; x: number; y: number } | null) => {
+    (drag?: { kind: 'box' | 'drawing'; id: string; x: number; y: number } | null) => {
       const canvas = canvasRef.current
       if (!canvas || !project || !fslide) return
       const ctx = canvas.getContext('2d')
@@ -162,27 +184,54 @@ export function SlideCanvas({
       ctx.fillStyle = fslide.background
       ctx.fillRect(0, 0, w, h)
       // drag.{x,y} are width-units (like frame), so × w matches boxOriginPx.
-      const originFor = (box: FlatBox) =>
-        drag && drag.boxId === box.id ? { x: drag.x * w, y: drag.y * w } : boxOriginPx(box, w)
-      for (const box of fslide.textBoxes) {
-        if (box.id === editingBoxId) continue // the edit overlay shows this box's text
-        const layout = layouts.get(box.id)
-        if (!layout) continue
-        renderTextBox(ctx, layout, originFor(box), box.brush ?? project.brush, Infinity)
+      const originFor = (id: string, frame: { x: number; y: number }) =>
+        drag && drag.id === id ? { x: drag.x * w, y: drag.y * w } : { x: frame.x * w, y: frame.y * w }
+
+      // Ink: textboxes + drawings interleaved by their shared animOrder, so the
+      // editor preview stacks them exactly as playback/export will.
+      const items: { animOrder: number; box?: FlatBox; drawing?: FlatDrawing }[] = [
+        ...fslide.textBoxes.filter((b) => b.id !== editingBoxId).map((b) => ({ animOrder: b.animOrder, box: b })),
+        ...fslide.drawings.map((d) => ({ animOrder: d.animOrder, drawing: d })),
+      ]
+      items.sort((a, b) => a.animOrder - b.animOrder)
+      for (const it of items) {
+        if (it.box) {
+          const layout = layouts.get(it.box.id)
+          if (layout) renderTextBox(ctx, layout, originFor(it.box.id, it.box.frame), it.box.brush ?? project.brush, Infinity)
+        } else if (it.drawing) {
+          const entry = drawings.get(it.drawing.drawingId)
+          const fw = it.drawing.frame.w
+          if (entry && fw != null && fw > 0) {
+            const o = originFor(it.drawing.id, it.drawing.frame)
+            const tr = drawingTransform(entry.viewBox, o.x, o.y, fw * w)
+            renderPreparedDrawing(ctx, entry.prepared, tr, project.brush, drawingMinHalfWidth(entry.viewBox), Infinity)
+          }
+        }
       }
       // Diverged boxes (differ between aspects) get an amber ring, under the selection.
       for (const box of fslide.textBoxes) {
         if (box.id === editingBoxId || !divergedIds.has(box.id)) continue
         const l = layouts.get(box.id)
-        if (l) drawSelection(ctx, box, l, w, '#e0a23a', originFor(box))
+        if (l) drawSelection(ctx, box, l, w, '#e0a23a', originFor(box.id, box.frame))
       }
       const selBox = fslide.textBoxes.find((b) => b.id === selectedTextBoxId)
       if (selBox && selBox.id !== editingBoxId) {
         const l = layouts.get(selBox.id)
-        if (l) drawSelection(ctx, selBox, l, w, undefined, originFor(selBox))
+        if (l) drawSelection(ctx, selBox, l, w, undefined, originFor(selBox.id, selBox.frame))
+      }
+      // Selected drawing: a dashed bounding ring (skipped if the drawing isn't
+      // loaded — matches the render path, and avoids a wrong-aspect fallback).
+      const selDraw = selectedDrawingId ? fslide.drawings.find((d) => d.id === selectedDrawingId) : undefined
+      if (selDraw) {
+        const entry = drawings.get(selDraw.drawingId)
+        const fw = selDraw.frame.w
+        if (entry && fw != null && fw > 0) {
+          const o = originFor(selDraw.id, selDraw.frame)
+          drawRectRing(ctx, o.x, o.y, fw * w, drawingHeightPx(entry.viewBox, fw * w), '#7aa2ff')
+        }
       }
     },
-    [project, fslide, activeAspect, previewW, layouts, divergedIds, selectedTextBoxId, editingBoxId],
+    [project, fslide, activeAspect, previewW, layouts, divergedIds, selectedTextBoxId, editingBoxId, drawings, selectedDrawingId],
   )
 
   // Static draw when idle; also re-fires on Stop (playback → null) to repaint the
@@ -212,6 +261,19 @@ export function SlideCanvas({
     editLineHeightEm = (m.ascender + Math.abs(m.descender)) / m.unitsPerEm
   }
 
+  // Topmost placed drawing (by animOrder) whose bounds contain the point, else null.
+  const hitDrawing = (nx: number, ny: number): string | null => {
+    const pad = 6 / previewW
+    for (const d of [...fslide.drawings].sort((a, b) => b.animOrder - a.animOrder)) {
+      const entry = drawings.get(d.drawingId)
+      const fw = d.frame.w
+      if (!entry || fw == null || fw <= 0) continue
+      const hWU = (fw * entry.viewBox.h) / Math.max(entry.viewBox.w, 1) // height in width-units
+      if (nx >= d.frame.x - pad && nx <= d.frame.x + fw + pad && ny >= d.frame.y - pad && ny <= d.frame.y + hWU + pad) return d.id
+    }
+    return null
+  }
+
   const onPointerDown = (e: PointerEvent<HTMLCanvasElement>) => {
     if (playback) return
     const canvas = canvasRef.current
@@ -222,16 +284,27 @@ export function SlideCanvas({
     const p = clientToNorm(canvas, e.clientX, e.clientY)
     downNormRef.current = p
     movedRef.current = false
+    // Textboxes take hit priority; fall through to placed drawings.
     const hit = hitTest(fslide, layouts, p.nx, p.ny, previewW)
-    downHitRef.current = hit
     if (hit) {
+      downHitRef.current = hit
       const box = fslide.textBoxes.find((b) => b.id === hit)
       if (!box) return
       selectTextBox(hit)
-      // Deferred write: hold the grabbed box's live position locally and commit it
+      // Deferred write: hold the grabbed item's live position locally and commit it
       // to the store exactly once on release — so dragging never re-derives layouts
       // or churns history every frame.
-      dragRef.current = { boxId: hit, offX: p.nx - box.frame.x, offY: p.ny - box.frame.y, x: box.frame.x, y: box.frame.y }
+      dragRef.current = { kind: 'box', id: hit, offX: p.nx - box.frame.x, offY: p.ny - box.frame.y, x: box.frame.x, y: box.frame.y }
+      canvas.setPointerCapture(e.pointerId)
+      return
+    }
+    const dh = hitDrawing(p.nx, p.ny)
+    downHitRef.current = dh
+    if (dh) {
+      const d = fslide.drawings.find((x) => x.id === dh)
+      if (!d) return
+      selectDrawing(dh)
+      dragRef.current = { kind: 'drawing', id: dh, offX: p.nx - d.frame.x, offY: p.ny - d.frame.y, x: d.frame.x, y: d.frame.y }
       canvas.setPointerCapture(e.pointerId)
     }
   }
@@ -250,7 +323,7 @@ export function SlideCanvas({
     // clamp to the active aspect's visible extent.
     d.x = clamp01(p.nx - d.offX)
     d.y = clampY(p.ny - d.offY, activeAspect)
-    drawScene({ boxId: d.boxId, x: d.x, y: d.y })
+    drawScene({ kind: d.kind, id: d.id, x: d.x, y: d.y })
   }
 
   const onPointerUp = (e: PointerEvent<HTMLCanvasElement>) => {
@@ -265,13 +338,17 @@ export function SlideCanvas({
         /* never captured, or already lost (e.g. pointercancel) */
       }
       // Commit the gesture as one store write ≡ one undo step. A bare click (no
-      // movement past the threshold) only (re)selected the box — nothing to write.
-      if (movedRef.current) updateTextBoxFrame(slide.id, d.boxId, { x: d.x, y: d.y })
+      // movement past the threshold) only (re)selected the item — nothing to write.
+      if (movedRef.current) {
+        if (d.kind === 'box') updateTextBoxFrame(slide.id, d.id, { x: d.x, y: d.y })
+        else updateDrawingFrame(slide.id, d.id, { x: d.x, y: d.y })
+      }
       return
     }
     if (!downHitRef.current && !movedRef.current) {
       const p = downNormRef.current
       if (selectedTextBoxId) selectTextBox(null)
+      else if (selectedDrawingId) selectDrawing(null)
       else if (p) addTextBox(slide.id, clamp01(p.nx), clampY(p.ny, activeAspect))
     }
   }

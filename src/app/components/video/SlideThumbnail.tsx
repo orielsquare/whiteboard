@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { aspectHeightUnits, aspectWidthFraction } from '@lib/project/coords'
-import { boxForAspect } from '@lib/project/aspect'
+import { boxForAspect, drawingForAspect } from '@lib/project/aspect'
 import { layoutTextBox, type FontSet } from '@lib/project/layout'
 import { renderTextBox } from '@lib/project/render'
+import { drawingMinHalfWidth, drawingTransform, renderPreparedDrawing, type DrawingSet } from '@lib/drawing/render'
 import type { Slide } from '@lib/project/schema'
 import { useVideoStore } from '../../state/videoStore'
 import { boxOriginPx } from './layoutCanvas'
@@ -18,9 +19,11 @@ const THUMB_BACK_H = 80
 export function SlideThumbnail({
   slide,
   fonts,
+  drawings,
 }: {
   slide: Slide
   fonts: FontSet
+  drawings?: DrawingSet
 }) {
   const aspect = useVideoStore((s) => s.activeAspect)
   const baseEmFraction = useVideoStore((s) => s.project?.baseEmFraction ?? 0.085)
@@ -43,6 +46,7 @@ export function SlideThumbnail({
           bx: b.brush && [b.brush.style, b.brush.color, b.brush.sizeScale, b.brush.opacity, b.brush.jitter],
           r: b.runs.map((r) => [r.text, r.sizeScale ?? 1, r.color ?? '', !!r.underline, r.letterSpacing ?? 0, r.fontId ?? '']),
         })),
+        drawings: (slide.drawings ?? []).map((d) => [d.drawingId, d.frame[aspect].x, d.frame[aspect].y, d.frame[aspect].w]),
       }),
     [aspect, baseEmFraction, brush, slide],
   )
@@ -69,8 +73,18 @@ export function SlideThumbnail({
       const layout = layoutTextBox(fb, fonts, baseEmFraction, w, emBasisW)
       renderTextBox(ctx, layout, boxOriginPx(fb, w), fb.brush ?? brush, Infinity)
     }
+    // Placed drawings, fully drawn (static thumbnail).
+    for (const d of slide.drawings ?? []) {
+      const entry = drawings?.get(d.drawingId)
+      if (!entry) continue
+      const fd = drawingForAspect(d, aspect)
+      const fw = fd.frame.w
+      if (fw == null || fw <= 0) continue
+      const tr = drawingTransform(entry.viewBox, fd.frame.x * w, fd.frame.y * w, fw * w)
+      renderPreparedDrawing(ctx, entry.prepared, tr, brush, drawingMinHalfWidth(entry.viewBox), Infinity)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sig, fonts])
+  }, [sig, fonts, drawings])
 
   return (
     <span className="slide-thumb">

@@ -1,6 +1,6 @@
 import { ease, type EasingName } from '@lib/geometry/easing'
 import { buildLUT, type StrokeLUT } from '@lib/geometry/polyline'
-import type { Bbox, GlyphAnimation, MidPause } from '@lib/manifest/schema'
+import type { Bbox, GlyphAnimation, MidPause, StrokeSection } from '@lib/manifest/schema'
 
 /** A section with its arc-length LUT and resolved (absolute) timing. */
 interface PreparedSection {
@@ -21,14 +21,20 @@ export interface PreparedGlyph {
 }
 
 /**
- * Resolve a glyph's editorial intent into a flat timeline + arc-length LUTs.
- * Reversed sections are baked into the LUT direction here, so downstream code
- * just reveals 0 → length. Pure; do it once per glyph, reuse every frame.
+ * Resolve a list of stroke sections' editorial intent into a flat timeline +
+ * arc-length LUTs. Reversed sections are baked into the LUT direction here, so
+ * downstream code just reveals 0 → length. Pure; do it once, reuse every frame.
+ * This is the shared seam: glyphs (`prepareGlyph`) and SVG drawing elements both
+ * resolve to a `PreparedGlyph` so the same `sampleGlyph`/ribbon path animates both.
  */
-export function prepareGlyph(glyph: GlyphAnimation): PreparedGlyph {
-  const ordered = [...glyph.sections].sort((a, b) => a.orderIndex - b.orderIndex)
+export function prepareSections(
+  sections: StrokeSection[],
+  bbox: Bbox,
+  advanceWidth: number = bbox.w,
+): PreparedGlyph {
+  const ordered = [...sections].sort((a, b) => a.orderIndex - b.orderIndex)
   let cursor = 0
-  const sections: PreparedSection[] = []
+  const prepared: PreparedSection[] = []
   for (const s of ordered) {
     const pts = s.reversed ? [...s.points].reverse() : s.points
     const lut = buildLUT(pts)
@@ -36,7 +42,7 @@ export function prepareGlyph(glyph: GlyphAnimation): PreparedGlyph {
     const drawStartMs = cursor
     const holdSum = s.timing.pauses.reduce((a, p) => a + p.holdMs, 0)
     const spanMs = s.timing.durationMs + holdSum
-    sections.push({
+    prepared.push({
       id: s.id,
       lut,
       drawStartMs,
@@ -47,7 +53,12 @@ export function prepareGlyph(glyph: GlyphAnimation): PreparedGlyph {
     })
     cursor = drawStartMs + spanMs
   }
-  return { sections, totalMs: cursor, advanceWidth: glyph.advanceWidth, bbox: glyph.bbox }
+  return { sections: prepared, totalMs: cursor, advanceWidth, bbox }
+}
+
+/** Resolve a glyph's editorial intent into a flat timeline + arc-length LUTs. */
+export function prepareGlyph(glyph: GlyphAnimation): PreparedGlyph {
+  return prepareSections(glyph.sections, glyph.bbox, glyph.advanceWidth)
 }
 
 export interface SectionReveal {

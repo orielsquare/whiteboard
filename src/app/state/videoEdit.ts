@@ -1,6 +1,7 @@
 import {
   makeId,
   newSlide,
+  newSlideDrawing,
   newTextBox,
   type Aspect,
   type BoxContent,
@@ -9,6 +10,7 @@ import {
   type NormRect,
   type ProjectDefaults,
   type Slide,
+  type SlideDrawing,
   type TextBox,
   type TextRun,
   type TtsSettings,
@@ -26,11 +28,22 @@ function mapSlide(p: VideoProject, slideId: string, fn: (s: Slide) => Slide): Vi
   return { ...p, slides: p.slides.map((s) => (s.id === slideId ? fn(s) : s)) }
 }
 
-/** Re-assign contiguous animOrder 0..n-1, preserving relative order. */
-function reindexOrder(boxes: TextBox[]): TextBox[] {
-  const sorted = [...boxes].sort((a, b) => a.animOrder - b.animOrder)
-  const idx = new Map(sorted.map((b, i) => [b.id, i]))
-  return boxes.map((b) => ({ ...b, animOrder: idx.get(b.id) ?? b.animOrder }))
+/** Re-assign contiguous animOrder 0..n-1 across a slide's boxes AND drawings,
+ *  preserving their current relative order. The two share ONE animation sequence,
+ *  so any structural change (add/delete/reorder/paste) must reindex both together
+ *  — reindexing boxes alone would collide with a drawing's animOrder. Keeps the
+ *  `drawings` field optional (only present if the slide already had one). */
+function reindexSlideOrder(s: Slide): Slide {
+  const items = [
+    ...s.textBoxes.map((b) => ({ id: b.id, animOrder: b.animOrder })),
+    ...(s.drawings ?? []).map((d) => ({ id: d.id, animOrder: d.animOrder })),
+  ].sort((a, b) => a.animOrder - b.animOrder)
+  const idx = new Map(items.map((it, i) => [it.id, i]))
+  return {
+    ...s,
+    textBoxes: s.textBoxes.map((b) => ({ ...b, animOrder: idx.get(b.id) ?? b.animOrder })),
+    ...(s.drawings ? { drawings: s.drawings.map((d) => ({ ...d, animOrder: idx.get(d.id) ?? d.animOrder })) } : {}),
+  }
 }
 
 // --- slides ---------------------------------------------------------------
@@ -54,6 +67,17 @@ export function copySlide(p: VideoProject, slideId: string): { project: VideoPro
       frame: { '16:9': { ...b.frame['16:9'] }, '9:16': { ...b.frame['9:16'] } },
       runs: b.runs.map((r) => ({ ...r })),
     })),
+    // Only carry a `drawings` field if the source had one (keep drawing-less
+    // slides shape-identical after a copy).
+    ...(src.drawings
+      ? {
+          drawings: src.drawings.map((d) => ({
+            ...d,
+            id: makeId(),
+            frame: { '16:9': { ...d.frame['16:9'] }, '9:16': { ...d.frame['9:16'] } },
+          })),
+        }
+      : {}),
   }
   const slides = [...p.slides]
   slides.splice(i + 1, 0, clone)
@@ -93,7 +117,7 @@ export function addTextBox(
 ): { project: VideoProject; boxId: string } {
   const id = makeId()
   const project = mapSlide(p, slideId, (s) => {
-    const box = { ...newTextBox(p.defaults, x, y, s.textBoxes.length), id }
+    const box = { ...newTextBox(p.defaults, x, y, nextAnimOrder(s)), id }
     return { ...s, textBoxes: [...s.textBoxes, box] }
   })
   return { project, boxId: id }
@@ -131,6 +155,86 @@ export function updateTextBoxFrame(
       return { ...b, frame }
     }),
   }))
+}
+
+// --- placed drawings ------------------------------------------------------
+
+/** The next animation slot on a slide, shared across its boxes AND drawings. */
+function nextAnimOrder(s: Slide): number {
+  let max = -1
+  for (const b of s.textBoxes) max = Math.max(max, b.animOrder)
+  for (const d of s.drawings ?? []) max = Math.max(max, d.animOrder)
+  return max + 1
+}
+
+/** Place a saved drawing on a slide; it draws last (highest animOrder) by default. */
+export function addDrawing(
+  p: VideoProject,
+  slideId: string,
+  drawingId: string,
+  name: string,
+  x: number,
+  y: number,
+  w: number,
+): { project: VideoProject; instanceId: string } {
+  const base = newSlideDrawing(drawingId, name, x, y, w, 0)
+  const project = mapSlide(p, slideId, (s) => ({
+    ...s,
+    drawings: [...(s.drawings ?? []), { ...base, animOrder: nextAnimOrder(s) }],
+  }))
+  return { project, instanceId: base.id }
+}
+
+/** Patch a placed drawing's frame into the given aspect key(s) (mirrors updateTextBoxFrame). */
+export function updateDrawingFrame(
+  p: VideoProject,
+  slideId: string,
+  instanceId: string,
+  patch: Partial<NormRect>,
+  writeAspects: Aspect[],
+): VideoProject {
+  return mapSlide(p, slideId, (s) => ({
+    ...s,
+    drawings: (s.drawings ?? []).map((d) => {
+      if (d.id !== instanceId) return d
+      const frame = { ...d.frame }
+      for (const a of writeAspects) frame[a] = { ...frame[a], ...patch }
+      return { ...d, frame }
+    }),
+  }))
+}
+
+/** Patch a placed drawing's non-frame fields (animOrder, delayBeforeMs, name). */
+export function updateDrawing(
+  p: VideoProject,
+  slideId: string,
+  instanceId: string,
+  patch: Partial<SlideDrawing>,
+): VideoProject {
+  return mapSlide(p, slideId, (s) => ({
+    ...s,
+    drawings: (s.drawings ?? []).map((d) => (d.id === instanceId ? { ...d, ...patch } : d)),
+  }))
+}
+
+export function removeDrawing(p: VideoProject, slideId: string, instanceId: string): VideoProject {
+  return mapSlide(p, slideId, (s) =>
+    reindexSlideOrder({ ...s, drawings: (s.drawings ?? []).filter((d) => d.id !== instanceId) }),
+  )
+}
+
+/** Reorder the slide's combined animation sequence (boxes AND drawings) to match
+ *  `orderedIds` (the new top-to-bottom order in the Elements list). */
+export function reorderSlideItems(p: VideoProject, slideId: string, orderedIds: string[]): VideoProject {
+  return mapSlide(p, slideId, (s) => {
+    const pos = new Map(orderedIds.map((id, i) => [id, i]))
+    const textBoxes = s.textBoxes.map((b) => ({ ...b, animOrder: pos.get(b.id) ?? b.animOrder }))
+    return reindexSlideOrder({
+      ...s,
+      textBoxes,
+      ...(s.drawings ? { drawings: s.drawings.map((d) => ({ ...d, animOrder: pos.get(d.id) ?? d.animOrder })) } : {}),
+    })
+  })
 }
 
 const cleanLock = (lock: Partial<BoxLockState>): Partial<BoxLockState> | undefined =>
@@ -308,17 +412,19 @@ export function applyTextStyle(
 
 export function reorderTextBoxes(p: VideoProject, slideId: string, orderedIds: string[]): VideoProject {
   return mapSlide(p, slideId, (s) => {
-    const pos = new Map(orderedIds.map((id, i) => [id, i]))
-    const boxes = s.textBoxes.map((b) => ({ ...b, animOrder: pos.get(b.id) ?? b.animOrder }))
-    return { ...s, textBoxes: reindexOrder(boxes) }
+    // Reorder boxes WITHIN the animOrder slots boxes currently occupy, leaving any
+    // interleaved drawings in their own slots, then reindex the whole sequence.
+    const posOf = new Map(orderedIds.map((id, i) => [id, i]))
+    const slots = s.textBoxes.map((b) => b.animOrder).sort((a, b) => a - b)
+    const ordered = [...s.textBoxes].sort((a, b) => (posOf.get(a.id) ?? 0) - (posOf.get(b.id) ?? 0))
+    const newOrder = new Map(ordered.map((b, i) => [b.id, slots[i] ?? b.animOrder]))
+    const boxes = s.textBoxes.map((b) => ({ ...b, animOrder: newOrder.get(b.id) ?? b.animOrder }))
+    return reindexSlideOrder({ ...s, textBoxes: boxes })
   })
 }
 
 export function deleteTextBox(p: VideoProject, slideId: string, boxId: string): VideoProject {
-  return mapSlide(p, slideId, (s) => ({
-    ...s,
-    textBoxes: reindexOrder(s.textBoxes.filter((b) => b.id !== boxId)),
-  }))
+  return mapSlide(p, slideId, (s) => reindexSlideOrder({ ...s, textBoxes: s.textBoxes.filter((b) => b.id !== boxId) }))
 }
 
 const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
@@ -347,7 +453,7 @@ export function pasteTextBox(
       ...cloneTextBox(box),
       id,
       frame: { '16:9': nudge(box.frame['16:9']), '9:16': nudge(box.frame['9:16']) },
-      animOrder: s.textBoxes.length,
+      animOrder: nextAnimOrder(s),
     }
     return { ...s, textBoxes: [...s.textBoxes, clone] }
   })

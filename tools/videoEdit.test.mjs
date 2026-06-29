@@ -136,5 +136,64 @@ const box0 = (p) => p.slides[0].textBoxes[0]
   ok(lnk.slides[0].textBoxes[0].align === 'left', 'link-all converges to the active (16:9 base) content')
 }
 
+// --- shared boxes+drawings animOrder invariant (contiguous 0..n-1, no ties) --
+{
+  const seq = (p) => {
+    const s = p.slides[0]
+    return [...s.textBoxes.map((b) => b.animOrder), ...(s.drawings ?? []).map((d) => d.animOrder)]
+  }
+  const contiguous = (p) => [...seq(p)].sort((a, b) => a - b).every((v, i) => v === i)
+  const unique = (p) => new Set(seq(p)).size === seq(p).length
+  const animOf = (p, id) => {
+    const s = p.slides[0]
+    return (s.textBoxes.find((b) => b.id === id) ?? (s.drawings ?? []).find((d) => d.id === id))?.animOrder
+  }
+
+  // addDrawing → next shared slot (after the boxes)
+  let p = mkProject([mkBox({ id: 'A', animOrder: 0 }), mkBox({ id: 'B', animOrder: 1 })])
+  const add = E.addDrawing(p, 's', 'dwg', 'D', 0.3, 0.1, 0.3)
+  p = add.project
+  ok(contiguous(p) && animOf(p, add.instanceId) === 2, 'addDrawing → contiguous, drawing at shared slot 2')
+
+  // deleteTextBox reindexes boxes AND drawings together
+  const pd = E.deleteTextBox(p, 's', 'A')
+  ok(contiguous(pd) && unique(pd), 'deleteTextBox → contiguous + unique across boxes+drawings')
+  ok(animOf(pd, 'B') === 0 && animOf(pd, add.instanceId) === 1, 'deleteTextBox → B=0, drawing=1 (no gap)')
+
+  // removeDrawing reindexes (no orphaned animOrder)
+  let pr = mkProject([mkBox({ id: 'A', animOrder: 0 })])
+  pr = E.addDrawing(pr, 's', 'd1', 'D1', 0.3, 0.1, 0.3).project
+  pr = E.addDrawing(pr, 's', 'd2', 'D2', 0.3, 0.1, 0.3).project // A0 D1 D2
+  pr = E.removeDrawing(pr, 's', pr.slides[0].drawings[0].id) // remove D1
+  ok(contiguous(pr) && unique(pr), 'removeDrawing → contiguous + unique')
+
+  // reorderTextBoxes keeps an interleaved drawing in its slot, no collision
+  let p4 = mkProject([mkBox({ id: 'A', animOrder: 0 }), mkBox({ id: 'B', animOrder: 2 })])
+  p4 = E.addDrawing(p4, 's', 'dwg', 'D', 0.3, 0.1, 0.3).project
+  const dId = p4.slides[0].drawings[0].id
+  p4 = E.updateDrawing(p4, 's', dId, { animOrder: 1 }) // A0 D1 B2
+  p4 = E.reorderTextBoxes(p4, 's', ['B', 'A'])
+  ok(contiguous(p4) && unique(p4), 'reorderTextBoxes → contiguous + unique (no ties)')
+  ok(animOf(p4, 'B') < animOf(p4, dId) && animOf(p4, dId) < animOf(p4, 'A'), 'reorder keeps drawing between B and A')
+
+  // pasteTextBox uses the shared pool (no collision with a drawing)
+  let p5 = mkProject([mkBox({ id: 'A', animOrder: 0 })])
+  p5 = E.addDrawing(p5, 's', 'dwg', 'D', 0.3, 0.1, 0.3).project // A0 D1
+  p5 = E.pasteTextBox(p5, 's', mkBox({ id: 'A', animOrder: 0 })).project
+  ok(contiguous(p5) && unique(p5), 'pasteTextBox → contiguous + unique')
+
+  // reorderSlideItems reorders the COMBINED boxes+drawings sequence by the new id order
+  let p6 = mkProject([mkBox({ id: 'A', animOrder: 0 }), mkBox({ id: 'B', animOrder: 1 })])
+  p6 = E.addDrawing(p6, 's', 'dwg', 'D', 0.3, 0.1, 0.3).project // A0 B1 D2
+  const did = p6.slides[0].drawings[0].id
+  p6 = E.reorderSlideItems(p6, 's', [did, 'A', 'B']) // drawing first, then A, then B
+  ok(contiguous(p6) && unique(p6), 'reorderSlideItems → contiguous + unique')
+  ok(animOf(p6, did) === 0 && animOf(p6, 'A') === 1 && animOf(p6, 'B') === 2, 'reorderSlideItems → D0 A1 B2 (combined order)')
+
+  // copySlide keeps a drawing-less slide shape-identical (no drawings:[] injected)
+  const cp = E.copySlide(mkProject([mkBox({ id: 'A', animOrder: 0 })]), 's')
+  ok(!('drawings' in cp.project.slides.find((s) => s.id === cp.slideId)), 'copySlide → drawing-less slide omits drawings field')
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed) process.exit(1)

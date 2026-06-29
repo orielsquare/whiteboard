@@ -14,6 +14,7 @@ import {
   type NormRect,
   type ProjectDefaults,
   type Slide,
+  type SlideDrawing,
   type TextBox,
   type TextRun,
   type TtsSettings,
@@ -60,6 +61,8 @@ interface VideoState {
   activeAspect: Aspect
   selectedSlideId: string | null
   selectedTextBoxId: string | null
+  /** the selected placed drawing (mutually exclusive with a selected textbox). */
+  selectedDrawingId: string | null
   /** active sub-range selection inside the selected textbox (for the format bar). */
   selection: TextSelection | null
   /** copy/cut buffer for a textbox (transient — survives slide switches). */
@@ -72,6 +75,7 @@ interface VideoState {
 
   selectSlide: (id: string | null) => void
   selectTextBox: (id: string | null) => void
+  selectDrawing: (id: string | null) => void
   setSelection: (sel: TextSelection | null) => void
   setSlideView: (v: SlideView) => void
   setNavTab: (t: NavTab) => void
@@ -83,6 +87,14 @@ interface VideoState {
   reorderSlides: (orderedIds: string[]) => void
   updateSlide: (id: string, patch: Partial<Slide>) => void
   setSlideTransition: (id: string, patch: Partial<Slide['transition']>) => void
+
+  // placed drawings (saved-drawing instances on a slide)
+  addDrawing: (slideId: string, drawingId: string, name: string, x: number, y: number, w: number) => string
+  updateDrawingFrame: (slideId: string, instanceId: string, patch: Partial<NormRect>) => void
+  updateDrawing: (slideId: string, instanceId: string, patch: Partial<SlideDrawing>) => void
+  removeDrawing: (slideId: string, instanceId: string) => void
+  /** reorder the slide's combined boxes+drawings animation sequence. */
+  reorderSlideItems: (slideId: string, orderedIds: string[]) => void
 
   addTextBox: (slideId: string, x: number, y: number) => string
   updateTextBox: (slideId: string, boxId: string, patch: Partial<TextBox>) => void
@@ -154,6 +166,7 @@ export const useVideoStore = create<VideoState>()(
       activeAspect: '16:9',
       selectedSlideId: null,
       selectedTextBoxId: null,
+      selectedDrawingId: null,
       selection: null,
       clipboardBox: null,
       slideView: 'editor',
@@ -161,16 +174,19 @@ export const useVideoStore = create<VideoState>()(
       playback: null,
 
       // Selecting a slide/box returns to the editing layout (stops any playback).
-      selectSlide: (id) => set({ selectedSlideId: id, selectedTextBoxId: null, selection: null, playback: null }),
+      selectSlide: (id) => set({ selectedSlideId: id, selectedTextBoxId: null, selectedDrawingId: null, selection: null, playback: null }),
       selectTextBox: (id) =>
         set((s) => ({
           selectedTextBoxId: id,
+          selectedDrawingId: id ? null : s.selectedDrawingId,
           // keep a same-box selection alive; drop it when the box changes
           selection: s.selection && s.selection.boxId === id ? s.selection : null,
           // selecting a box (e.g. clicking it on the canvas) reveals it in the navigator
           ...(id ? { navTab: 'boxes' as const } : null),
           playback: null,
         })),
+      selectDrawing: (id) =>
+        set({ selectedDrawingId: id, selectedTextBoxId: null, selection: null, playback: null }),
       setSelection: (sel) => set({ selection: sel }),
       // changing the top view stops inline playback (it's an Editor-only mode).
       setSlideView: (v) => set({ slideView: v, playback: null }),
@@ -221,6 +237,36 @@ export const useVideoStore = create<VideoState>()(
         set({ project, selectedTextBoxId: boxId })
         return boxId
       },
+
+      addDrawing: (slideId, drawingId, name, x, y, w) => {
+        const s = get()
+        if (!s.project) return ''
+        // y arrives in width-units (editor space) → store as a fraction of height.
+        const { project, instanceId } = E.addDrawing(s.project, slideId, drawingId, name, x, toStoredY(y, s.activeAspect), w)
+        set({ project, selectedDrawingId: instanceId, selectedTextBoxId: null })
+        return instanceId
+      },
+      updateDrawingFrame: (slideId, instanceId, patch) =>
+        set((s) => {
+          if (!s.project) return s
+          // Editor works in width-units for y → store as a fraction of height. Placed
+          // drawings are position-linked, so write BOTH aspects (one set() ≡ one undo).
+          const p2 = patch.y != null ? { ...patch, y: toStoredY(patch.y, s.activeAspect) } : patch
+          return { project: E.updateDrawingFrame(s.project, slideId, instanceId, p2, ASPECTS) }
+        }),
+      updateDrawing: (slideId, instanceId, patch) =>
+        set((s) => (s.project ? { project: E.updateDrawing(s.project, slideId, instanceId, patch) } : s)),
+      removeDrawing: (slideId, instanceId) =>
+        set((s) =>
+          s.project
+            ? {
+                project: E.removeDrawing(s.project, slideId, instanceId),
+                selectedDrawingId: s.selectedDrawingId === instanceId ? null : s.selectedDrawingId,
+              }
+            : s,
+        ),
+      reorderSlideItems: (slideId, orderedIds) =>
+        set((s) => (s.project ? { project: E.reorderSlideItems(s.project, slideId, orderedIds) } : s)),
       updateTextBox: (slideId, boxId, patch) =>
         set((s) => (s.project ? { project: E.updateTextBox(s.project, slideId, boxId, patch) } : s)),
       updateTextBoxFrame: (slideId, boxId, patch) =>
@@ -354,6 +400,7 @@ export const useVideoStore = create<VideoState>()(
           activeAspect: '16:9',
           selectedSlideId: p.slides[0]?.id ?? null,
           selectedTextBoxId: null,
+          selectedDrawingId: null,
           selection: null,
           slideView: 'editor',
           navTab: 'slides',
@@ -370,6 +417,7 @@ export const useVideoStore = create<VideoState>()(
           activeAspect: aspect,
           selectedSlideId: p.slides[0]?.id ?? null,
           selectedTextBoxId: null,
+          selectedDrawingId: null,
           selection: null,
           slideView: 'editor',
           navTab: 'slides',

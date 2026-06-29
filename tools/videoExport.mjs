@@ -27,6 +27,7 @@ async function loadSeam() {
       contents: `
         export { buildRenderContext, renderProject, projectDurationMs } from '@lib/project/render'
         export { prepareGlyph } from '@lib/animation/timeline'
+        export { prepareDrawing } from '@lib/drawing/timeline'
         export { canvasSize, exportCanvasW } from '@lib/project/coords'
         export { projectForAspect, migrateProject } from '@lib/project/aspect'
       `,
@@ -78,6 +79,28 @@ function buildFontSet(seam, fontsById, glyphs, metrics, defaultId) {
   if (byId.size === 0) throw new Error('no fonts provided for export')
   if (!byId.has(defaultId)) byId.set(defaultId, byId.get(byId.keys().next().value))
   return { byId, defaultId }
+}
+
+/**
+ * Build the DrawingSet (Map<drawingId, { prepared, viewBox }>) for the render
+ * seam. `drawingsById` is the payload of saved DrawingManifests keyed by id; each
+ * is prepared headlessly (prepareDrawing is pure). Mirrors buildFontSet.
+ */
+function buildDrawingSet(seam, drawingsById) {
+  const byId = new Map()
+  if (drawingsById && typeof drawingsById === 'object') {
+    for (const id of Object.keys(drawingsById)) {
+      const m = drawingsById[id]
+      if (m && Array.isArray(m.parts) && m.metadata?.viewBox) {
+        try {
+          byId.set(id, { prepared: seam.prepareDrawing(m.parts), viewBox: m.metadata.viewBox })
+        } catch {
+          /* skip malformed drawing */
+        }
+      }
+    }
+  }
+  return byId
 }
 
 /** Run ffmpeg with the given args, rejecting on a non-zero exit (with stderr tail). */
@@ -149,6 +172,7 @@ function collectAudioCues(project, audioDir) {
 export async function renderProjectToMp4({
   project: rawProject,
   fontsById,
+  drawingsById,
   glyphs,
   metrics,
   fps = 30,
@@ -171,6 +195,7 @@ export async function renderProjectToMp4({
   const { project: migrated, aspect: savedAspect } = seam.migrateProject(rawProject)
   const renderAspect = aspect === '16:9' || aspect === '9:16' ? aspect : savedAspect
   const fontSet = buildFontSet(seam, fontsById, glyphs, metrics, migrated.fontId)
+  const drawingSet = buildDrawingSet(seam, drawingsById)
 
   const subSlides = slideIds
     ? { ...migrated, slides: migrated.slides.filter((s) => slideIds.includes(s.id)) }
@@ -188,7 +213,7 @@ export async function renderProjectToMp4({
   // Speed is baked into the timeline (writing scaled, holds/transitions invariant),
   // so we render the resulting timeline at real time.
   const rate = speed > 0 ? speed : 1
-  const rc = seam.buildRenderContext(sub, fontSet, w, rate)
+  const rc = seam.buildRenderContext(sub, fontSet, drawingSet, w, rate)
   const animDurationMs = seam.projectDurationMs(rc)
   const videoDurationMs = animDurationMs + tailMs
   const totalFrames = Math.max(1, Math.ceil((videoDurationMs / 1000) * fps))

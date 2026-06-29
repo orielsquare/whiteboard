@@ -5,6 +5,7 @@ import type {
   BoxLockState,
   NormRect,
   Slide,
+  SlideDrawing,
   TextBox,
   VideoProject,
 } from './schema'
@@ -32,7 +33,12 @@ export const otherAspect = (a: Aspect): Aspect => (a === '16:9' ? '9:16' : '16:9
 
 /** A textbox flattened to one aspect: `frame` is a single width-units `NormRect`. */
 export type FlatBox = Omit<TextBox, 'frame'> & { frame: NormRect }
-export type FlatSlide = Omit<Slide, 'textBoxes'> & { textBoxes: FlatBox[] }
+/** A placed drawing flattened to one aspect (frame.y back in width-units). */
+export type FlatDrawing = Omit<SlideDrawing, 'frame'> & { frame: NormRect }
+export type FlatSlide = Omit<Slide, 'textBoxes' | 'drawings'> & {
+  textBoxes: FlatBox[]
+  drawings: FlatDrawing[]
+}
 /** A single-aspect project: the legacy shape the pure pipeline + exporter take.
  *  Carries `aspect` so canvas-sizing code can read it. */
 export type FlatProject = Omit<VideoProject, 'slides'> & { slides: FlatSlide[]; aspect: Aspect }
@@ -41,6 +47,12 @@ export type FlatProject = Omit<VideoProject, 'slides'> & { slides: FlatSlide[]; 
 export function frameOf(box: TextBox, aspect: Aspect): NormRect {
   const f = box.frame[aspect]
   return { x: f.x, y: f.y * aspectHeightUnits(aspect), w: f.w }
+}
+
+/** Flatten a placed drawing to one aspect (same y conversion as `frameOf`). */
+export function drawingForAspect(d: SlideDrawing, aspect: Aspect): FlatDrawing {
+  const f = d.frame[aspect]
+  return { ...d, frame: { x: f.x, y: f.y * aspectHeightUnits(aspect), w: f.w } }
 }
 
 /** The effective content (runs/align/line-height/brush) for `aspect`: the
@@ -62,9 +74,13 @@ export function boxForAspect(box: TextBox, aspect: Aspect): FlatBox {
   return { ...box, frame: frameOf(box, aspect), ...contentOf(box, aspect) }
 }
 
-/** A flattened slide for `aspect`. */
+/** A flattened slide for `aspect` (textBoxes AND placed drawings). */
 export function flattenSlide(slide: Slide, aspect: Aspect): FlatSlide {
-  return { ...slide, textBoxes: slide.textBoxes.map((b) => boxForAspect(b, aspect)) }
+  return {
+    ...slide,
+    textBoxes: slide.textBoxes.map((b) => boxForAspect(b, aspect)),
+    drawings: (slide.drawings ?? []).map((d) => drawingForAspect(d, aspect)),
+  }
 }
 
 /** Flatten a whole project to its single-aspect shape (the pipeline/export seam). */
@@ -109,6 +125,17 @@ export function migrateProject(raw: VideoProject): { project: VideoProject; aspe
         const rect: NormRect = { x: f.x, y: f.y / H, w: f.w ?? null }
         return { ...b, frame: { '16:9': { ...rect }, '9:16': { ...rect } } }
       }),
+      // Defensive: a v1 file should never carry drawings (a v2 feature), but if one
+      // was hand-edited in, convert its flat width-units frame like the textboxes.
+      ...((s.drawings as unknown[] | undefined)?.length
+        ? {
+            drawings: (s.drawings as unknown as Array<Record<string, unknown> & { frame?: NormRect }>).map((d) => {
+              const f = d.frame ?? { x: 0.1, y: 0.1, w: 0.5 }
+              const rect: NormRect = { x: f.x, y: f.y / H, w: f.w ?? 0.5 }
+              return { ...d, frame: { '16:9': { ...rect }, '9:16': { ...rect } } } as SlideDrawing
+            }),
+          }
+        : {}),
     }))
   }
   const project: VideoProject = {

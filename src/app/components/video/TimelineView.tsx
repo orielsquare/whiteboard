@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, typ
 import { aspectHeightUnits } from '@lib/project/coords'
 import { projectForAspect } from '@lib/project/aspect'
 import type { FontSet } from '@lib/project/layout'
+import type { DrawingSet } from '@lib/drawing/render'
 import { buildRenderContext } from '@lib/project/render'
 import { slideTimeWindows } from '@lib/project/timing'
 import { runsToPlainText } from '@lib/project/runs'
@@ -65,7 +66,7 @@ const cueLabel = (text: string): string => {
  * the ruler and can be dragged to re-time their cues. Zoom + horizontal scroll.
  * Everything is plain DOM (crisp text + hover + drag), scaled to real project time.
  */
-export function TimelineView({ fonts }: { fonts: FontSet }) {
+export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: DrawingSet }) {
   const project = useVideoStore((s) => s.project)
   const activeAspect = useVideoStore((s) => s.activeAspect)
   const cues = useVideoStore((s) => s.project?.voiceover ?? EMPTY)
@@ -88,10 +89,10 @@ export function TimelineView({ fonts }: { fonts: FontSet }) {
   const rc = useMemo(
     () =>
       project
-        ? buildRenderContext(projectForAspect(project, activeAspect), fonts, previewCanvasW(activeAspect), playbackRate)
+        ? buildRenderContext(projectForAspect(project, activeAspect), fonts, drawings, previewCanvasW(activeAspect), playbackRate)
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [project?.slides, project?.baseEmFraction, fonts, playbackRate, activeAspect],
+    [project?.slides, project?.baseEmFraction, fonts, drawings, playbackRate, activeAspect],
   )
   const windows = useMemo(() => (rc ? slideTimeWindows(rc.timing) : []), [rc])
   const sortedCues = useMemo(() => [...cues].sort((a, b) => a.startMs - b.startMs), [cues])
@@ -309,7 +310,7 @@ export function TimelineView({ fonts }: { fonts: FontSet }) {
               if (width < thumbW + 8 || !slide) return null
               return (
                 <div key={win.slideId} className="tl-thumb" style={{ left: left + 4 }}>
-                  <SlideThumbnail slide={slide} fonts={fonts} />
+                  <SlideThumbnail slide={slide} fonts={fonts} drawings={drawings} />
                 </div>
               )
             })}

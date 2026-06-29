@@ -9,13 +9,14 @@ import { PreviewView } from './components/PreviewView'
 import { EditorView } from './components/EditorView'
 import { GlyphGridView } from './components/GlyphGridView'
 import { VideoView } from './components/video/VideoView'
+import { DrawingView } from './components/drawing/DrawingView'
 import { listFontChars } from './fontGlyphs'
 import { editorHistory, ensureGlyphDerived, glyphParams, useEditorStore } from './state/store'
 
-/** The two distinct tools. Font (load → extract → edit → animate → save) and
- *  Video (slide-based animated-text editor) are separate apps that happen to
- *  share a loaded font + extractor, so they get top-level tabs. */
-type TopTab = 'font' | 'video'
+/** The distinct tools. Font (load → extract → edit → animate → save), Video
+ *  (slide-based animated-text editor), and Drawing (SVG → animated pen strokes +
+ *  hatch fills) are separate apps that get top-level tabs. */
+type TopTab = 'font' | 'video' | 'draw'
 /** Sub-tabs within the Font tool, in working order (Glyphs is the landing grid). */
 type FontSubTab = 'glyphs' | 'extract' | 'editor' | 'animate'
 
@@ -214,6 +215,9 @@ export function App() {
         <button className={topTab === 'font' ? 'tab tab-on' : 'tab'} onClick={() => setTopTab('font')}>
           Font
         </button>
+        <button className={topTab === 'draw' ? 'tab tab-on' : 'tab'} onClick={() => setTopTab('draw')}>
+          Drawing
+        </button>
         <button className={topTab === 'video' ? 'tab tab-on' : 'tab'} onClick={() => setTopTab('video')}>
           Video
         </button>
@@ -284,7 +288,9 @@ export function App() {
 
       {error && <div className="error">{error}</div>}
 
-      {topTab === 'video' ? (
+      {topTab === 'draw' ? (
+        <DrawingView brush={brush} onBrushChange={setBrush} />
+      ) : topTab === 'video' ? (
         !font ? (
           <div className="stage">Loading font…</div>
         ) : (

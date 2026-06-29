@@ -17,7 +17,7 @@ export function NavigatorPanel({ fonts }: { fonts: FontSet }) {
           Slides
         </button>
         <button className={tab === 'boxes' ? 'navtab navtab-on' : 'navtab'} onClick={() => setTab('boxes')}>
-          Textboxes
+          Elements
         </button>
       </div>
       {tab === 'slides' ? <SlidePanel fonts={fonts} /> : <TextboxNavigator />}
