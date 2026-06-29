@@ -2,16 +2,11 @@ import { useEffect, useRef, useState } from 'react'
 import { canvasSize } from '@lib/project/coords'
 import type { Aspect } from '@lib/project/schema'
 import { previewCanvasW } from './layoutCanvas'
+import { nextAudioAction, type AudioCue } from './audioSync'
+
+export type { AudioCue }
 
 const END_HOLD_MS = 500
-
-/** A voiceover clip to play in the playback clock's time base (ms). */
-export interface AudioCue {
-  id: string
-  startMs: number
-  endMs: number
-  url: string
-}
 
 export interface PlaybackEngine {
   isPlaying: boolean
@@ -63,6 +58,8 @@ export function usePlaybackEngine(
   const aspectRef = useRef(aspect)
   const audioRef = useRef<AudioCue[]>(audioCues ?? [])
   const audioElsRef = useRef<Map<string, { el: HTMLAudioElement; url: string }>>(new Map())
+  // cues already triggered in the current play pass (so each plays once, no re-seek).
+  const startedRef = useRef<Set<string>>(new Set())
 
   drawRef.current = draw
   totalRef.current = totalMs
@@ -102,6 +99,7 @@ export function usePlaybackEngine(
     tRef.current = 0
     setProgress(0)
     setIsPlaying(active)
+    startedRef.current.clear()
     if (!active) audioElsRef.current.forEach(({ el }) => el.pause())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, resetKey])
@@ -121,8 +119,10 @@ export function usePlaybackEngine(
         if (playingRef.current && total > 0) {
           tRef.current += dt // real time — speed is baked into the timeline
           if (tRef.current >= total + END_HOLD_MS) {
-            if (loopRef.current) tRef.current = 0
-            else {
+            if (loopRef.current) {
+              tRef.current = 0
+              startedRef.current.clear() // re-arm cues for the next loop
+            } else {
               tRef.current = total
               playingRef.current = false
               setIsPlaying(false)
@@ -135,29 +135,25 @@ export function usePlaybackEngine(
         const ctx = canvas.getContext('2d')
         if (ctx) drawRef.current(ctx, tRef.current, w, h)
         const t = tRef.current
+        const started = startedRef.current
         for (const c of audioRef.current) {
           const entry = audioElsRef.current.get(c.id)
           if (!entry) continue
           const el = entry.el
-          if (playingRef.current && t >= c.startMs && t < c.endMs) {
-            const target = (t - c.startMs) / 1000
-            if (el.paused) {
-              try {
-                el.currentTime = Math.max(0, target)
-              } catch {
-                /* not seekable yet */
-              }
-              void el.play().catch(() => {})
-            } else if (Math.abs(el.currentTime - target) > 0.35) {
-              try {
-                el.currentTime = Math.max(0, target)
-              } catch {
-                /* ignore */
-              }
+          const action = nextAudioAction(c, t, playingRef.current, started.has(c.id))
+          if (action.kind === 'start') {
+            started.add(c.id)
+            try {
+              el.currentTime = action.seekTo
+            } catch {
+              /* not seekable yet — it'll start from 0 once loaded */
             }
-          } else if (!el.paused) {
-            el.pause()
+            void el.play().catch(() => {})
+          } else if (action.kind === 'pause') {
+            if (!el.paused) el.pause()
+            started.delete(c.id) // re-arm so a loop / scrub / resume re-triggers it
           }
+          // 'none' → already playing this cue; let it play out (no clock-chasing).
         }
         if (now - lastProg > 80) {
           lastProg = now
@@ -180,17 +176,22 @@ export function usePlaybackEngine(
     loop,
     setLoop,
     toggle: () => {
-      if (tRef.current >= totalMs) tRef.current = 0
+      if (tRef.current >= totalMs) {
+        tRef.current = 0
+        startedRef.current.clear()
+      }
       setIsPlaying((p) => !p)
     },
     restart: () => {
       tRef.current = 0
       setProgress(0)
+      startedRef.current.clear()
       setIsPlaying(true)
     },
     scrub: (v: number) => {
       tRef.current = v
       setProgress(v)
+      startedRef.current.clear()
       setIsPlaying(false)
     },
   }
