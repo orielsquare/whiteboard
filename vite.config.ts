@@ -27,6 +27,19 @@ export default defineConfig({
       '@app': fileURLToPath(new URL('./src/app', import.meta.url)),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split third-party deps (React, opentype.js, dnd-kit, zustand, …) into a
+        // separate `vendor` chunk: it changes rarely, so it caches independently of
+        // the app code (better repeat loads) and the main chunk drops back under the
+        // 500 kB size-warning threshold.
+        manualChunks(id) {
+          if (id.includes('/node_modules/')) return 'vendor'
+        },
+      },
+    },
+  },
   server: {
     proxy: {
       '/whiteboard/api': proxyOpts,
