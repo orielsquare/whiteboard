@@ -178,7 +178,13 @@ export function SlideCanvas({
     const list: AudioCue[] = []
     for (const c of project.voiceover ?? []) {
       const url = cueAudioUrl(project.id, c)
-      if (url) list.push({ id: c.id, startMs: c.startMs, endMs: c.endMs, url })
+      if (!url) continue
+      // Bound playback by the audio's REAL length (startMs + duration), not the
+      // VTT/caption window `c.endMs` (often shorter) — otherwise the engine pauses
+      // the clip before it finishes. The MP4 export already plays the full clip.
+      const dur = c.audio?.durationMs
+      const endMs = dur && dur > 0 ? c.startMs + dur : c.endMs
+      list.push({ id: c.id, startMs: c.startMs, endMs, url })
     }
     return list
   }, [playback, project])

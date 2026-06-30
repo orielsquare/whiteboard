@@ -14,6 +14,9 @@
 export interface AudioCue {
   id: string
   startMs: number
+  /** the clip's natural END (startMs + the audio's real duration — NOT the shorter
+   *  VTT/caption window). Bounds *triggering* so a far-ahead scrub doesn't start a
+   *  finished clip; a clip that's already playing is left to finish on its own. */
   endMs: number
   url: string
 }
@@ -28,9 +31,17 @@ export type AudioAction =
  * state, `started` is whether this cue was already triggered in the current pass.
  */
 export function nextAudioAction(c: AudioCue, t: number, playing: boolean, started: boolean): AudioAction {
-  const inWindow = playing && t >= c.startMs && t < c.endMs
-  if (!inWindow) return { kind: 'pause' }
-  if (started) return { kind: 'none' }
+  if (!playing) return { kind: 'pause' }
+  if (started) {
+    // Already triggered → let it play to its NATURAL end (the <audio> stops itself
+    // when the clip finishes). Don't cut the tail at a fixed time — that clipped the
+    // END. Only stop if the clock moved back before the cue (a scrub/loop), which
+    // re-arms it to trigger again.
+    return t < c.startMs ? { kind: 'pause' } : { kind: 'none' }
+  }
+  // Not started yet → trigger only within the clip's span [startMs, endMs); never
+  // start a clip the clock has already advanced past (e.g. after scrubbing ahead).
+  if (t < c.startMs || t >= c.endMs) return { kind: 'pause' }
   const offset = (t - c.startMs) / 1000
   // A tiny offset = a frame elapsed while crossing the cue's start → play from 0 so
   // the very beginning isn't clipped. A large offset = playback resumed mid-cue (a
