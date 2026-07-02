@@ -159,17 +159,6 @@ export function Inspector({ fonts, drawings: drawingSet }: { fonts: FontSet; dra
             ))}
           </select>
         </label>
-        <label className="slider">
-          <span>draw speed <b>×{(ink.speed ?? 1).toFixed(2)}</b></span>
-          <input
-            type="range"
-            min={0.25}
-            max={4}
-            step={0.05}
-            value={ink.speed ?? 1}
-            onChange={(e) => updateInk(slide.id, ink.id, { speed: Number(e.target.value) })}
-          />
-        </label>
         <EnvelopeBar
           contentMs={inkNaturalMs}
           speed={ink.speed}
@@ -184,7 +173,6 @@ export function Inspector({ fonts, drawings: drawingSet }: { fonts: FontSet; dra
   // --- Placed-drawing properties (a drawing is selected) ------------------
   if (drawing) {
     const dw = drawing.frame[activeAspect].w ?? 0.3
-    const dspeed = drawing.speed ?? 1
     const dNaturalMs = drawingSet.get(drawing.drawingId)?.prepared.totalMs ?? 0
     return (
       <aside className="inspector">
@@ -199,11 +187,6 @@ export function Inspector({ fonts, drawings: drawingSet }: { fonts: FontSet; dra
           <span>width <b>{Math.round(dw * 100)}%</b></span>
           <input type="range" min={0.05} max={1} step={0.01} value={dw}
             onChange={(e) => updateDrawingFrame(slide.id, drawing.id, { w: Number(e.target.value) })} />
-        </label>
-        <label className="slider">
-          <span>draw speed <b>×{dspeed.toFixed(2)}</b></span>
-          <input type="range" min={0.25} max={4} step={0.05} value={dspeed}
-            onChange={(e) => updateDrawing(slide.id, drawing.id, { speed: Number(e.target.value) })} />
         </label>
         <EnvelopeBar
           contentMs={dNaturalMs}
@@ -255,29 +238,6 @@ export function Inspector({ fonts, drawings: drawingSet }: { fonts: FontSet; dra
           />
         </label>
 
-        <label className="slider">
-          <span>handwriting cadence <b>{box.interCharDelayMs}ms</b></span>
-          <input
-            type="range"
-            min={0}
-            max={300}
-            step={5}
-            value={box.interCharDelayMs}
-            onChange={(e) => updateTextBox(slide.id, box.id, { interCharDelayMs: Number(e.target.value) })}
-          />
-        </label>
-
-        <label className="slider">
-          <span>writing speed <b>×{(box.speed ?? 1).toFixed(2)}</b></span>
-          <input
-            type="range"
-            min={0.25}
-            max={4}
-            step={0.05}
-            value={box.speed ?? 1}
-            onChange={(e) => updateTextBox(slide.id, box.id, { speed: Number(e.target.value) })}
-          />
-        </label>
         <EnvelopeBar
           contentMs={boxNaturalMs}
           speed={box.speed}

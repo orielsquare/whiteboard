@@ -196,6 +196,21 @@ undo step per completed stroke.
       `'arrow'` tool is gone (legacy value still renders wings). Tool strip: ↖ ✎ ─ ～
       + an arrowhead toggle (line/curve only); Inspector adds the arrowhead checkbox
       + easing dropdown. `tools/ink.test.mjs` updated.
+- [x] P14 — timing panel rationalised (user spec): cadence + speed sliders + the
+      fixed-length checkbox are GONE (speed remains only as storage for animation
+      length). One stack per element: an absolute-ms envelope slider (500–10,000)
+      + keyboard field + **resize with content** (checked = auto envelope, hugging
+      padding + animation; any timing edit pins it; re-ticking un-pins/fits), the
+      lozenge, then three live editable values — **initial padding · animation
+      length · final padding**. A keyboard edit of any of the three opens a modal
+      (edited value checked + greyed; the other two act as radio compensators,
+      defaulting to initial padding — or final when initial is the edited one)
+      with **[change envelope]** (delta lands on the envelope, others hold) /
+      **[compensate internally]** (envelope holds; the chosen value absorbs; a
+      non-fitting change fails with a modal giving the needed envelope length) /
+      cancel. Matrix is pure + tested (`envelopeEdit.ts`,
+      `tools/envelopeEdit.test.mjs`, 17 assertions); every path verified
+      in-browser to the millisecond.
 - [x] P11 — multi-select + element clipboard: marquee on empty canvas,
       shift/ctrl-⌘ click toggles, group drag (one write, verified numerically —
       4 boxes moved +0.10/+0.10, unselected ink untouched), group delete

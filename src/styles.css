@@ -1395,6 +1395,26 @@ body {
   left: auto;
   right: 3px;
 }
+/* envelope length row: slider + ms field + "resize with content" */
+.env-lenrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.env-lenrow input[type='range'] {
+  flex: 1;
+  min-width: 90px;
+}
+.env-lenrow .num-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.env-lenrow .num-input {
+  width: 72px;
+}
 .env-fields {
   display: flex;
   align-items: center;
@@ -1409,6 +1429,17 @@ body {
 }
 .env-fields .num-input {
   width: 64px;
+}
+/* the timing-edit modal's checkbox column */
+.env-modal-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 14px;
+  font-size: 13px;
+}
+.env-modal-checks .env-check-edited {
+  opacity: 0.55;
 }
 .num-pre {
   color: var(--muted);
