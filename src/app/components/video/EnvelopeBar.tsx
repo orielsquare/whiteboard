@@ -1,5 +1,5 @@
 import { useRef, useState, type PointerEvent } from 'react'
-import { applyTimingEdit, defaultCompensator, type EnvField } from './envelopeEdit'
+import { applyEnvelopeResize, applyTimingEdit, defaultCompensator, type EnvField } from './envelopeEdit'
 
 const MIN_ENV_MS = 100
 const SLIDER_MIN = 500
@@ -19,6 +19,10 @@ const FIELD_LABEL: Record<EnvField, string> = {
  *    (which may exceed the slider's range), plus **resize with content** — when
  *    checked the envelope is auto (it hugs padding + animation and follows
  *    content edits); any timing edit pins it (unchecks), re-checking un-pins.
+ *    Resizing the envelope keeps the animation's ABSOLUTE length (padding
+ *    absorbs the change; the block only shrinks once all padding is consumed) —
+ *    unless **scale with envelope** is ticked, which scales padding + animation
+ *    together so the lozenge's proportions hold (see `applyEnvelopeResize`).
  *  - **the lozenge**: the envelope as a full-width bar of start padding · the
  *    animation block · end padding. Slide the block (trades start↔end padding,
  *    block fixed); stretch its left edge (block + start padding, end fixed) or
@@ -68,19 +72,29 @@ export function EnvelopeBar({
   const [pending, setPending] = useState<{ field: EnvField; value: number } | null>(null)
   const [compensator, setCompensator] = useState<EnvField>('initial')
   const [failure, setFailure] = useState<number | null>(null)
+  // envelope-resize mode: scale the whole partition, or (default) keep the block absolute
+  const [scaleWithEnv, setScaleWithEnv] = useState(false)
 
   const auto = !(envelopeMs != null && envelopeMs > 0)
   const naturalBubble = contentMs / (speed && speed > 0 ? speed : 1)
-  // The effective envelope: a live slider draft, the pinned length, or (auto) pad + block.
-  const env = Math.max(
-    MIN_ENV_MS,
-    envDraft ?? (auto ? Math.max(MIN_ENV_MS, offsetMs + naturalBubble) : (envelopeMs as number)),
-  )
-  // Partition (clamped so the block fits): start pad · bubble · end pad.
-  const baseStartPad = Math.max(0, Math.min(offsetMs, env))
-  const baseBubble = Math.max(0, Math.min(naturalBubble, env - baseStartPad))
-  const startPad = live?.startPad ?? baseStartPad
-  const bubble = live?.bubble ?? baseBubble
+  // The committed envelope: the pinned length, or (auto) pad + block.
+  const baseEnv = Math.max(MIN_ENV_MS, auto ? offsetMs + naturalBubble : (envelopeMs as number))
+  // Committed partition (clamped so the block fits): start pad · bubble · end pad.
+  const baseStartPad = Math.max(0, Math.min(offsetMs, baseEnv))
+  const baseBubble = Math.max(0, Math.min(naturalBubble, baseEnv - baseStartPad))
+  const basePartition = {
+    env: baseEnv,
+    startPad: baseStartPad,
+    bubble: baseBubble,
+    endPad: Math.max(0, baseEnv - baseStartPad - baseBubble),
+    contentMs,
+    naturalMs: naturalBubble,
+  }
+  // A live envelope-slider draft repartitions per the resize mode (matches the commit).
+  const env = envDraft != null ? Math.max(MIN_ENV_MS, envDraft) : baseEnv
+  const envPreview = envDraft != null ? applyEnvelopeResize(basePartition, env, scaleWithEnv) : null
+  const startPad = live?.startPad ?? envPreview?.startPad ?? baseStartPad
+  const bubble = live?.bubble ?? envPreview?.bubble ?? baseBubble
   const endPad = Math.max(0, env - startPad - bubble)
   const resizable = contentMs > 0
 
@@ -146,7 +160,8 @@ export function EnvelopeBar({
   const dragHandlers = { onPointerMove: onMove, onPointerUp: endDrag, onPointerCancel: cancelDrag }
 
   // --- envelope slider / field / resize-with-content -------------------------
-  const commitEnv = (v: number) => onChange({ envelopeMs: Math.max(MIN_ENV_MS, Math.round(v)) })
+  const commitEnv = (v: number) =>
+    onChange(applyEnvelopeResize(basePartition, Math.max(MIN_ENV_MS, Math.round(v)), scaleWithEnv).patch)
   const commitEnvDraft = () => {
     if (envDraft != null) {
       commitEnv(envDraft)
@@ -245,6 +260,10 @@ export function EnvelopeBar({
             onChange={(e) => onChange({ envelopeMs: e.target.checked ? undefined : Math.max(MIN_ENV_MS, Math.round(env)) })}
           />
           resize with content
+        </label>
+        <label className="toggle" title="Ticked: resizing the envelope scales padding AND animation together (the lozenge's proportions hold). Unticked: the animation keeps its absolute length and padding absorbs the change — the animation only shrinks once all padding is used up.">
+          <input type="checkbox" checked={scaleWithEnv} onChange={(e) => setScaleWithEnv(e.target.checked)} />
+          scale with envelope
         </label>
       </div>
 
