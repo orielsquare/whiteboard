@@ -116,6 +116,10 @@ interface VideoState {
   tlZoom: number | null
   /** Timeline horizontal scroll (px). Same lifecycle as `tlZoom`. */
   tlScroll: number
+  /** Envelope-resize mode, global across the Inspector's EnvelopeBar and the
+   *  Timeline: true = padding AND animation scale with the envelope; false
+   *  (default) = the animation keeps its absolute length, padding absorbs. */
+  scaleWithEnvelope: boolean
 
   selectSlide: (id: string | null) => void
   selectTextBox: (id: string | null) => void
@@ -137,6 +141,7 @@ interface VideoState {
   setPlayback: (p: Playback | null) => void
   setTlZoom: (v: number) => void
   setTlScroll: (v: number) => void
+  setScaleWithEnvelope: (v: boolean) => void
 
   addSlide: () => void
   copySlide: (id: string) => void
@@ -215,6 +220,19 @@ interface VideoState {
   addCue: (startMs: number, text?: string) => string
   updateCue: (id: string, patch: Partial<VoiceoverCue>) => void
   removeCue: (id: string) => void
+  /** move a set of cues together by deltaMs — ONE write (one undo). */
+  translateCues: (ids: string[], deltaMs: number) => void
+  /** Patch an element's timing (envelope/delay/speed) and, when the envelope's
+   *  length changed, shift every cue at/after `cueShift.fromMs` by
+   *  `cueShift.deltaMs` in the SAME write — so audio over subsequent slides
+   *  stays locked to them as they move. One undo step. */
+  resizeElementTiming: (
+    slideId: string,
+    kind: 'box' | 'drawing' | 'ink',
+    elementId: string,
+    patch: { envelopeMs?: number; delayBeforeMs?: number; speed?: number },
+    cueShift?: { fromMs: number; deltaMs: number },
+  ) => void
   setCueAudio: (id: string, audio: VoiceoverAudio | undefined) => void
 
   newProject: (fontId: string, brush: BrushSettings) => void
@@ -253,6 +271,7 @@ export const useVideoStore = create<VideoState>()(
       playback: null,
       tlZoom: null,
       tlScroll: 0,
+      scaleWithEnvelope: false,
 
       // Selecting a slide/box returns to the editing layout (stops any playback).
       selectSlide: (id) =>
@@ -317,6 +336,7 @@ export const useVideoStore = create<VideoState>()(
       setPlayback: (p) => set({ playback: p }),
       setTlZoom: (v) => set({ tlZoom: v }),
       setTlScroll: (v) => set({ tlScroll: v }),
+      setScaleWithEnvelope: (v) => set({ scaleWithEnvelope: v }),
 
       addSlide: () =>
         set((s) => {
@@ -583,6 +603,20 @@ export const useVideoStore = create<VideoState>()(
       },
       updateCue: (id, patch) => set((s) => (s.project ? { project: E.updateCue(s.project, id, patch) } : s)),
       removeCue: (id) => set((s) => (s.project ? { project: E.removeCue(s.project, id) } : s)),
+      translateCues: (ids, deltaMs) =>
+        set((s) => (s.project ? { project: E.translateCues(s.project, new Set(ids), deltaMs) } : s)),
+      resizeElementTiming: (slideId, kind, elementId, patch, cueShift) =>
+        set((s) => {
+          if (!s.project) return s
+          let project =
+            kind === 'box'
+              ? E.updateTextBox(s.project, slideId, elementId, patch)
+              : kind === 'drawing'
+                ? E.updateDrawing(s.project, slideId, elementId, patch)
+                : E.updateInk(s.project, slideId, elementId, patch)
+          if (cueShift) project = E.shiftCuesFrom(project, cueShift.fromMs, cueShift.deltaMs)
+          return { project }
+        }),
       setCueAudio: (id, audio) => set((s) => (s.project ? { project: E.setCueAudio(s.project, id, audio) } : s)),
 
       newProject: (fontId, brush) => {

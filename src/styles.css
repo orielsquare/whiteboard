@@ -1195,20 +1195,81 @@ body {
   overflow: hidden;
   display: flex;
   align-items: center;
-  /* hoverable so its title (box number + text) shows for narrow bars; it has no
-     onClick, so clicks still bubble to the section (select slide). */
+  /* hoverable so its title (box number + text) shows for narrow bars; the block/
+     grips swallow only DRAGGED clicks, so a plain click still bubbles to the
+     section (select slide). */
 }
-/* the animation block inside the envelope */
+/* the animation block inside the envelope — draggable (slide within the envelope).
+   Translucency via the background colour, NOT `opacity`: opacity would create a
+   stacking context that traps the grips' z-index below the envelope grip. */
 .tl-box .tl-box-block {
   position: absolute;
   top: 0;
   bottom: 0;
-  background: var(--accent);
-  opacity: 0.85;
-  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 85%, transparent);
+  cursor: grab;
+  touch-action: none;
+}
+.tl-box .tl-box-block:active {
+  cursor: grabbing;
+}
+.tl-box.dragging {
+  outline: 1px solid var(--accent);
+}
+/* the block's edge grips (retime the writing against the adjacent padding).
+   z-index 2: they must win over the envelope grip where they overlap — an auto
+   envelope has zero end padding, so the block's right edge IS the bar's edge;
+   the right grip is inset so the envelope grip keeps the outermost strip. */
+.tl-blockgrip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  touch-action: none;
+  z-index: 2;
+}
+.tl-blockgrip.left {
+  left: 0;
+}
+.tl-blockgrip.right {
+  right: 4px;
+  width: 5px;
+}
+.tl-blockgrip::after {
+  content: '';
+  position: absolute;
+  top: 7px;
+  bottom: 7px;
+  left: 2px;
+  width: 2px;
+  border-radius: 1px;
+  background: rgba(11, 13, 17, 0.45);
+}
+.tl-blockgrip.right::after {
+  left: auto;
+  right: 1px;
+}
+/* the envelope's right-edge grip (resize the envelope — shifts what follows) */
+.tl-envgrip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 8px;
+  cursor: ew-resize;
+  touch-action: none;
+  border-right: 2px solid rgba(122, 162, 255, 0.55);
+  border-radius: 0 4px 4px 0;
+  z-index: 1;
+}
+.tl-envgrip:hover {
+  background: rgba(122, 162, 255, 0.25);
+  border-right-color: var(--accent);
 }
 .tl-box .tl-box-label {
   position: relative; /* above the block */
+  pointer-events: none; /* drags land on the block/grips beneath */
 }
 .tl-box-label {
   font-size: 10px;
@@ -1472,14 +1533,14 @@ body {
   background: rgba(127, 214, 164, 0.28);
 }
 .tl-box.tl-draw .tl-box-block {
-  background: #7fd6a4;
+  background: color-mix(in srgb, #7fd6a4 85%, transparent);
 }
 /* a direct drawing's (ink) bar */
 .tl-box.tl-ink {
   background: rgba(255, 212, 121, 0.25);
 }
 .tl-box.tl-ink .tl-box-block {
-  background: #ffd479;
+  background: color-mix(in srgb, #ffd479 85%, transparent);
 }
 /* an element pinned to a fixed time envelope — bracketed ends */
 .tl-box.tl-fixed {
@@ -1547,8 +1608,27 @@ body {
   width: 0;
 }
 .tl-leader:hover,
-.tl-leader.dragging {
+.tl-leader.dragging,
+.tl-leader.selected {
   z-index: 40;
+}
+/* selected cues (marquee / modifier-click) — they drag together */
+.tl-leader.selected .tl-leader-line {
+  background: var(--accent);
+}
+.tl-leader.selected .tl-leader-label {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+/* the leaders band's rubber-band selection */
+.tl-marquee {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(122, 162, 255, 0.12);
+  border: 1px dashed var(--accent);
+  border-radius: 4px;
+  pointer-events: none;
 }
 .tl-leader-line {
   position: absolute;

@@ -758,6 +758,25 @@ export function removeCue(p: VideoProject, id: string): VideoProject {
   return { ...p, voiceover: cues(p).filter((c) => c.id !== id) }
 }
 
+/** Move a cue by `deltaMs`, preserving its duration and clamping at t=0. */
+const movedCue = (c: VoiceoverCue, deltaMs: number): VoiceoverCue => {
+  const startMs = Math.max(0, Math.round(c.startMs + deltaMs))
+  return { ...c, startMs, endMs: startMs + Math.max(0, c.endMs - c.startMs) }
+}
+
+/** Move a set of cues together by `deltaMs` (the timeline's multi-select drag). */
+export function translateCues(p: VideoProject, ids: Set<string>, deltaMs: number): VideoProject {
+  if (!cues(p).length || Math.round(deltaMs) === 0) return p
+  return { ...p, voiceover: cues(p).map((c) => (ids.has(c.id) ? movedCue(c, deltaMs) : c)) }
+}
+
+/** Shift every cue at/after `fromMs` by `deltaMs` — used when an envelope resize
+ *  moves everything after its slide, so those slides' audio stays locked to them. */
+export function shiftCuesFrom(p: VideoProject, fromMs: number, deltaMs: number): VideoProject {
+  if (!cues(p).length || Math.round(deltaMs) === 0) return p
+  return { ...p, voiceover: cues(p).map((c) => (c.startMs >= fromMs - 0.5 ? movedCue(c, deltaMs) : c)) }
+}
+
 export function setCueAudio(p: VideoProject, id: string, audio: VoiceoverAudio | undefined): VideoProject {
   return { ...p, voiceover: cues(p).map((c) => (c.id === id ? { ...c, audio } : c)) }
 }

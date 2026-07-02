@@ -147,6 +147,37 @@ const P = { env: 5000, startPad: 800, bubble: 3400, endPad: 800, contentMs: 8700
   ok(c.patch.envelopeMs === 500 && c.patch.delayBeforeMs === undefined && near(c.startPad, 500) && near(c.bubble, 0), 'still-degenerate shrink: envelope only', c)
 }
 
+// --- lozengeDrag / lozengeDragPatch (shared by EnvelopeBar + the Timeline) ------
+{
+  const d = { env: 5000, startPad0: 800, bubble0: 3400, minBubble: 20 }
+  // body: slides inside the envelope, clamped both ends, block length fixed
+  const a = E.lozengeDrag('body', d, 500)
+  ok(near(a.startPad, 1300) && near(a.bubble, 3400), 'body drag trades start↔end padding', a)
+  const b = E.lozengeDrag('body', d, 9999)
+  ok(near(b.startPad, 1600) && near(b.bubble, 3400), 'body drag clamps at the envelope end', b)
+  const c = E.lozengeDrag('body', d, -9999)
+  ok(near(c.startPad, 0), 'body drag clamps at 0', c)
+  // left edge: the block's right edge stays put (end padding fixed)
+  const l = E.lozengeDrag('left', d, -300)
+  ok(near(l.startPad, 500) && near(l.bubble, 3700), 'left grip grows the block backwards', l)
+  const l2 = E.lozengeDrag('left', d, 9999)
+  ok(near(l2.startPad, 4200 - 20) && near(l2.bubble, 20), 'left grip clamps at minBubble', l2)
+  // right edge: the block's left edge stays put (start padding fixed)
+  const rr = E.lozengeDrag('right', d, 400)
+  ok(near(rr.startPad, 800) && near(rr.bubble, 3800), 'right grip grows the block forwards', rr)
+  const r2 = E.lozengeDrag('right', d, 9999)
+  ok(near(r2.bubble, 4200), 'right grip clamps at the envelope', r2)
+  // patches: pin the envelope; only write what the gesture changed
+  const p1 = E.lozengeDragPatch('body', 5000, { startPad: 800, bubble: 3400 }, { startPad: 1300, bubble: 3400 }, 8700)
+  ok(p1.envelopeMs === 5000 && p1.delayBeforeMs === 1300 && p1.speed === undefined, 'body patch: delay only', p1)
+  const p2 = E.lozengeDragPatch('right', 5000, { startPad: 800, bubble: 3400 }, { startPad: 800, bubble: 3800 }, 8700)
+  ok(p2.delayBeforeMs === undefined && near(p2.speed, 8700 / 3800), 'right-grip patch: speed only', p2)
+  const p3 = E.lozengeDragPatch('left', 5000, { startPad: 800, bubble: 3400 }, { startPad: 500, bubble: 3700 }, 8700)
+  ok(p3.delayBeforeMs === 500 && near(p3.speed, 8700 / 3700), 'left-grip patch: delay + speed', p3)
+  const p4 = E.lozengeDragPatch('body', 5000, { startPad: 800, bubble: 3400 }, { startPad: 800, bubble: 3400 }, 8700)
+  ok(p4.delayBeforeMs === undefined && p4.speed === undefined, 'no-move patch writes nothing but the pin', p4)
+}
+
 // --- applyEnvelopeResize: scale ON — everything scales by env1/env0 -------------
 {
   const a = E.applyEnvelopeResize(P, 10000, true)

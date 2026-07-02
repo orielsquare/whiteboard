@@ -1,11 +1,18 @@
 import { useRef, useState, type PointerEvent } from 'react'
-import { applyEnvelopeResize, applyTimingEdit, defaultCompensator, type EnvField } from './envelopeEdit'
+import { useVideoStore } from '../../state/videoStore'
+import {
+  MIN_ENV_MS,
+  applyEnvelopeResize,
+  applyTimingEdit,
+  defaultCompensator,
+  lozengeDrag,
+  lozengeDragPatch,
+  type EnvField,
+  type LozengeDragKind,
+} from './envelopeEdit'
 
-const MIN_ENV_MS = 100
 const SLIDER_MIN = 500
 const SLIDER_MAX = 10000
-const MIN_SPEED = 0.01
-const MAX_SPEED = 2000
 
 const FIELD_LABEL: Record<EnvField, string> = {
   initial: 'initial padding',
@@ -72,8 +79,10 @@ export function EnvelopeBar({
   const [pending, setPending] = useState<{ field: EnvField; value: number } | null>(null)
   const [compensator, setCompensator] = useState<EnvField>('initial')
   const [failure, setFailure] = useState<number | null>(null)
-  // envelope-resize mode: scale the whole partition, or (default) keep the block absolute
-  const [scaleWithEnv, setScaleWithEnv] = useState(false)
+  // envelope-resize mode: scale the whole partition, or (default) keep the block
+  // absolute. GLOBAL (shared with the Timeline view's checkbox).
+  const scaleWithEnv = useVideoStore((s) => s.scaleWithEnvelope)
+  const setScaleWithEnv = useVideoStore((s) => s.setScaleWithEnvelope)
 
   const auto = !(envelopeMs != null && envelopeMs > 0)
   const naturalBubble = contentMs / (speed && speed > 0 ? speed : 1)
@@ -103,7 +112,7 @@ export function EnvelopeBar({
   const pct = (ms: number) => (env > 0 ? `${Math.max(0, Math.min(100, (ms / env) * 100))}%` : '0%')
 
   // --- lozenge drags (slide the block; stretch either edge) ------------------
-  const startDrag = (kind: 'body' | 'left' | 'right') => (e: PointerEvent<HTMLElement>) => {
+  const startDrag = (kind: LozengeDragKind) => (e: PointerEvent<HTMLElement>) => {
     e.preventDefault()
     e.stopPropagation()
     const bar = barRef.current
@@ -120,21 +129,8 @@ export function EnvelopeBar({
     dragRef.current = { kind, x0: e.clientX, startPad0: startPad, bubble0: bubble, pxPerMs, minBubble }
     setLive({ startPad, bubble })
   }
-  const applyDelta = (d: NonNullable<typeof dragRef.current>, clientX: number): { startPad: number; bubble: number } => {
-    const deltaMs = (clientX - d.x0) / d.pxPerMs
-    if (d.kind === 'body') {
-      // slide within the envelope: start-pad 0 … (env − block); block size fixed
-      return { startPad: Math.max(0, Math.min(env - d.bubble0, d.startPad0 + deltaMs)), bubble: d.bubble0 }
-    }
-    if (d.kind === 'left') {
-      // the block's RIGHT edge stays put → end padding fixed
-      const rightEdge = d.startPad0 + d.bubble0
-      const sp = Math.max(0, Math.min(rightEdge - d.minBubble, d.startPad0 + deltaMs))
-      return { startPad: sp, bubble: rightEdge - sp }
-    }
-    // right edge: the block's LEFT edge stays put → start padding fixed
-    return { startPad: d.startPad0, bubble: Math.max(d.minBubble, Math.min(env - d.startPad0, d.bubble0 + deltaMs)) }
-  }
+  const applyDelta = (d: NonNullable<typeof dragRef.current>, clientX: number): { startPad: number; bubble: number } =>
+    lozengeDrag(d.kind, { env, startPad0: d.startPad0, bubble0: d.bubble0, minBubble: d.minBubble }, (clientX - d.x0) / d.pxPerMs)
   const onMove = (e: PointerEvent<HTMLElement>) => {
     const d = dragRef.current
     if (d) setLive(applyDelta(d, e.clientX))
@@ -146,12 +142,7 @@ export function EnvelopeBar({
     const v = applyDelta(d, e.clientX)
     setLive(null)
     // Every drag pins the envelope (so its length stays fixed thereafter).
-    const patch: { envelopeMs: number; delayBeforeMs?: number; speed?: number } = { envelopeMs: Math.round(env) }
-    if (Math.round(v.startPad) !== Math.round(baseStartPad)) patch.delayBeforeMs = Math.max(0, Math.round(v.startPad))
-    if (d.kind !== 'body' && contentMs > 0 && Math.round(v.bubble) !== Math.round(baseBubble)) {
-      patch.speed = Math.min(MAX_SPEED, Math.max(MIN_SPEED, contentMs / Math.max(1, v.bubble)))
-    }
-    onChange(patch)
+    onChange(lozengeDragPatch(d.kind, env, { startPad: baseStartPad, bubble: baseBubble }, v, contentMs))
   }
   const cancelDrag = () => {
     dragRef.current = null

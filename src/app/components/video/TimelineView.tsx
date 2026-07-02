@@ -12,6 +12,14 @@ import { useVideoStore } from '../../state/videoStore'
 import { prefGet, prefSetDebounced } from '../../state/sessionPrefs'
 import { previewCanvasW } from './layoutCanvas'
 import { SlideThumbnail } from './SlideThumbnail'
+import {
+  MIN_ENV_MS,
+  applyEnvelopeResize,
+  lozengeDrag,
+  lozengeDragPatch,
+  type EnvPatch,
+  type LozengeDragKind,
+} from './envelopeEdit'
 
 const EMPTY: VoiceoverCue[] = []
 
@@ -71,9 +79,12 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
   const project = useVideoStore((s) => s.project)
   const activeAspect = useVideoStore((s) => s.activeAspect)
   const cues = useVideoStore((s) => s.project?.voiceover ?? EMPTY)
-  const updateCue = useVideoStore((s) => s.updateCue)
   const addCue = useVideoStore((s) => s.addCue)
   const selectSlide = useVideoStore((s) => s.selectSlide)
+  const translateCues = useVideoStore((s) => s.translateCues)
+  const resizeElementTiming = useVideoStore((s) => s.resizeElementTiming)
+  const scaleWithEnvelope = useVideoStore((s) => s.scaleWithEnvelope)
+  const setScaleWithEnvelope = useVideoStore((s) => s.setScaleWithEnvelope)
 
   // Zoom lives in the (transient) store so it survives tab switches, and is
   // mirrored to a per-project pref so it survives refreshes. `tlZoom === null`
@@ -128,6 +139,99 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
   const windows = useMemo(() => (rc ? slideTimeWindows(rc.timing) : []), [rc])
   const sortedCues = useMemo(() => [...cues].sort((a, b) => a.startMs - b.startMs), [cues])
   const xOf = useCallback((ms: number) => (ms / 1000) * pxPerSec, [pxPerSec])
+
+  // --- voiceover multi-selection (marquee / modifier-click) + group drag -------
+  // Selection is transient view state; the group drag is deferred-write like a
+  // single leader drag: local deltaPx during the gesture, ONE translateCues write
+  // on release (= one undo step).
+  const [selectedCueIds, setSelectedCueIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [leaderDrag, setLeaderDrag] = useState<{ ids: ReadonlySet<string>; deltaPx: number } | null>(null)
+  // pxPerSec is FROZEN at pointer-down so a wheel zoom mid-drag can't rescale the delta
+  const leaderDragRef = useRef<{ ids: string[]; x0: number; minStartMs: number; additive: boolean; downId: string; pxPerSec: number } | null>(null)
+  const [marquee, setMarquee] = useState<{ x0: number; x1: number } | null>(null)
+  const marqueeRef = useRef<{ x0: number; additive: boolean; moved: boolean } | null>(null)
+  const isAdditive = (e: PointerEvent<HTMLElement>) => e.shiftKey || e.metaKey || e.ctrlKey
+
+  const onLeaderDown = (cue: VoiceoverCue, e: PointerEvent<HTMLElement>) => {
+    const additive = isAdditive(e)
+    const inSelection = selectedCueIds.has(cue.id)
+    // dragging a selected leader moves the whole selection; an unselected one moves alone
+    const ids = inSelection ? [...selectedCueIds] : [cue.id]
+    if (!inSelection && !additive) setSelectedCueIds(new Set([cue.id]))
+    const minStartMs = ids.reduce((m, id) => Math.min(m, cues.find((c) => c.id === id)?.startMs ?? Infinity), cue.startMs)
+    leaderDragRef.current = { ids, x0: e.clientX, minStartMs, additive, downId: cue.id, pxPerSec }
+    setLeaderDrag({ ids: new Set(ids), deltaPx: 0 })
+  }
+  const leaderDelta = (d: NonNullable<typeof leaderDragRef.current>, clientX: number) =>
+    Math.max(-(d.minStartMs / 1000) * d.pxPerSec, clientX - d.x0) // none of the group before t=0
+  const onLeaderMove = (e: PointerEvent<HTMLElement>) => {
+    const d = leaderDragRef.current
+    if (!d) return
+    if ((e.buttons & 1) === 0) return onLeaderCancel() // button already released — stale gesture
+    setLeaderDrag({ ids: new Set(d.ids), deltaPx: leaderDelta(d, e.clientX) })
+  }
+  const onLeaderUp = (e: PointerEvent<HTMLElement>) => {
+    const d = leaderDragRef.current
+    leaderDragRef.current = null
+    if (!d) return
+    const deltaPx = leaderDelta(d, e.clientX)
+    setLeaderDrag(null)
+    if (Math.abs(deltaPx) < 3) {
+      // a click, not a drag: plain = select only this cue; modifier = toggle it
+      setSelectedCueIds((prev) => {
+        if (!d.additive) return new Set([d.downId])
+        const next = new Set(prev)
+        if (next.has(d.downId)) next.delete(d.downId)
+        else next.add(d.downId)
+        return next
+      })
+      return
+    }
+    if (Math.round(deltaPx) !== 0) translateCues(d.ids, (deltaPx / d.pxPerSec) * 1000) // the one write
+  }
+  const onLeaderCancel = () => {
+    leaderDragRef.current = null
+    setLeaderDrag(null)
+  }
+
+  // Marquee over empty leaders-band space (an x-range; leaders are picked by their
+  // start time). Plain click on empty space clears the selection.
+  const onLeadersDown = (e: PointerEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return // leaders swallow their own pointerdowns
+    const x = e.clientX - e.currentTarget.getBoundingClientRect().left
+    marqueeRef.current = { x0: x, additive: isAdditive(e), moved: false }
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      /* capture unavailable — window-relative move still tracks */
+    }
+    setMarquee({ x0: x, x1: x })
+  }
+  const onLeadersMove = (e: PointerEvent<HTMLDivElement>) => {
+    const m = marqueeRef.current
+    if (!m) return
+    const x = e.clientX - e.currentTarget.getBoundingClientRect().left
+    if (Math.abs(x - m.x0) > 3) m.moved = true
+    setMarquee({ x0: m.x0, x1: x })
+  }
+  const onLeadersUp = (e: PointerEvent<HTMLDivElement>) => {
+    const m = marqueeRef.current
+    marqueeRef.current = null
+    if (!m) return
+    const x = e.clientX - e.currentTarget.getBoundingClientRect().left
+    setMarquee(null)
+    if (!m.moved) {
+      if (!m.additive) setSelectedCueIds(new Set())
+      return
+    }
+    const [lo, hi] = [Math.min(m.x0, x), Math.max(m.x0, x)]
+    const hit = sortedCues.filter((c) => xOf(c.startMs) >= lo && xOf(c.startMs) <= hi).map((c) => c.id)
+    setSelectedCueIds((prev) => (m.additive ? new Set([...prev, ...hit]) : new Set(hit)))
+  }
+  const onLeadersCancel = () => {
+    marqueeRef.current = null
+    setMarquee(null)
+  }
 
   // Track whether Space is held (Space + wheel scrolls horizontally). Suppress the
   // page's space-scroll only while the timeline is hovered.
@@ -222,6 +326,13 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
           {(totalMs / 1000).toFixed(1)}s · {project.slides.length} slide(s) · {cues.length} cue(s)
         </span>
         <div className="spacer" />
+        <label
+          className="toggle"
+          title="Applies while dragging an envelope's right edge. Ticked: padding AND animation scale with the envelope. Unticked: the animation keeps its absolute length and padding absorbs the change."
+        >
+          <input type="checkbox" checked={scaleWithEnvelope} onChange={(e) => setScaleWithEnvelope(e.target.checked)} />
+          scale with envelope
+        </label>
         <span className="muted tl-zoom-label">zoom</span>
         {/* read the CURRENT zoom (store), not the render's — rapid clicks must all land */}
         <button className="tool" onClick={() => setPxPerSec(clampPxPerSec((useVideoStore.getState().tlZoom ?? pxPerSecRef.current) / 1.4))} title="zoom out">−</button>
@@ -241,7 +352,12 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
             className="tl-leaders"
             style={{ height: LEADERS_H, width: trackWidth }}
             onDoubleClick={onLeadersDoubleClick}
-            title="double-click to add a cue"
+            onPointerDown={onLeadersDown}
+            onPointerMove={onLeadersMove}
+            onPointerUp={onLeadersUp}
+            onPointerCancel={onLeadersCancel}
+            onLostPointerCapture={onLeadersCancel}
+            title="double-click to add a cue · drag to marquee-select cues"
           >
             {sortedCues.map((c, i) => (
               <LeaderLine
@@ -250,9 +366,20 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
                 level={i % LEADER_LEVELS}
                 leftPx={xOf(c.startMs)}
                 pxPerSec={pxPerSec}
-                onMove={updateCue}
+                selected={selectedCueIds.has(c.id)}
+                dragDeltaPx={leaderDrag?.ids.has(c.id) ? leaderDrag.deltaPx : null}
+                onDown={onLeaderDown}
+                onMove={onLeaderMove}
+                onUp={onLeaderUp}
+                onCancel={onLeaderCancel}
               />
             ))}
+            {marquee && (
+              <div
+                className="tl-marquee"
+                style={{ left: Math.min(marquee.x0, marquee.x1), width: Math.abs(marquee.x1 - marquee.x0) }}
+              />
+            )}
           </div>
 
           {/* time ruler */}
@@ -302,32 +429,42 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
                       const box = it.kind === 'box' ? slide?.textBoxes.find((x) => x.id === it.id) : undefined
                       const drawing = it.kind === 'drawing' ? slide?.drawings?.find((x) => x.id === it.id) : undefined
                       const ink = it.kind === 'ink' ? slide?.inks?.find((x) => x.id === it.id) : undefined
-                      const bw = xOf(it.endMs - it.startMs)
-                      const env = it.endMs - it.startMs
+                      const el = box ?? drawing ?? ink
+                      if (!el) return null
                       const text = box ? cueLabel(runsToPlainText(box.runs)) : ink ? `${ink.tool} ink` : drawing?.name ?? 'drawing'
-                      const envMs = box?.envelopeMs ?? drawing?.envelopeMs ?? ink?.envelopeMs
-                      const fixed = envMs != null && envMs > 0
-                      // the animation block within the envelope, as % of the bar
-                      const blockLeft = env > 0 ? ((it.animStartMs - it.startMs) / env) * 100 : 0
-                      const blockW = env > 0 ? ((it.animEndMs - it.animStartMs) / env) * 100 : 0
+                      const contentMs =
+                        it.kind === 'box'
+                          ? rc.layoutsBySlide.get(win.slideId)?.get(it.id)?.contentMs ?? 0
+                          : it.kind === 'drawing'
+                            ? rc.drawingsBySlide.get(win.slideId)?.get(it.id)?.prepared.totalMs ?? 0
+                            : rc.inksBySlide.get(win.slideId)?.get(it.id)?.totalMs ?? 0
                       return (
-                        <div
+                        <ElementBar
                           key={it.id}
-                          className={
-                            (it.kind === 'drawing' ? 'tl-box tl-draw' : it.kind === 'ink' ? 'tl-box tl-ink' : 'tl-box') +
-                            (fixed ? ' tl-fixed' : '')
-                          }
-                          style={{ left: xOf(it.startMs), width: Math.max(3, bw) }}
-                          title={`${bi + 1}. ${text}${fixed ? ` — fixed ${(envMs / 1000).toFixed(1)}s envelope` : ''}`}
-                        >
-                          <div className="tl-box-block" style={{ left: `${blockLeft}%`, width: `${Math.max(1, blockW)}%` }} />
-                          {detail && bw > 26 && (
-                            <span className="tl-box-label">
-                              {fixed ? '⧖ ' : ''}
-                              {bi + 1}. {text}
-                            </span>
-                          )}
-                        </div>
+                          it={it}
+                          index={bi}
+                          text={text}
+                          detail={detail}
+                          fixed={el.envelopeMs != null && el.envelopeMs > 0}
+                          speed={el.speed}
+                          contentMs={contentMs}
+                          rate={playbackRate}
+                          pxPerSec={pxPerSec}
+                          scaleWithEnvelope={scaleWithEnvelope}
+                          onCommit={(patch, envDeltaStoredMs) => {
+                            // An envelope-length change shifts everything after this
+                            // slide — move the audio over those slides by the same
+                            // real delta, in the SAME write, so it stays locked.
+                            const deltaReal = envDeltaStoredMs / playbackRate
+                            resizeElementTiming(
+                              win.slideId,
+                              it.kind,
+                              it.id,
+                              patch,
+                              Math.round(deltaReal) !== 0 ? { fromMs: win.endMs, deltaMs: deltaReal } : undefined,
+                            )
+                          }}
+                        />
                       )
                     })}
                 </div>
@@ -370,13 +507,210 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
       </div>
 
       <p className="hint">
-        Each slide is a section: numbered bars are the textbox writing, the striped block is the hold, and the
-        red overlay is the closing transition (it bleeds into the next slide — they overlap on screen).
-        Voiceover cues hang above as leader lines — <b>drag</b> one to re-time it, <b>double-click</b> empty
-        space to add one; the bar to the right of a line shows its generated audio length (yellow = ready,
-        amber/hatched = stale → regenerate). Zoom with
-        the <b>mouse wheel</b> (or −/＋/Fit); <b>Space</b>+wheel scrolls left/right.
+        Each slide is a section: numbered bars are the element envelopes, the solid block inside is the
+        writing. <b>Drag the block</b> to slide it inside its envelope, <b>drag a block edge</b> to retime the
+        animation (trades with the adjacent padding), and <b>drag the envelope's right edge</b> to resize it —
+        everything after shifts, and <i>scale with envelope</i> (toolbar) decides whether the contents scale
+        too. The striped block is the hold; the red overlay is the closing transition (it bleeds into the next
+        slide). Voiceover cues hang above as leader lines — <b>drag</b> one to re-time it,{' '}
+        <b>marquee-drag</b> empty space or <b>shift/⌘-click</b> to select several (they drag together),{' '}
+        <b>double-click</b> empty space to add one; the bar to the right of a line shows its generated audio
+        length (yellow = ready, amber/hatched = stale → regenerate). Resizing an envelope keeps the audio
+        over LATER slides locked to them. Zoom with the <b>mouse wheel</b> (or −/＋/Fit); <b>Space</b>+wheel
+        scrolls left/right.
       </p>
+    </div>
+  )
+}
+
+/** The slice of an element's slide-local timing the bar needs (real ms). */
+interface ElementTiming {
+  id: string
+  kind: 'box' | 'drawing' | 'ink'
+  startMs: number
+  endMs: number
+  animStartMs: number
+  animEndMs: number
+}
+
+/**
+ * One element's envelope bar in a slide section, with the animation block inside.
+ * Direct manipulation, mirroring the Inspector's EnvelopeBar lozenge:
+ *  - drag the **block** to slide it inside the envelope (trades the paddings);
+ *  - drag a **block edge** to retime the animation against the adjacent padding;
+ *  - drag the **envelope's right edge** to resize the envelope itself — the
+ *    global "scale with envelope" toggle picks the repartition mode, and
+ *    everything after the element shifts when the write lands.
+ * All drags are deferred-write like `LeaderLine`: pointermove only moves local
+ * state (this bar re-renders; the timeline does NOT re-lay-out), the model is
+ * written once on release (= one undo step, no history pause needed), and
+ * pointercancel abandons the gesture. Timeline px are REAL time; stored values
+ * are ×1 time — deltas convert via `rate` (the project playbackRate).
+ */
+function ElementBar({
+  it,
+  index,
+  text,
+  detail,
+  fixed,
+  speed,
+  contentMs,
+  rate,
+  pxPerSec,
+  scaleWithEnvelope,
+  onCommit,
+}: {
+  it: ElementTiming
+  index: number
+  text: string
+  detail: boolean
+  /** whether the envelope is pinned (envelopeMs set) — display only. */
+  fixed: boolean
+  /** the element's stored speed (for the natural length in recovery previews). */
+  speed: number | undefined
+  /** the element's natural content time (×1 ms). */
+  contentMs: number
+  /** the project playbackRate — real ms × rate = stored (×1) ms. */
+  rate: number
+  pxPerSec: number
+  scaleWithEnvelope: boolean
+  /** `envDeltaStoredMs` is the envelope-length change (×1 ms; 0 for drags inside
+   *  a pinned envelope) — the caller uses it to keep later slides' audio locked. */
+  onCommit: (patch: EnvPatch, envDeltaStoredMs: number) => void
+}) {
+  // The committed partition in STORED (×1) ms — timing was divided by rate.
+  const env0 = (it.endMs - it.startMs) * rate
+  const startPad0 = (it.animStartMs - it.startMs) * rate
+  const bubble0 = (it.animEndMs - it.animStartMs) * rate
+  const pxPerStoredMs = pxPerSec / 1000 / rate
+
+  const [live, setLive] = useState<{ env: number; startPad: number; bubble: number } | null>(null)
+  // pxPerStoredMs is FROZEN at pointer-down — a wheel zoom mid-gesture must not
+  // rescale the accumulated pixel delta.
+  const dragRef = useRef<{ kind: LozengeDragKind | 'env'; x0: number; minBubble: number; pxPerStoredMs: number } | null>(null)
+  // whether the last gesture actually moved — a plain click falls through to the
+  // section's select-slide, matching the pre-interactive bars.
+  const movedRef = useRef(false)
+
+  const env = live?.env ?? env0
+  const startPad = live?.startPad ?? startPad0
+  const bubble = live?.bubble ?? bubble0
+  const bw = Math.max(3, env * pxPerStoredMs)
+  const blockLeft = env > 0 ? (startPad / env) * 100 : 0
+  const blockW = env > 0 ? (bubble / env) * 100 : 0
+
+  const basePartition = () => ({
+    env: env0,
+    startPad: startPad0,
+    bubble: bubble0,
+    endPad: Math.max(0, env0 - startPad0 - bubble0),
+    contentMs,
+    naturalMs: contentMs / (speed && speed > 0 ? speed : 1),
+  })
+  const liveFor = (d: NonNullable<typeof dragRef.current>, clientX: number) => {
+    const deltaMs = (clientX - d.x0) / d.pxPerStoredMs
+    if (d.kind === 'env') {
+      const newEnv = Math.max(MIN_ENV_MS, env0 + deltaMs)
+      const v = applyEnvelopeResize(basePartition(), newEnv, scaleWithEnvelope)
+      return { env: newEnv, startPad: v.startPad, bubble: v.bubble }
+    }
+    const v = lozengeDrag(d.kind, { env: env0, startPad0, bubble0, minBubble: d.minBubble }, deltaMs)
+    return { env: env0, ...v }
+  }
+
+  const startDrag = (kind: NonNullable<typeof dragRef.current>['kind']) => (e: PointerEvent<HTMLElement>) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if ((kind === 'left' || kind === 'right') && contentMs <= 0) return
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId)
+    } catch {
+      /* capture unavailable — window-relative move still tracks */
+    }
+    const scale = pxPerStoredMs > 0 ? pxPerStoredMs : 1
+    dragRef.current = { kind, x0: e.clientX, minBubble: 2 / scale, pxPerStoredMs: scale }
+    movedRef.current = false
+    setLive({ env: env0, startPad: startPad0, bubble: bubble0 })
+  }
+  const onMove = (e: PointerEvent<HTMLElement>) => {
+    const d = dragRef.current
+    if (!d) return
+    if ((e.buttons & 1) === 0) return cancelDrag() // button already released — stale gesture
+    if (Math.abs(e.clientX - d.x0) >= 3) movedRef.current = true
+    setLive(liveFor(d, e.clientX))
+  }
+  const endDrag = (e: PointerEvent<HTMLElement>) => {
+    const d = dragRef.current
+    dragRef.current = null
+    if (!d) return
+    const v = liveFor(d, e.clientX)
+    setLive(null)
+    if (d.kind === 'env') {
+      // the one write — subsequent elements/slides shift when timing recomputes
+      if (Math.round(v.env) !== Math.round(env0)) {
+        onCommit(applyEnvelopeResize(basePartition(), v.env, scaleWithEnvelope).patch, v.env - env0)
+      }
+      return
+    }
+    const patch = lozengeDragPatch(d.kind, env0, { startPad: startPad0, bubble: bubble0 }, v, contentMs)
+    // an in-place click (nothing moved) shouldn't pin an auto envelope
+    if (patch.delayBeforeMs != null || patch.speed != null) onCommit(patch, 0)
+  }
+  const cancelDrag = () => {
+    dragRef.current = null
+    setLive(null)
+  }
+  const drag = { onPointerMove: onMove, onPointerUp: endDrag, onPointerCancel: cancelDrag, onLostPointerCapture: cancelDrag }
+  // Swallow the click only after a real drag; a plain click bubbles to the
+  // section and selects the slide (the bars' pre-interactive behavior).
+  const swallowClick = (e: MouseEvent<HTMLElement>) => {
+    if (movedRef.current) e.stopPropagation()
+  }
+
+  // Grip mounting is gated on the COMMITTED geometry — live-value gates would
+  // unmount the grip holding pointer capture mid-shrink, stranding the gesture.
+  const bw0 = Math.max(3, env0 * pxPerStoredMs)
+  const blockPx0 = bubble0 * pxPerStoredMs
+  return (
+    <div
+      className={
+        (it.kind === 'drawing' ? 'tl-box tl-draw' : it.kind === 'ink' ? 'tl-box tl-ink' : 'tl-box') +
+        (fixed ? ' tl-fixed' : '') +
+        (live ? ' dragging' : '')
+      }
+      style={{ left: (it.startMs / 1000) * pxPerSec, width: bw }}
+      title={`${index + 1}. ${text}${fixed ? ` — fixed ${(env0 / rate / 1000).toFixed(1)}s envelope` : ''}`}
+    >
+      <div
+        className="tl-box-block"
+        style={{ left: `${blockLeft}%`, width: `${Math.max(1, blockW)}%` }}
+        title="the writing — drag to slide it inside its envelope"
+        onPointerDown={startDrag('body')}
+        onClick={swallowClick}
+        {...drag}
+      >
+        {contentMs > 0 && blockPx0 >= 16 && (
+          <>
+            <span className="tl-blockgrip left" title="retime the writing — keeps the end padding" onPointerDown={startDrag('left')} onClick={swallowClick} {...drag} />
+            <span className="tl-blockgrip right" title="retime the writing — keeps the start padding" onPointerDown={startDrag('right')} onClick={swallowClick} {...drag} />
+          </>
+        )}
+      </div>
+      {detail && bw > 26 && (
+        <span className="tl-box-label">
+          {fixed ? '⧖ ' : ''}
+          {index + 1}. {text}
+        </span>
+      )}
+      {bw0 >= 10 && (
+        <span
+          className="tl-envgrip"
+          title="resize the time envelope — everything after it shifts; 'scale with envelope' picks whether the writing scales too"
+          onPointerDown={startDrag('env')}
+          onClick={swallowClick}
+          {...drag}
+        />
+      )}
     </div>
   )
 }
@@ -384,21 +718,34 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
 /**
  * One voiceover cue as a labelled leader line above the ruler. The line rises to a
  * staircase level (so neighbours don't overlap); hovering brings it to front and
- * reveals a drag handle. Dragging the label or handle re-times the cue live
- * (preserving its duration), as a single undo step.
+ * reveals a drag handle. Selection and dragging are owned by the PARENT (so a
+ * marquee/modifier-click selection drags as a group): this component only reports
+ * pointer events and renders the parent-supplied drag transform. Dragging is a
+ * cheap CSS transform; the cue model is written once on release (one undo step).
  */
 function LeaderLine({
   cue,
   level,
   leftPx,
   pxPerSec,
+  selected,
+  dragDeltaPx,
+  onDown,
   onMove,
+  onUp,
+  onCancel,
 }: {
   cue: VoiceoverCue
   level: number
   leftPx: number
   pxPerSec: number
-  onMove: (id: string, patch: Partial<VoiceoverCue>) => void
+  selected: boolean
+  /** the group drag's live offset when this cue is part of it; null otherwise. */
+  dragDeltaPx: number | null
+  onDown: (cue: VoiceoverCue, e: PointerEvent<HTMLElement>) => void
+  onMove: (e: PointerEvent<HTMLElement>) => void
+  onUp: (e: PointerEvent<HTMLElement>) => void
+  onCancel: () => void
 }) {
   const lineLen = LEADER_BASE + level * LEADER_STEP
   // Audio state, mirrored from the VTT view: fresh = green tint + bright bar;
@@ -406,64 +753,23 @@ function LeaderLine({
   const stale = !!cue.audio && isAudioStale(cue)
   const fresh = !!cue.audio && !stale
   const dur = cue.audio ? (cue.audio.durationMs / 1000).toFixed(1) : '0'
-  const dragRef = useRef<{ x0: number; start0: number; dur: number } | null>(null)
-  const [dragging, setDragging] = useState(false)
-  const [dragDeltaPx, setDragDeltaPx] = useState(0)
 
-  // Dragging manipulates ONLY this line (a cheap CSS transform); the cue model
-  // (and therefore the VTT + the whole timeline layout) is written exactly once on
-  // release — so the timeline isn't re-laid-out on every pointermove. A single
-  // commit is also one natural undo step, so no history pause/resume is needed.
-  const clampDelta = (clientX: number, d: { x0: number; start0: number }) => {
-    const delta = clientX - d.x0
-    const minDelta = -(d.start0 / 1000) * pxPerSec // can't drag earlier than t=0
-    return delta < minDelta ? minDelta : delta
-  }
   const onPointerDown = (e: PointerEvent<HTMLElement>) => {
-    e.stopPropagation()
+    e.stopPropagation() // keep the leaders band's marquee out of it
     try {
       e.currentTarget.setPointerCapture(e.pointerId)
     } catch {
       /* capture unavailable (e.g. headless) — drag still tracks via window-relative move */
     }
-    dragRef.current = { x0: e.clientX, start0: cue.startMs, dur: Math.max(0, cue.endMs - cue.startMs) }
-    setDragging(true)
-    setDragDeltaPx(0)
+    onDown(cue, e)
   }
-  const onPointerMove = (e: PointerEvent<HTMLElement>) => {
-    const d = dragRef.current
-    if (!d) return
-    setDragDeltaPx(clampDelta(e.clientX, d)) // local only — no store write
-  }
-  const onPointerUp = (e: PointerEvent<HTMLElement>) => {
-    const d = dragRef.current
-    if (!d) return
-    const delta = clampDelta(e.clientX, d)
-    dragRef.current = null
-    setDragging(false)
-    setDragDeltaPx(0)
-    if (Math.round(delta) !== 0) {
-      const start = Math.max(0, Math.round(d.start0 + (delta / pxPerSec) * 1000))
-      onMove(cue.id, { startMs: start, endMs: start + d.dur }) // the one write
-    }
-    try {
-      e.currentTarget.releasePointerCapture(e.pointerId)
-    } catch {
-      /* never captured */
-    }
-  }
-  // Gesture interrupted → abandon the drag and snap back (no write).
-  const onPointerCancel = () => {
-    dragRef.current = null
-    setDragging(false)
-    setDragDeltaPx(0)
-  }
-  const drag = { onPointerDown, onPointerMove, onPointerUp, onPointerCancel }
+  const drag = { onPointerDown, onPointerMove: onMove, onPointerUp: onUp, onPointerCancel: onCancel, onLostPointerCapture: onCancel }
+  const dragging = dragDeltaPx != null
 
   return (
     <div
-      className={dragging ? 'tl-leader dragging' : 'tl-leader'}
-      style={{ left: leftPx, height: LEADERS_H, transform: dragDeltaPx ? `translateX(${dragDeltaPx}px)` : undefined }}
+      className={'tl-leader' + (dragging ? ' dragging' : '') + (selected ? ' selected' : '')}
+      style={{ left: leftPx, height: LEADERS_H, transform: dragging && dragDeltaPx ? `translateX(${dragDeltaPx}px)` : undefined }}
       onDoubleClick={(e) => e.stopPropagation()}
     >
       <div
@@ -490,7 +796,7 @@ function LeaderLine({
           title={stale ? `stale audio ~${dur}s — regenerate` : `audio ${dur}s`}
         />
       )}
-      <div className="tl-leader-handle" title="drag to re-time" {...drag} />
+      <div className="tl-leader-handle" title="drag to re-time (a selection moves together)" {...drag} />
     </div>
   )
 }

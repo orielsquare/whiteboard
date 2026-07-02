@@ -190,9 +190,16 @@ full-width **Timeline**
 view (`TimelineView.tsx` — real-time-scaled DOM track: slide sections + numbered writing sub-bars + hold
 + bleeding transition overlays + ruler + floating thumbnails; **mouse-wheel zoom** [cursor-anchored] +
 **Space/Shift+wheel** horizontal scroll; per-cue **audio-length bars** [yellow = ready, amber/hatched =
-stale]), and draggable voiceover **leader lines** (**deferred-write**: pointermove moves a local
+stale]; each element bar is its **envelope with a draggable animation block** — slide the block, stretch
+its edges, or drag the envelope's right edge to resize it [deferred-write, one undo per gesture; pure math
+shared with the Inspector's `EnvelopeBar` via `envelopeEdit.ts`; the **global "scale with envelope"**
+toggle — `videoStore.scaleWithEnvelope`, mirrored in both views — picks whether the contents scale or the
+animation keeps its absolute length; an envelope-length change also **shifts every cue at/after the next
+slide in the same write** (`resizeElementTiming` + `videoEdit.shiftCuesFrom`), so audio over LATER slides
+stays locked to them]), and draggable voiceover **leader lines** (**deferred-write**: pointermove moves a local
 transform, the cue model is written once on release ≡ one undo, so dragging never re-lays-out the timeline
-mid-gesture; double-click to add). Voiceover audio is **muxed into the MP4 export** (a second ffmpeg pass
+mid-gesture; double-click to add; **multi-select** cues by marquee-dragging empty band space or
+shift/⌘-clicking — a selection drags together as ONE `translateCues` write). Voiceover audio is **muxed into the MP4 export** (a second ffmpeg pass
 places each cue's clip at its absolute `startMs`), and the exported-video preview shows **optional
 captions** built from the voiceover (a snapshot WebVTT `<track>`, toggleable). Closing transitions are
 fade / rubout / scroll-up·down·left·right, and the **playback speed** runs ×0.25–12. **Next — "later"

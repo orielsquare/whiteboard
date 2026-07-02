@@ -47,6 +47,8 @@ export type EnvEditResult = { ok: true; patch: EnvPatch } | { ok: false; neededE
 
 /** The smallest editable animation block (also ≈ the 2px drag floor). */
 export const MIN_ANIM_MS = 10
+/** The smallest pinnable envelope (the slider/field/drag floor). */
+export const MIN_ENV_MS = 100
 /** Defensive bounds on the stored speed (animation-length is the real control). */
 const clampSpeed = (v: number) => Math.min(2000, Math.max(0.01, v))
 
@@ -56,6 +58,59 @@ const r = Math.round
  *  the field being edited — then final padding. */
 export function defaultCompensator(field: EnvField): EnvField {
   return field === 'initial' ? 'final' : 'initial'
+}
+
+// --- the lozenge drags (shared by the Inspector's EnvelopeBar and the Timeline) --
+
+export type LozengeDragKind = 'body' | 'left' | 'right'
+
+/** A lozenge drag's anchor: the partition at pointer-down (all ms at ×1). */
+export interface LozengeDragBase {
+  /** the (pinned-or-effective) envelope length — the drag never leaves it. */
+  env: number
+  startPad0: number
+  bubble0: number
+  /** smallest allowed block during an edge drag (≈2px on screen). */
+  minBubble: number
+}
+
+/**
+ * The drag's live partition at `deltaMs` from the anchor:
+ *  - 'body'  slides the block inside the envelope (trades start↔end padding);
+ *  - 'left'  stretches the block's left edge (block + start pad; end pad fixed);
+ *  - 'right' stretches the right edge (block + end pad; start pad fixed).
+ * Always clamped into the envelope.
+ */
+export function lozengeDrag(kind: LozengeDragKind, d: LozengeDragBase, deltaMs: number): { startPad: number; bubble: number } {
+  if (kind === 'body') {
+    return { startPad: Math.max(0, Math.min(d.env - d.bubble0, d.startPad0 + deltaMs)), bubble: d.bubble0 }
+  }
+  if (kind === 'left') {
+    const rightEdge = d.startPad0 + d.bubble0
+    const sp = Math.max(0, Math.min(rightEdge - d.minBubble, d.startPad0 + deltaMs))
+    return { startPad: sp, bubble: rightEdge - sp }
+  }
+  return { startPad: d.startPad0, bubble: Math.max(d.minBubble, Math.min(d.env - d.startPad0, d.bubble0 + deltaMs)) }
+}
+
+/**
+ * The store patch for a finished lozenge drag: always pins the envelope; writes
+ * `delayBeforeMs`/`speed` only for the values the gesture actually changed
+ * (a body drag never re-times the block, so it never writes speed).
+ */
+export function lozengeDragPatch(
+  kind: LozengeDragKind,
+  env: number,
+  base: { startPad: number; bubble: number },
+  v: { startPad: number; bubble: number },
+  contentMs: number,
+): EnvPatch {
+  const patch: EnvPatch = { envelopeMs: r(env) }
+  if (r(v.startPad) !== r(base.startPad)) patch.delayBeforeMs = Math.max(0, r(v.startPad))
+  if (kind !== 'body' && contentMs > 0 && r(v.bubble) !== r(base.bubble)) {
+    patch.speed = clampSpeed(contentMs / Math.max(1, v.bubble))
+  }
+  return patch
 }
 
 /**

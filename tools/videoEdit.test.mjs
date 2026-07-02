@@ -317,5 +317,35 @@ const box0 = (p) => p.slides[0].textBoxes[0]
   }
 }
 
+// --- translateCues / shiftCuesFrom (timeline multi-select + envelope-resize lock) --
+{
+  const cue = (id, startMs, endMs) => ({ id, startMs, endMs, text: id })
+  const withCues = (cs) => ({ ...mkProject([mkBox()]), voiceover: cs })
+  const p = withCues([cue('a', 1000, 2000), cue('b', 5000, 6500), cue('c', 9000, 9800)])
+
+  // translateCues: only the listed cues move; durations preserved
+  const t = E.translateCues(p, new Set(['a', 'c']), 400)
+  ok(
+    t.voiceover[0].startMs === 1400 && t.voiceover[0].endMs === 2400 && t.voiceover[1].startMs === 5000 && t.voiceover[2].startMs === 9400,
+    'translateCues moves only the set, keeping durations',
+  )
+  // clamped at t=0, duration preserved
+  const t2 = E.translateCues(p, new Set(['a']), -1500)
+  ok(t2.voiceover[0].startMs === 0 && t2.voiceover[0].endMs === 1000, 'translateCues clamps at 0, duration kept')
+  // zero delta = no-op (same reference — no history churn)
+  ok(E.translateCues(p, new Set(['a']), 0.2) === p, 'translateCues ~0 delta is a no-op')
+
+  // shiftCuesFrom: everything at/after the boundary moves (later slides' audio lock)
+  const s = E.shiftCuesFrom(p, 5000, 700)
+  ok(
+    s.voiceover[0].startMs === 1000 && s.voiceover[1].startMs === 5700 && s.voiceover[1].endMs === 7200 && s.voiceover[2].startMs === 9700,
+    'shiftCuesFrom moves cues at/after the boundary only',
+  )
+  const back = E.shiftCuesFrom(p, 5000, -700)
+  ok(back.voiceover[1].startMs === 4300 && back.voiceover[0].startMs === 1000, 'shiftCuesFrom shifts backwards too')
+  ok(E.shiftCuesFrom(p, 5000, 0.3) === p, 'shiftCuesFrom ~0 delta is a no-op')
+  ok(E.shiftCuesFrom(withCues([]), 0, 500).voiceover.length === 0, 'no cues → no-op')
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed) process.exit(1)
