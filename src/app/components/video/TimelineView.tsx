@@ -85,6 +85,8 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
   const resizeElementTiming = useVideoStore((s) => s.resizeElementTiming)
   const scaleWithEnvelope = useVideoStore((s) => s.scaleWithEnvelope)
   const setScaleWithEnvelope = useVideoStore((s) => s.setScaleWithEnvelope)
+  const audioLock = useVideoStore((s) => s.audioLock)
+  const setAudioLock = useVideoStore((s) => s.setAudioLock)
 
   // Zoom lives in the (transient) store so it survives tab switches, and is
   // mirrored to a per-project pref so it survives refreshes. `tlZoom === null`
@@ -124,17 +126,16 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId])
 
-  const playbackRate = project?.playbackRate ?? 1
   // rc (slide layout + timing) depends only on the SLIDES, not the voiceover — so
   // dragging/adding/removing a cue doesn't re-lay-out the whole timeline. `slides`
   // stays referentially equal across voiceover edits (updateCue spreads the project).
   const rc = useMemo(
     () =>
       project
-        ? buildRenderContext(projectForAspect(project, activeAspect), fonts, drawings, previewCanvasW(activeAspect), playbackRate)
+        ? buildRenderContext(projectForAspect(project, activeAspect), fonts, drawings, previewCanvasW(activeAspect))
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [project?.slides, project?.baseEmFraction, fonts, drawings, playbackRate, activeAspect],
+    [project?.slides, project?.baseEmFraction, fonts, drawings, activeAspect],
   )
   const windows = useMemo(() => (rc ? slideTimeWindows(rc.timing) : []), [rc])
   const sortedCues = useMemo(() => [...cues].sort((a, b) => a.startMs - b.startMs), [cues])
@@ -328,7 +329,21 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
         <div className="spacer" />
         <label
           className="toggle"
-          title="Applies while dragging an envelope's right edge. Ticked: padding AND animation scale with the envelope. Unticked: the animation keeps its absolute length and padding absorbs the change."
+          title="When an envelope resize pushes things later: lock the audio to the elements it pushes — cues from the resized element's end onward move with them, including within its own slide."
+        >
+          <input type="radio" name="tl-audio-lock" checked={audioLock === 'element'} onChange={() => setAudioLock('element')} />
+          lock audio to element
+        </label>
+        <label
+          className="toggle"
+          title="When an envelope resize pushes things later: keep the audio locked to the slides — cues over the resized element's own slide stay put; only cues from the next slide onward move."
+        >
+          <input type="radio" name="tl-audio-lock" checked={audioLock === 'slides'} onChange={() => setAudioLock('slides')} />
+          lock audio to slides
+        </label>
+        <label
+          className="toggle"
+          title="Applies while dragging an envelope's right edge. Ticked: padding AND animation scale with the envelope. Unticked: the animation keeps its absolute length — growth adds end padding; shrinking eats the end padding, then the start padding, then the envelope stops."
         >
           <input type="checkbox" checked={scaleWithEnvelope} onChange={(e) => setScaleWithEnvelope(e.target.checked)} />
           scale with envelope
@@ -448,20 +463,23 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
                           fixed={el.envelopeMs != null && el.envelopeMs > 0}
                           speed={el.speed}
                           contentMs={contentMs}
-                          rate={playbackRate}
                           pxPerSec={pxPerSec}
                           scaleWithEnvelope={scaleWithEnvelope}
-                          onCommit={(patch, envDeltaStoredMs) => {
-                            // An envelope-length change shifts everything after this
-                            // slide — move the audio over those slides by the same
-                            // real delta, in the SAME write, so it stays locked.
-                            const deltaReal = envDeltaStoredMs / playbackRate
+                          onCommit={(patch, envDeltaMs) => {
+                            // An envelope-length change shifts everything after it —
+                            // move the audio by the same delta in the SAME write, so
+                            // it stays locked. `audioLock` picks what it's locked to:
+                            // 'element' shifts cues from this element's envelope end
+                            // (audio follows the elements pushed within this slide
+                            // too); 'slides' shifts only from the next slide's start
+                            // (cues over this slide stay put).
+                            const fromMs = audioLock === 'element' ? win.startMs + it.endMs : win.endMs
                             resizeElementTiming(
                               win.slideId,
                               it.kind,
                               it.id,
                               patch,
-                              Math.round(deltaReal) !== 0 ? { fromMs: win.endMs, deltaMs: deltaReal } : undefined,
+                              Math.round(envDeltaMs) !== 0 ? { fromMs, deltaMs: envDeltaMs } : undefined,
                             )
                           }}
                         />
@@ -511,13 +529,16 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
         writing. <b>Drag the block</b> to slide it inside its envelope, <b>drag a block edge</b> to retime the
         animation (trades with the adjacent padding), and <b>drag the envelope's right edge</b> to resize it —
         everything after shifts, and <i>scale with envelope</i> (toolbar) decides whether the contents scale
-        too. The striped block is the hold; the red overlay is the closing transition (it bleeds into the next
-        slide). Voiceover cues hang above as leader lines — <b>drag</b> one to re-time it,{' '}
-        <b>marquee-drag</b> empty space or <b>shift/⌘-click</b> to select several (they drag together),{' '}
+        too (unticked, growth adds end padding and shrinking eats end padding, then start padding, then
+        stops at the writing). The striped block is the hold; the red overlay is the closing transition (it
+        bleeds into the next slide). Voiceover cues hang above as leader lines — <b>drag</b> one to re-time
+        it, <b>marquee-drag</b> empty space or <b>shift/⌘-click</b> to select several (they drag together),{' '}
         <b>double-click</b> empty space to add one; the bar to the right of a line shows its generated audio
-        length (yellow = ready, amber/hatched = stale → regenerate). Resizing an envelope keeps the audio
-        over LATER slides locked to them. Zoom with the <b>mouse wheel</b> (or −/＋/Fit); <b>Space</b>+wheel
-        scrolls left/right.
+        length (yellow = ready, amber/hatched = stale → regenerate). When an envelope resize shifts what
+        follows, the <i>lock audio</i> radios (toolbar) pick what the cues stay locked to: <i>element</i> —
+        they move with the pushed elements, even within the same slide; <i>slides</i> — cues over the
+        resized element's own slide stay put and only later slides' audio moves. Zoom with the{' '}
+        <b>mouse wheel</b> (or −/＋/Fit); <b>Space</b>+wheel scrolls left/right.
       </p>
     </div>
   )
@@ -544,8 +565,7 @@ interface ElementTiming {
  * All drags are deferred-write like `LeaderLine`: pointermove only moves local
  * state (this bar re-renders; the timeline does NOT re-lay-out), the model is
  * written once on release (= one undo step, no history pause needed), and
- * pointercancel abandons the gesture. Timeline px are REAL time; stored values
- * are ×1 time — deltas convert via `rate` (the project playbackRate).
+ * pointercancel abandons the gesture.
  */
 function ElementBar({
   it,
@@ -555,7 +575,6 @@ function ElementBar({
   fixed,
   speed,
   contentMs,
-  rate,
   pxPerSec,
   scaleWithEnvelope,
   onCommit,
@@ -568,26 +587,24 @@ function ElementBar({
   fixed: boolean
   /** the element's stored speed (for the natural length in recovery previews). */
   speed: number | undefined
-  /** the element's natural content time (×1 ms). */
+  /** the element's natural content time (ms). */
   contentMs: number
-  /** the project playbackRate — real ms × rate = stored (×1) ms. */
-  rate: number
   pxPerSec: number
   scaleWithEnvelope: boolean
-  /** `envDeltaStoredMs` is the envelope-length change (×1 ms; 0 for drags inside
-   *  a pinned envelope) — the caller uses it to keep later slides' audio locked. */
-  onCommit: (patch: EnvPatch, envDeltaStoredMs: number) => void
+  /** `envDeltaMs` is the envelope-length change (0 for drags inside a pinned
+   *  envelope) — the caller uses it to keep the audio after the resize locked. */
+  onCommit: (patch: EnvPatch, envDeltaMs: number) => void
 }) {
-  // The committed partition in STORED (×1) ms — timing was divided by rate.
-  const env0 = (it.endMs - it.startMs) * rate
-  const startPad0 = (it.animStartMs - it.startMs) * rate
-  const bubble0 = (it.animEndMs - it.animStartMs) * rate
-  const pxPerStoredMs = pxPerSec / 1000 / rate
+  // The committed partition (ms).
+  const env0 = it.endMs - it.startMs
+  const startPad0 = it.animStartMs - it.startMs
+  const bubble0 = it.animEndMs - it.animStartMs
+  const pxPerMs = pxPerSec / 1000
 
   const [live, setLive] = useState<{ env: number; startPad: number; bubble: number } | null>(null)
-  // pxPerStoredMs is FROZEN at pointer-down — a wheel zoom mid-gesture must not
+  // pxPerMs is FROZEN at pointer-down — a wheel zoom mid-gesture must not
   // rescale the accumulated pixel delta.
-  const dragRef = useRef<{ kind: LozengeDragKind | 'env'; x0: number; minBubble: number; pxPerStoredMs: number } | null>(null)
+  const dragRef = useRef<{ kind: LozengeDragKind | 'env'; x0: number; minBubble: number; pxPerMs: number } | null>(null)
   // whether the last gesture actually moved — a plain click falls through to the
   // section's select-slide, matching the pre-interactive bars.
   const movedRef = useRef(false)
@@ -595,7 +612,7 @@ function ElementBar({
   const env = live?.env ?? env0
   const startPad = live?.startPad ?? startPad0
   const bubble = live?.bubble ?? bubble0
-  const bw = Math.max(3, env * pxPerStoredMs)
+  const bw = Math.max(3, env * pxPerMs)
   const blockLeft = env > 0 ? (startPad / env) * 100 : 0
   const blockW = env > 0 ? (bubble / env) * 100 : 0
 
@@ -608,11 +625,12 @@ function ElementBar({
     naturalMs: contentMs / (speed && speed > 0 ? speed : 1),
   })
   const liveFor = (d: NonNullable<typeof dragRef.current>, clientX: number) => {
-    const deltaMs = (clientX - d.x0) / d.pxPerStoredMs
+    const deltaMs = (clientX - d.x0) / d.pxPerMs
     if (d.kind === 'env') {
-      const newEnv = Math.max(MIN_ENV_MS, env0 + deltaMs)
-      const v = applyEnvelopeResize(basePartition(), newEnv, scaleWithEnvelope)
-      return { env: newEnv, startPad: v.startPad, bubble: v.bubble }
+      // v.env is the EFFECTIVE length — with "scale with envelope" off the
+      // resize floors at the block once both paddings are consumed.
+      const v = applyEnvelopeResize(basePartition(), Math.max(MIN_ENV_MS, env0 + deltaMs), scaleWithEnvelope)
+      return { env: v.env, startPad: v.startPad, bubble: v.bubble }
     }
     const v = lozengeDrag(d.kind, { env: env0, startPad0, bubble0, minBubble: d.minBubble }, deltaMs)
     return { env: env0, ...v }
@@ -627,8 +645,8 @@ function ElementBar({
     } catch {
       /* capture unavailable — window-relative move still tracks */
     }
-    const scale = pxPerStoredMs > 0 ? pxPerStoredMs : 1
-    dragRef.current = { kind, x0: e.clientX, minBubble: 2 / scale, pxPerStoredMs: scale }
+    const scale = pxPerMs > 0 ? pxPerMs : 1
+    dragRef.current = { kind, x0: e.clientX, minBubble: 2 / scale, pxPerMs: scale }
     movedRef.current = false
     setLive({ env: env0, startPad: startPad0, bubble: bubble0 })
   }
@@ -669,8 +687,8 @@ function ElementBar({
 
   // Grip mounting is gated on the COMMITTED geometry — live-value gates would
   // unmount the grip holding pointer capture mid-shrink, stranding the gesture.
-  const bw0 = Math.max(3, env0 * pxPerStoredMs)
-  const blockPx0 = bubble0 * pxPerStoredMs
+  const bw0 = Math.max(3, env0 * pxPerMs)
+  const blockPx0 = bubble0 * pxPerMs
   return (
     <div
       className={
@@ -679,7 +697,7 @@ function ElementBar({
         (live ? ' dragging' : '')
       }
       style={{ left: (it.startMs / 1000) * pxPerSec, width: bw }}
-      title={`${index + 1}. ${text}${fixed ? ` — fixed ${(env0 / rate / 1000).toFixed(1)}s envelope` : ''}`}
+      title={`${index + 1}. ${text}${fixed ? ` — fixed ${(env0 / 1000).toFixed(1)}s envelope` : ''}`}
     >
       <div
         className="tl-box-block"

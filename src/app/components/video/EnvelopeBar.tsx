@@ -26,10 +26,11 @@ const FIELD_LABEL: Record<EnvField, string> = {
  *    (which may exceed the slider's range), plus **resize with content** — when
  *    checked the envelope is auto (it hugs padding + animation and follows
  *    content edits); any timing edit pins it (unchecks), re-checking un-pins.
- *    Resizing the envelope keeps the animation's ABSOLUTE length (padding
- *    absorbs the change; the block only shrinks once all padding is consumed) —
- *    unless **scale with envelope** is ticked, which scales padding + animation
- *    together so the lozenge's proportions hold (see `applyEnvelopeResize`).
+ *    Resizing the envelope keeps the animation's ABSOLUTE length (growth adds
+ *    final padding; shrinking eats the final padding, then the initial padding,
+ *    then the envelope floors at the block) — unless **scale with envelope** is
+ *    ticked, which scales padding + animation together so the lozenge's
+ *    proportions hold (see `applyEnvelopeResize`).
  *  - **the lozenge**: the envelope as a full-width bar of start padding · the
  *    animation block · end padding. Slide the block (trades start↔end padding,
  *    block fixed); stretch its left edge (block + start padding, end fixed) or
@@ -99,9 +100,11 @@ export function EnvelopeBar({
     contentMs,
     naturalMs: naturalBubble,
   }
-  // A live envelope-slider draft repartitions per the resize mode (matches the commit).
-  const env = envDraft != null ? Math.max(MIN_ENV_MS, envDraft) : baseEnv
-  const envPreview = envDraft != null ? applyEnvelopeResize(basePartition, env, scaleWithEnv) : null
+  // A live envelope-slider draft repartitions per the resize mode (matches the
+  // commit). `env` is the EFFECTIVE length — with "scale with envelope" off the
+  // resize floors at the block once both paddings are consumed.
+  const envPreview = envDraft != null ? applyEnvelopeResize(basePartition, Math.max(MIN_ENV_MS, envDraft), scaleWithEnv) : null
+  const env = envPreview?.env ?? baseEnv
   const startPad = live?.startPad ?? envPreview?.startPad ?? baseStartPad
   const bubble = live?.bubble ?? envPreview?.bubble ?? baseBubble
   const endPad = Math.max(0, env - startPad - bubble)
@@ -252,7 +255,7 @@ export function EnvelopeBar({
           />
           resize with content
         </label>
-        <label className="toggle" title="Ticked: resizing the envelope scales padding AND animation together (the lozenge's proportions hold). Unticked: the animation keeps its absolute length and padding absorbs the change — the animation only shrinks once all padding is used up.">
+        <label className="toggle" title="Ticked: resizing the envelope scales padding AND animation together (the lozenge's proportions hold). Unticked: the animation keeps its absolute length — growth adds final padding; shrinking eats the final padding, then the initial padding, then the envelope stops at the animation.">
           <input type="checkbox" checked={scaleWithEnv} onChange={(e) => setScaleWithEnv(e.target.checked)} />
           scale with envelope
         </label>

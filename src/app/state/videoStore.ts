@@ -120,6 +120,12 @@ interface VideoState {
    *  Timeline: true = padding AND animation scale with the envelope; false
    *  (default) = the animation keeps its absolute length, padding absorbs. */
   scaleWithEnvelope: boolean
+  /** What a Timeline envelope resize keeps the voiceover locked to:
+   *  'slides' (default) — cues over the resized element's own slide stay put;
+   *  only cues from the next slide onward shift with it.
+   *  'element' — cues from the element's envelope end onward shift too, so
+   *  audio follows the elements the resize pushes within the same slide. */
+  audioLock: 'slides' | 'element'
 
   selectSlide: (id: string | null) => void
   selectTextBox: (id: string | null) => void
@@ -142,6 +148,7 @@ interface VideoState {
   setTlZoom: (v: number) => void
   setTlScroll: (v: number) => void
   setScaleWithEnvelope: (v: boolean) => void
+  setAudioLock: (v: 'slides' | 'element') => void
 
   addSlide: () => void
   copySlide: (id: string) => void
@@ -201,7 +208,6 @@ interface VideoState {
 
   setActiveAspect: (a: Aspect) => void
   setBaseEmFraction: (v: number) => void
-  setPlaybackRate: (v: number) => void
   setBrush: (b: BrushSettings) => void
   /** patch the new-textbox format defaults (format bar with nothing selected). */
   setDefaults: (patch: Partial<ProjectDefaults>) => void
@@ -224,8 +230,9 @@ interface VideoState {
   translateCues: (ids: string[], deltaMs: number) => void
   /** Patch an element's timing (envelope/delay/speed) and, when the envelope's
    *  length changed, shift every cue at/after `cueShift.fromMs` by
-   *  `cueShift.deltaMs` in the SAME write — so audio over subsequent slides
-   *  stays locked to them as they move. One undo step. */
+   *  `cueShift.deltaMs` in the SAME write — so audio stays locked to what the
+   *  resize moves (the caller picks `fromMs` per the `audioLock` mode: the next
+   *  slide's start, or the element's own envelope end). One undo step. */
   resizeElementTiming: (
     slideId: string,
     kind: 'box' | 'drawing' | 'ink',
@@ -272,6 +279,7 @@ export const useVideoStore = create<VideoState>()(
       tlZoom: null,
       tlScroll: 0,
       scaleWithEnvelope: false,
+      audioLock: 'slides',
 
       // Selecting a slide/box returns to the editing layout (stops any playback).
       selectSlide: (id) =>
@@ -337,6 +345,7 @@ export const useVideoStore = create<VideoState>()(
       setTlZoom: (v) => set({ tlZoom: v }),
       setTlScroll: (v) => set({ tlScroll: v }),
       setScaleWithEnvelope: (v) => set({ scaleWithEnvelope: v }),
+      setAudioLock: (v) => set({ audioLock: v }),
 
       addSlide: () =>
         set((s) => {
@@ -569,8 +578,6 @@ export const useVideoStore = create<VideoState>()(
       setActiveAspect: (a) => set({ activeAspect: a }),
       setBaseEmFraction: (v) =>
         set((s) => (s.project ? { project: E.setBaseEmFraction(s.project, v) } : s)),
-      setPlaybackRate: (v) =>
-        set((s) => (s.project ? { project: E.setPlaybackRate(s.project, v) } : s)),
       setBrush: (b) => set((s) => (s.project ? { project: E.setBrush(s.project, b) } : s)),
       setDefaults: (patch) => set((s) => (s.project ? { project: E.setDefaults(s.project, patch) } : s)),
       setProjectFont: (fontId) => set((s) => (s.project ? { project: E.setProjectFont(s.project, fontId) } : s)),

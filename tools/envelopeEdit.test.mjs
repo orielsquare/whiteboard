@@ -87,32 +87,47 @@ const P = { env: 5000, startPad: 800, bubble: 3400, endPad: 800, contentMs: 8700
   ok(E.defaultCompensator('final') === 'initial', 'editing final → initial by default')
 }
 
-// --- applyEnvelopeResize: scale OFF — the block's absolute length holds ---------
+// --- applyEnvelopeResize: scale OFF — the block's absolute length + left position
+// hold: growth adds END padding only; shrinking consumes end pad, then start pad,
+// then the envelope FLOORS at the block (it never compresses).
 {
-  // grow: pads share the leftover in their current ratio (here 1:1)
+  // grow: start pad untouched, all new space becomes end padding
   const a = E.applyEnvelopeResize(P, 8000, false)
   ok(
     a.patch.envelopeMs === 8000 &&
-      a.patch.delayBeforeMs === 2300 &&
+      a.patch.delayBeforeMs === 800 &&
       near(a.patch.speed, 8700 / 3400) &&
       near(a.bubble, 3400),
-    'grow: block absolute, pads split leftover 1:1',
+    'grow: block + start pad absolute, growth is all end pad',
     a,
   )
-  // shrink, pads still cover it: block holds, pads shrink in ratio
+  // shrink by 1000: the 800 end pad absorbs first, the remaining 200 off the start pad
   const b = E.applyEnvelopeResize(P, 4000, false)
-  ok(b.patch.delayBeforeMs === 300 && near(b.bubble, 3400) && near(b.patch.speed, 8700 / 3400), 'shrink into padding: block holds', b)
-  // shrink below the block: padding fully consumed → the block shrinks with the envelope
+  ok(b.patch.delayBeforeMs === 600 && near(b.bubble, 3400) && near(b.patch.speed, 8700 / 3400), 'shrink: end pad first, then start pad', b)
+  // shrink by exactly the end pad: start pad still whole
+  const b2 = E.applyEnvelopeResize(P, 4200, false)
+  ok(b2.patch.delayBeforeMs === 800 && near(b2.bubble, 3400), 'shrink exactly the end pad: start pad untouched', b2)
+  // shrink below the block: both pads consumed → the envelope floors at the block
   const c = E.applyEnvelopeResize(P, 3000, false)
-  ok(c.patch.delayBeforeMs === 0 && near(c.bubble, 3000) && near(c.patch.speed, 8700 / 3000), 'shrink past padding: block = envelope', c)
-  // zero end pad (the auto-pinned shape): all growth lands in the start pad
+  ok(
+    c.patch.envelopeMs === 3400 && near(c.env, 3400) && c.patch.delayBeforeMs === 0 && near(c.bubble, 3400) && near(c.patch.speed, 8700 / 3400),
+    'shrink past all padding: envelope floors at the block',
+    c,
+  )
+  // zero end pad (the auto-pinned shape): growth still becomes end pad
   const zp = { env: 1600, startPad: 1000, bubble: 600, endPad: 0, contentMs: 600 }
   const d = E.applyEnvelopeResize(zp, 2100, false)
-  ok(d.patch.delayBeforeMs === 1500 && near(d.bubble, 600), 'zero end pad: growth goes to the start pad', d)
+  ok(d.patch.delayBeforeMs === 1000 && near(d.bubble, 600), 'zero end pad: growth becomes end pad, start pad holds', d)
+  // zero end pad, shrinking: start pad absorbs straight away
+  const d2 = E.applyEnvelopeResize(zp, 1200, false)
+  ok(d2.patch.delayBeforeMs === 600 && near(d2.bubble, 600), 'zero end pad shrink: start pad absorbs', d2)
   // zero padding both sides: block first, new space becomes end pad
   const np = { env: 600, startPad: 0, bubble: 600, endPad: 0, contentMs: 600 }
   const e = E.applyEnvelopeResize(np, 1000, false)
   ok(e.patch.delayBeforeMs === 0 && near(e.bubble, 600), 'no padding at all: growth becomes end pad', e)
+  // zero padding both sides, shrinking: nothing to consume → clamped in place
+  const e2 = E.applyEnvelopeResize(np, 300, false)
+  ok(e2.patch.envelopeMs === 600 && near(e2.env, 600) && near(e2.bubble, 600), 'no padding: the envelope cannot shrink at all', e2)
   // a COMPRESSED block (natural ≫ shown) is canonicalized: speed pins the shown length
   const comp = { env: 5000, startPad: 800, bubble: 3400, endPad: 800, contentMs: 34000 }
   const f = E.applyEnvelopeResize(comp, 9000, false)

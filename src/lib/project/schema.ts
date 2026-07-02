@@ -290,7 +290,8 @@ export interface VideoProject {
   lockDefault: BoxLockState
   /** global texture; a textbox or run can override it. */
   brush: BrushSettings
-  /** playback/export speed multiplier (1 = real time); scales the whole video's time. */
+  /** LEGACY — no longer read anywhere. The transport's speed slider is now a
+   *  transient preview aid; the timeline model and the MP4 always run real time. */
   playbackRate: number
   /** em height of a size-1 run as a fraction of canvas width. */
   baseEmFraction: number

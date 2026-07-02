@@ -62,7 +62,7 @@ export function Transport({
         </label>
         <label className="speed-control">
           <span className="speed-label">
-            speed <b>×{speed.toFixed(2)}</b> <span className="muted">(applies to the exported video)</span>
+            speed <b>×{speed.toFixed(2)}</b> <span className="muted">(preview only — the exported video runs at ×1)</span>
           </span>
           <input type="range" min={0.25} max={12} step={0.05} value={speed} onChange={(e) => onSpeedChange(Number(e.target.value))} />
         </label>

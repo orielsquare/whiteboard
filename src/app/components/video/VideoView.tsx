@@ -552,7 +552,8 @@ export function VideoView({
           width: exportQuality === '720p'
             ? Math.round((exportCanvasW(activeAspect) * 2) / 3)
             : exportCanvasW(activeAspect),
-          speed: p.playbackRate ?? 1,
+          // no `speed`: the MP4 always renders real time — the transport's speed
+          // slider is a preview aid only.
           name: p.name,
         }),
       })

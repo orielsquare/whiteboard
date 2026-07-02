@@ -688,9 +688,6 @@ export function pasteTextBox(
 export function setBaseEmFraction(p: VideoProject, baseEmFraction: number): VideoProject {
   return { ...p, baseEmFraction }
 }
-export function setPlaybackRate(p: VideoProject, playbackRate: number): VideoProject {
-  return { ...p, playbackRate }
-}
 
 /** Set the project's default font (the font an unset `run.fontId` resolves to). */
 export function setProjectFont(p: VideoProject, fontId: string): VideoProject {

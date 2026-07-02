@@ -18,14 +18,13 @@ export function VoiceoverExtractPanel({ fonts, drawings }: { fonts: FontSet; dra
   const activeAspect = useVideoStore((s) => s.activeAspect)
   const selectedSlideId = useVideoStore((s) => s.selectedSlideId)
   const playback = useVideoStore((s) => s.playback)
-  const playbackRate = project?.playbackRate ?? 1
 
   const slide = project ? project.slides.find((s) => s.id === selectedSlideId) ?? project.slides[0] : undefined
   const window = useMemo(() => {
     if (!project || !slide || playback) return null
-    const rc = buildRenderContext(projectForAspect(project, activeAspect), fonts, drawings, previewCanvasW(activeAspect), playbackRate)
+    const rc = buildRenderContext(projectForAspect(project, activeAspect), fonts, drawings, previewCanvasW(activeAspect))
     return slideTimeWindows(rc.timing).find((x) => x.slideId === slide.id) ?? null
-  }, [project, slide, activeAspect, fonts, drawings, playbackRate, playback])
+  }, [project, slide, activeAspect, fonts, drawings, playback])
 
   if (!project || !window) return null
   return <SlideVttExtract cues={project.voiceover ?? []} startMs={window.startMs} endMs={window.endMs} />

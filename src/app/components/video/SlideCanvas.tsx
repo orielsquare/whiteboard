@@ -62,8 +62,6 @@ export function SlideCanvas({
   const selectedTextBoxId = useVideoStore((s) => s.selectedTextBoxId)
   const playback = useVideoStore((s) => s.playback)
   const setPlayback = useVideoStore((s) => s.setPlayback)
-  const playbackRate = useVideoStore((s) => s.project?.playbackRate ?? 1)
-  const setPlaybackRate = useVideoStore((s) => s.setPlaybackRate)
   const selectTextBox = useVideoStore((s) => s.selectTextBox)
   const addTextBox = useVideoStore((s) => s.addTextBox)
   const updateTextBoxFrame = useVideoStore((s) => s.updateTextBoxFrame)
@@ -88,6 +86,9 @@ export function SlideCanvas({
   // mere selection: a selected box can be dragged; an editing box shows the
   // on-canvas text overlay instead of its handwriting.
   const [editingBoxId, setEditingBoxId] = useState<string | null>(null)
+  // Transient preview speed — a playback aid only (scales the preview clock +
+  // voiceover audio rate). Never written to the project; the MP4 runs at ×1.
+  const [previewSpeed, setPreviewSpeed] = useState(1)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   // Register the editor font's @font-face eagerly (the overlay also resolves
   // per-run families on demand).
@@ -123,8 +124,8 @@ export function SlideCanvas({
   // voiceover extract AND inline playback; the editing layouts reuse its per-slide map.
   const flatProject = useMemo(() => (project ? projectForAspect(project, activeAspect) : null), [project, activeAspect])
   const rc = useMemo(
-    () => (flatProject ? buildRenderContext(flatProject, fonts, drawings, previewW, playbackRate) : null),
-    [flatProject, fonts, drawings, previewW, playbackRate],
+    () => (flatProject ? buildRenderContext(flatProject, fonts, drawings, previewW) : null),
+    [flatProject, fonts, drawings, previewW],
   )
   const layouts = useMemo(
     () => (slide && rc ? rc.layoutsBySlide.get(slide.id) ?? EMPTY_LAYOUTS : EMPTY_LAYOUTS),
@@ -275,6 +276,7 @@ export function SlideCanvas({
     active: !!playback,
     resetKey: JSON.stringify(playback),
     audioCues,
+    speed: previewSpeed,
   })
 
   // Paint the slide statically (idle/editing). `drag`, when set, overrides one
@@ -812,8 +814,8 @@ export function SlideCanvas({
         engine={engine}
         active={!!playback}
         scopeLabel={scopeLabel}
-        speed={playbackRate}
-        onSpeedChange={setPlaybackRate}
+        speed={previewSpeed}
+        onSpeedChange={setPreviewSpeed}
         onPlayProject={() => setPlayback({ kind: 'project' })}
         onStop={() => setPlayback(null)}
       />

@@ -37,6 +37,7 @@ export function usePlaybackEngine(
     active,
     resetKey,
     audioCues,
+    speed = 1,
   }: {
     draw: (ctx: CanvasRenderingContext2D, tMs: number, w: number, h: number) => void
     totalMs: number
@@ -44,6 +45,9 @@ export function usePlaybackEngine(
     active: boolean
     resetKey: string
     audioCues?: AudioCue[]
+    /** preview-only clock multiplier (a playback aid — the timeline itself is
+     *  real time). Voiceover <audio> plays at the same rate to stay in sync. */
+    speed?: number
   },
 ): PlaybackEngine {
   const [isPlaying, setIsPlaying] = useState(false)
@@ -56,6 +60,7 @@ export function usePlaybackEngine(
   const totalRef = useRef(totalMs)
   const drawRef = useRef(draw)
   const aspectRef = useRef(aspect)
+  const speedRef = useRef(1)
   const audioRef = useRef<AudioCue[]>(audioCues ?? [])
   const audioElsRef = useRef<Map<string, { el: HTMLAudioElement; url: string }>>(new Map())
   // cues already triggered in the current play pass (so each plays once, no re-seek).
@@ -66,6 +71,7 @@ export function usePlaybackEngine(
   playingRef.current = isPlaying
   loopRef.current = loop
   aspectRef.current = aspect
+  speedRef.current = speed > 0 ? speed : 1
   audioRef.current = audioCues ?? []
 
   // Keep one <audio> per cue, src in sync; drop removed cues.
@@ -117,7 +123,7 @@ export function usePlaybackEngine(
       if (canvas) {
         const total = totalRef.current
         if (playingRef.current && total > 0) {
-          tRef.current += dt // real time — speed is baked into the timeline
+          tRef.current += dt * speedRef.current // timeline is real time; speed only scales the preview clock
           if (tRef.current >= total + END_HOLD_MS) {
             if (loopRef.current) {
               tRef.current = 0
@@ -143,6 +149,7 @@ export function usePlaybackEngine(
           const action = nextAudioAction(c, t, playingRef.current, started.has(c.id))
           if (action.kind === 'start') {
             started.add(c.id)
+            el.playbackRate = speedRef.current // keep the clip on the (scaled) clock
             try {
               el.currentTime = action.seekTo
             } catch {
@@ -152,8 +159,10 @@ export function usePlaybackEngine(
           } else if (action.kind === 'pause') {
             if (!el.paused) el.pause()
             started.delete(c.id) // re-arm so a loop / scrub / resume re-triggers it
+          } else if (el.playbackRate !== speedRef.current) {
+            // 'none' → already playing; just track a mid-clip speed change.
+            el.playbackRate = speedRef.current
           }
-          // 'none' → already playing this cue; let it play out (no clock-chasing).
         }
         if (now - lastProg > 80) {
           lastProg = now

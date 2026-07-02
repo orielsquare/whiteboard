@@ -85,8 +85,10 @@ export function elementSlot(contentMs: number, speed?: number, envelopeMs?: numb
  * real-time timeline of ENVELOPES: each element occupies its slot (see
  * `elementSlot`), the next element starts when the previous envelope ends, and
  * the writing runs inside the slot at `[animStartMs, animEndMs]`. The global
- * `speed` (playbackRate) scales WHOLE envelopes — padding and animation alike;
- * the hold-before-transition and the transition duration remain invariant.
+ * `speed` scales WHOLE envelopes — padding and animation alike — while the
+ * hold-before-transition and the transition duration remain invariant. (The
+ * app now always runs at 1 — the preview speed control scales only the
+ * playback clock — but the parameter stays part of the pure seam.)
  */
 export function computeSlideTiming(
   slide: FlatSlide,

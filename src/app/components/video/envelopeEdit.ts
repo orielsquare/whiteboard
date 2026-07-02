@@ -11,8 +11,9 @@
  *    envelope would be exceeded), the edit fails with the envelope length that
  *    change would need.
  *  - `applyEnvelopeResize` (the envelope-length slider / ms field) — see its
- *    doc: the animation keeps its absolute length (padding absorbs the change)
- *    unless "scale with envelope" is on, which scales the whole partition.
+ *    doc: the animation keeps its absolute length (growth adds end padding;
+ *    shrinking consumes end padding, then start padding, then stops) unless
+ *    "scale with envelope" is on, which scales the whole partition.
  *
  * All times ms at rate ×1. The returned patch always pins `envelopeMs` (any
  * timing edit turns "resize with content" off) and is a single store write.
@@ -114,12 +115,13 @@ export function lozengeDragPatch(
 }
 
 /**
- * Resize the envelope itself (the length slider / ms field).
+ * Resize the envelope itself (the length slider / ms field / right-edge drag).
  *
  *  - `scaleWithEnvelope` OFF (default): the animation block keeps its ABSOLUTE
- *    length; the two paddings share the leftover span in their current ratio.
- *    Only once all padding is consumed (envelope < block) does the block
- *    shrink with the envelope.
+ *    length and position from the left. Growth adds END padding only; shrinking
+ *    consumes the end padding first, then the start padding, and once both are
+ *    gone the envelope can't shrink any further (it floors at the block — the
+ *    block never compresses; the requested length is clamped, see `env` below).
  *  - `scaleWithEnvelope` ON: the whole partition scales by env1/env0 — padding
  *    and animation alike — so the lozenge's proportions don't visibly change.
  *
@@ -128,14 +130,16 @@ export function lozengeDragPatch(
  * canonicalized away — without this, a compressed block would keep tracking
  * the envelope. EXCEPTION: with no content, or a block clamped away entirely
  * (delay ≥ envelope), only `envelopeMs` is written — see the guard below.
- * Returns the new partition too, for the live preview while the slider drags.
+ * Returns the new partition too, for the live preview while the slider drags;
+ * `env` is the EFFECTIVE (clamped) length — callers must use it, not the
+ * requested `newEnvMs`.
  */
 export function applyEnvelopeResize(
   p: EnvPartition,
   newEnvMs: number,
   scaleWithEnvelope: boolean,
-): { patch: EnvPatch; startPad: number; bubble: number } {
-  const env = Math.max(1, newEnvMs)
+): { patch: EnvPatch; env: number; startPad: number; bubble: number } {
+  let env = Math.max(1, newEnvMs)
   // Degenerate block — no content, or the block clamped away (delay ≥ envelope):
   // there is no meaningful length to preserve or scale, and repartitioning would
   // bake the degenerate state in (delay = whole envelope, speed = content/10ms).
@@ -144,7 +148,7 @@ export function applyEnvelopeResize(
   if (p.contentMs <= 0 || p.bubble < MIN_ANIM_MS) {
     const startPad = Math.min(p.startPad, env)
     const natural = p.contentMs > 0 ? (p.naturalMs ?? p.bubble) : 0
-    return { patch: { envelopeMs: r(env) }, startPad, bubble: Math.max(0, Math.min(natural, env - startPad)) }
+    return { patch: { envelopeMs: r(env) }, env, startPad, bubble: Math.max(0, Math.min(natural, env - startPad)) }
   }
   let startPad: number
   let bubble: number
@@ -153,9 +157,9 @@ export function applyEnvelopeResize(
     startPad = p.startPad * k
     bubble = p.bubble * k
   } else {
-    bubble = Math.min(p.bubble, env)
-    const padTotal = p.startPad + p.endPad
-    startPad = padTotal > 0 ? (env - bubble) * (p.startPad / padTotal) : 0
+    env = Math.max(env, p.bubble) // both paddings consumed — the envelope stops
+    bubble = p.bubble
+    startPad = Math.min(p.startPad, env - bubble) // end pad absorbs first
   }
   return {
     patch: {
@@ -163,6 +167,7 @@ export function applyEnvelopeResize(
       delayBeforeMs: r(startPad),
       speed: clampSpeed(p.contentMs / Math.max(MIN_ANIM_MS, bubble)),
     },
+    env,
     startPad,
     bubble,
   }

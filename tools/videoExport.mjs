@@ -344,7 +344,8 @@ if (invokedDirectly) {
     // → the project's authored aspect (migrateProject reads the v1 `aspect`).
     width: widthArg ? Number(widthArg) : undefined,
     fps: fpsArg ? Number(fpsArg) : 30,
-    speed: project.playbackRate ?? 1,
+    // always real time — the stored playbackRate is a legacy field (the editor's
+    // speed slider is a preview aid and no longer writes it)
     outPath,
     onProgress: (p) => process.stdout.write(`\r  rendering ${(p * 100).toFixed(0)}%   `),
   })
