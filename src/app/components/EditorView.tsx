@@ -65,6 +65,10 @@ export function EditorView({
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [mode, setMode] = useState<'select' | 'split'>('select')
   const [isPlaying, setIsPlaying] = useState(false)
+  // Transient preview speed — a playback aid only, never written to the manifest.
+  const [speed, setSpeed] = useState(1)
+  const speedRef = useRef(1)
+  speedRef.current = speed
 
   const unicode = selectedChar.codePointAt(0) ?? 0
   const key = String(unicode)
@@ -116,7 +120,7 @@ export function EditorView({
         transformRef.current = tr
         if (playingRef.current && preparedRef.current) {
           drawAnimated(canvas, preparedRef.current, tr, tRef.current, font.unitsPerEm)
-          tRef.current += dt
+          tRef.current += dt * speedRef.current
           if (tRef.current > preparedRef.current.totalMs + 600) tRef.current = 0
         } else {
           drawEditable(canvas, g, tr, selectedRef.current)
@@ -199,6 +203,10 @@ export function EditorView({
             <button onClick={() => { tRef.current = 0; setIsPlaying((p) => !p) }}>
               {isPlaying ? '❚❚ Stop' : '▶ Play glyph'}
             </button>
+            <label className="field" title="preview speed — playback aid only, not saved with the font">
+              <span>speed ×{speed.toFixed(2)}</span>
+              <input type="range" min={0.25} max={3} step={0.05} value={speed} onChange={(e) => setSpeed(Number(e.target.value))} />
+            </label>
             <span className="time">
               {mode === 'split'
                 ? 'click a point on a stroke to split it'
@@ -260,13 +268,21 @@ export function EditorView({
             <div className="timing">
               <label className="slider">
                 <span>duration <b>{selectedSection.timing.durationMs}ms</b></span>
-                <input type="range" min={100} max={2000} step={20} value={selectedSection.timing.durationMs}
-                  onChange={(e) => updateGlyph(unicode, (g) => updateSectionTiming(g, selectedSection.id, { durationMs: Number(e.target.value) }))} />
+                <div className="sliderow">
+                  <input type="range" min={100} max={2000} step={20} value={Math.min(2000, Math.max(100, selectedSection.timing.durationMs))}
+                    onChange={(e) => updateGlyph(unicode, (g) => updateSectionTiming(g, selectedSection.id, { durationMs: Number(e.target.value) }))} />
+                  <input type="number" className="num-input" min={20} step={10} value={selectedSection.timing.durationMs}
+                    onChange={(e) => { const v = Math.round(Number(e.target.value)); if (Number.isFinite(v) && v >= 1) updateGlyph(unicode, (g) => updateSectionTiming(g, selectedSection.id, { durationMs: v })) }} />
+                </div>
               </label>
               <label className="slider">
                 <span>delay before <b>{selectedSection.timing.delayBeforeMs}ms</b></span>
-                <input type="range" min={0} max={1200} step={20} value={selectedSection.timing.delayBeforeMs}
-                  onChange={(e) => updateGlyph(unicode, (g) => updateSectionTiming(g, selectedSection.id, { delayBeforeMs: Number(e.target.value) }))} />
+                <div className="sliderow">
+                  <input type="range" min={0} max={1200} step={20} value={Math.min(1200, Math.max(0, selectedSection.timing.delayBeforeMs))}
+                    onChange={(e) => updateGlyph(unicode, (g) => updateSectionTiming(g, selectedSection.id, { delayBeforeMs: Number(e.target.value) }))} />
+                  <input type="number" className="num-input" min={0} step={10} value={selectedSection.timing.delayBeforeMs}
+                    onChange={(e) => { const v = Math.round(Number(e.target.value)); if (Number.isFinite(v) && v >= 0) updateGlyph(unicode, (g) => updateSectionTiming(g, selectedSection.id, { delayBeforeMs: v })) }} />
+                </div>
               </label>
               <label className="slider">
                 <span>easing</span>
@@ -277,7 +293,7 @@ export function EditorView({
               </label>
             </div>
           ) : (
-            <div className="muted">select a single stroke to edit its timing</div>
+            <div className="muted">select a single stroke to edit its timing (exact ms in the number fields)</div>
           )}
 
           <h3>Glyph</h3>

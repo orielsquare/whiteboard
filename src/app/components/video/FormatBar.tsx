@@ -6,6 +6,7 @@ import { contentOf } from '@lib/project/aspect'
 import { httpStore, type FontSummary } from '@lib/persistence/FontStore'
 import { useVideoStore } from '../../state/videoStore'
 import { restoreOverlaySelection } from './TextBoxOverlay'
+import { usePrompt } from '../files/PromptDialog'
 
 const ALIGNS: TextAlign[] = ['left', 'center', 'right']
 const PEN_STYLES: BrushStyle[] = ['chalk', 'ink', 'marker']
@@ -29,12 +30,16 @@ export function FormatBar() {
   const selection = useVideoStore((s) => s.selection)
   const applyTextStyle = useVideoStore((s) => s.applyTextStyle)
   const setBoxContent = useVideoStore((s) => s.setBoxContent)
+  const selectedElementIds = useVideoStore((s) => s.selectedElementIds)
+  const applyTextStyleToBoxes = useVideoStore((s) => s.applyTextStyleToBoxes)
+  const setBoxContentForBoxes = useVideoStore((s) => s.setBoxContentForBoxes)
   const setDefaults = useVideoStore((s) => s.setDefaults)
   const setProjectFont = useVideoStore((s) => s.setProjectFont)
   const setBrush = useVideoStore((s) => s.setBrush)
   const applyNamedStyle = useVideoStore((s) => s.applyNamedStyle)
   const addNamedStyle = useVideoStore((s) => s.addNamedStyle)
   const updateNamedStyle = useVideoStore((s) => s.updateNamedStyle)
+  const { prompt, modal: promptModal } = usePrompt()
 
   // Saved fonts populate the font dropdown (font as a per-selection format option).
   const [savedFonts, setSavedFonts] = useState<FontSummary[]>([])
@@ -47,16 +52,40 @@ export function FormatBar() {
   const box: TextBox | undefined = slide?.textBoxes.find((b) => b.id === selectedTextBoxId)
   const brushColor = project.brush.color
 
+  // Multi-selection: every selected TEXTBOX (drawings/inks in the selection are
+  // simply not text-styleable). With >1, the bar styles them all at once.
+  const multiBoxes = slide ? slide.textBoxes.filter((b) => selectedElementIds.includes(b.id)) : []
+  const multi = multiBoxes.length > 1
+
   // Resolve the target range + the displayed (possibly-mixed) style — against the
   // ACTIVE aspect's content (which may differ from the shared base when unlinked).
   const content = box ? contentOf(box, activeAspect) : null
   const len = content ? runsToPlainText(content.runs).length : 0
-  const hasRange = !!box && !!selection && selection.boxId === box.id && selection.anchor !== selection.focus
+  const hasRange = !multi && !!box && !!selection && selection.boxId === box.id && selection.anchor !== selection.focus
   const start = hasRange ? Math.min(selection!.anchor, selection!.focus) : 0
   const end = hasRange ? Math.max(selection!.anchor, selection!.focus) : len
 
   const d = project.defaults
-  const style = content ? selectionStyle(content.runs, start, end) : null
+  const styleOfWholeBox = (b: TextBox): SelectionStyle => {
+    const c = contentOf(b, activeAspect)
+    return selectionStyle(c.runs, 0, runsToPlainText(c.runs).length)
+  }
+  // A multi-selection's displayed style: field-wise agreement across the boxes'
+  // full-text styles (any disagreement → MIXED, exactly like a mixed run range).
+  const mergeStyles = (styles: SelectionStyle[]): SelectionStyle => {
+    const field = <K extends keyof SelectionStyle>(k: K): SelectionStyle[K] => {
+      const first = styles[0][k]
+      return styles.every((st) => st[k] === first) ? first : (MIXED as SelectionStyle[K])
+    }
+    return {
+      sizeScale: field('sizeScale'),
+      color: field('color'),
+      underline: field('underline'),
+      letterSpacing: field('letterSpacing'),
+      fontId: field('fontId'),
+    }
+  }
+  const style = multi ? mergeStyles(multiBoxes.map(styleOfWholeBox)) : content ? selectionStyle(content.runs, start, end) : null
   const sizeVal: Maybe<number> = style ? style.sizeScale : d.sizeScale
   const colorVal: Maybe<string | null> = style ? style.color : d.runColor
   const underlineVal: Maybe<boolean> = style ? style.underline : d.runUnderline
@@ -66,26 +95,37 @@ export function FormatBar() {
   const fontVal: Maybe<string | null> = style ? style.fontId : project.fontId
   // The dropdown always shows a concrete font: a run with no explicit fontId
   // resolves to the project default. (No "Default" pseudo-entry.)
-  const fontSelectValue = box
+  const fontSelectValue = box || multi
     ? fontVal === MIXED
       ? '__mixed__'
       : ((fontVal as string | null) || project.fontId)
     : project.fontId
   const savedFontIds = new Set(savedFonts.map((f) => f.id))
 
-  // Dispatch a run-style patch to the selection/box, or to the new-box defaults.
+  // Dispatch a run-style patch to the multi-selection, the selection/box, or the
+  // new-box defaults.
   const applyRun = (patch: StylePatch) => {
-    if (box) applyTextStyle(slide.id, box.id, start, end, patch)
+    if (multi) applyTextStyleToBoxes(slide.id, multiBoxes.map((b) => b.id), patch)
+    else if (box) applyTextStyle(slide.id, box.id, start, end, patch)
     else setDefaults(patchToDefaults(patch))
   }
-  const setAlign = (a: TextAlign) => (box ? setBoxContent(slide.id, box.id, { align: a }) : setDefaults({ align: a }))
+  const setAlign = (a: TextAlign) =>
+    multi
+      ? setBoxContentForBoxes(slide.id, multiBoxes.map((b) => b.id), { align: a })
+      : box
+        ? setBoxContent(slide.id, box.id, { align: a })
+        : setDefaults({ align: a })
   const setLineHeight = (v: number) =>
-    box ? setBoxContent(slide.id, box.id, { lineHeightScale: v }) : setDefaults({ lineHeightScale: v })
+    multi
+      ? setBoxContentForBoxes(slide.id, multiBoxes.map((b) => b.id), { lineHeightScale: v })
+      : box
+        ? setBoxContent(slide.id, box.id, { lineHeightScale: v })
+        : setDefaults({ lineHeightScale: v })
   // Font: per-run on a box/selection ('' = inherit project default); the project
   // default font when nothing is selected.
   const onFont = (v: string) => {
     if (v === '__mixed__') return
-    if (box) {
+    if (box || multi) {
       applyRun({ fontId: v })
       restoreOverlaySelection() // <select> stole focus — return it + the selection
     } else setProjectFont(v)
@@ -93,14 +133,14 @@ export function FormatBar() {
   // Save the current selection as a named style. Only the non-mixed fields are
   // captured, so a style saved from mixed text won't overwrite those fields when
   // applied. Reusing an existing name updates that style.
-  const onSaveStyle = () => {
-    if (!box || !style) return
-    const name = window.prompt('Style name (an existing name updates that style):', '')
-    if (!name || !name.trim()) return
+  const onSaveStyle = async () => {
+    if ((!box && !multi) || !style) return
+    const name = await prompt('Style name (an existing name updates that style):', '')
+    if (!name) return
     const patch = patchFromSelection(style)
-    const match = (project.namedStyles ?? []).find((s) => s.name.toLowerCase() === name.trim().toLowerCase())
+    const match = (project.namedStyles ?? []).find((s) => s.name.toLowerCase() === name.toLowerCase())
     if (match) updateNamedStyle(match.id, { style: patch })
-    else addNamedStyle(name.trim(), patch)
+    else addNamedStyle(name, patch)
   }
 
   const keepFocus = (e: MouseEvent) => e.preventDefault()
@@ -108,9 +148,9 @@ export function FormatBar() {
   const underlineOn = underlineVal === true
   // With a selection: per-run text colour (falling back to the brush colour).
   // With nothing selected: the global pen/brush colour itself.
-  const colorInput = box ? (colorVal === MIXED || colorVal == null ? brushColor : (colorVal as string)) : brushColor
+  const colorInput = box || multi ? (colorVal === MIXED || colorVal == null ? brushColor : (colorVal as string)) : brushColor
   const onColor = (v: string) => {
-    if (box) {
+    if (box || multi) {
       applyRun({ color: v })
       restoreOverlaySelection() // <input> stole focus — return it + the selection
     } else setBrush({ ...project.brush, color: v })
@@ -118,6 +158,7 @@ export function FormatBar() {
 
   return (
     <div className="formatbar">
+      {promptModal}
       <div className="fmt-group">
         <span className="fmt-label">font</span>
         <select className="fmt-font" value={fontSelectValue} onChange={(e) => onFont(e.target.value)} title="font">

@@ -12,12 +12,19 @@ import { httpStore } from '@lib/persistence/FontStore'
 import { drawingHttpStore } from '@lib/persistence/DrawingStore'
 import { apiUrl, apiFetch } from '@lib/persistence/apiBase'
 import { ensureProjectGlyphsDerived, useVideoStore, videoHistory } from '../../state/videoStore'
+import { prefGet, prefSet } from '../../state/sessionPrefs'
+import { autosaveRead, slotIsNewer } from '../../state/autosave'
+import type { VideoProject } from '@lib/project/schema'
 import { useFontRegistry } from '../../state/fontRegistry'
 import { useDrawingRegistry } from '../../state/drawingRegistry'
 import { useEditorStore } from '../../state/store'
 import { NavigatorPanel } from './NavigatorPanel'
 import { SlideCanvas } from './SlideCanvas'
 import { Inspector } from './Inspector'
+import { FilesMenu } from '../files/FilesMenu'
+import { usePrompt } from '../files/PromptDialog'
+import { useConfirm } from './ConfirmDialog'
+import { makeId } from '@lib/project/schema'
 import { VoiceoverExtractPanel } from './VoiceoverExtractPanel'
 import { TimelineView } from './TimelineView'
 import { VttView } from './VttView'
@@ -101,17 +108,25 @@ export function VideoView({
   const setBaseEmFraction = useVideoStore((s) => s.setBaseEmFraction)
   const slideView = useVideoStore((s) => s.slideView)
   const setSlideView = useVideoStore((s) => s.setSlideView)
+  // Unsaved changes? (the project object differs from the last saved/loaded one)
+  const dirty = useVideoStore((s) => !!s.project && s.project !== s.savedProject)
 
+  const { prompt, modal: promptModal } = usePrompt()
+  const { confirm, modal: confirmModal } = useConfirm()
   const [status, setStatus] = useState<string | null>(null)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
-  const [filesOpen, setFilesOpen] = useState(false)
   // Local draft of the project name; committed (renamed) on blur/Enter so typing
   // doesn't spam the undo history per keystroke.
   const [nameDraft, setNameDraft] = useState('')
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState<number | null>(null)
   // Export resolution: full (1080p) or downscaled (720p — ~2× fewer pixels, faster).
-  const [exportQuality, setExportQuality] = useState<'1080p' | '720p'>('1080p')
+  const [exportQuality, setExportQuality] = useState<'1080p' | '720p'>(() =>
+    prefGet<string>('wb.video.exportQuality', '1080p') === '720p' ? '720p' : '1080p',
+  )
+  useEffect(() => {
+    prefSet('wb.video.exportQuality', exportQuality)
+  }, [exportQuality])
   const [exportResult, setExportResult] = useState<
     {
       file: string
@@ -254,13 +269,64 @@ export function VideoView({
     if (drawingIdsKey) void ensureDrawings(drawingIdsKey.split(','))
   }, [drawingIdsKey, ensureDrawings])
 
-  // Bootstrap a project on first entry.
+  // View-state prefs only persist after the mount flow has applied them —
+  // otherwise the effects' first run would clobber the stored values with the
+  // pre-restore defaults.
+  const bootedRef = useRef(false)
+
+  // Bootstrap on first entry: reopen the last project (so a refresh doesn't lose
+  // your place), restoring a NEWER autosaved working copy if one exists (unsaved
+  // edits lost to the refresh); otherwise start a fresh untitled project.
   useEffect(() => {
-    if (!useVideoStore.getState().project) {
-      newProject(font.hash, brush)
-      videoHistory.clear()
+    if (useVideoStore.getState().project) {
+      bootedRef.current = true // tab switch — already open
+      return
     }
-  }, [font, brush, newProject])
+    let cancelled = false
+    void (async () => {
+      const st = useVideoStore.getState()
+      const lastId = prefGet<string | null>('wb.video.lastProjectId', null)
+      const slot = autosaveRead<VideoProject>('video')
+      const targetId = lastId ?? slot?.id ?? null
+      if (targetId) {
+        try {
+          await st.loadProject(targetId) // no-op if it's gone from Drive
+        } catch {
+          /* server unreachable — the autosave below may still restore */
+        }
+        if (cancelled) return
+        const cur = useVideoStore.getState().project
+        if (slot && slot.id === targetId && (!cur || cur.id !== targetId || slotIsNewer(slot.at, cur.updatedAt))) {
+          st.restoreProject(slot.doc)
+          setStatus('restored unsaved changes — Save to keep them')
+        }
+      }
+      if (cancelled) return
+      if (!useVideoStore.getState().project) newProject(font.hash, brush)
+      // Reopen where you were (view + aspect are session prefs, not document state).
+      const view = prefGet<string>('wb.video.slideView', 'editor')
+      if (view === 'vtt' || view === 'timeline') useVideoStore.getState().setSlideView(view)
+      const aspect = prefGet<string>('wb.video.aspect', '')
+      if (aspect === '16:9' || aspect === '9:16') useVideoStore.getState().setActiveAspect(aspect)
+      videoHistory.clear()
+      bootedRef.current = true
+    })()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Remember the open project + view state across refreshes.
+  useEffect(() => {
+    if (project?.id) prefSet('wb.video.lastProjectId', project.id)
+  }, [project?.id])
+  useEffect(() => {
+    if (bootedRef.current) prefSet('wb.video.slideView', slideView)
+  }, [slideView])
+  useEffect(() => {
+    if (bootedRef.current) prefSet('wb.video.aspect', activeAspect)
+  }, [activeAspect])
 
   // Derive every character used in the project so it can render. Keyed on a
   // signature of the needed chars (NOT the whole project), so dragging/positioning
@@ -291,7 +357,8 @@ export function VideoView({
     setNameDraft(project?.name ?? '')
   }, [project?.id])
 
-  // Textbox clipboard: Cmd/Ctrl C / X / V on the selected box (across slides).
+  // Element clipboard: Cmd/Ctrl C / X / V on the selected element(s) — works
+  // across slides within the project (paste lands on the CURRENT slide, nudged).
   // Defers to the browser while editing text (overlay / form fields).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -304,12 +371,12 @@ export function VideoView({
       const slideId = st.selectedSlideId ?? st.project?.slides[0]?.id
       if (!slideId) return
       if (k === 'v') {
-        if (!st.clipboardBox) return
-        st.pasteTextBox(slideId)
+        if (!st.clipboardElements?.length) return
+        st.pasteClipboard(slideId)
         e.preventDefault()
-      } else if (st.selectedTextBoxId) {
-        if (k === 'c') st.copyTextBox(slideId, st.selectedTextBoxId)
-        else st.cutTextBox(slideId, st.selectedTextBoxId)
+      } else if (st.selectedElementIds.length) {
+        if (k === 'c') st.copySelection(slideId)
+        else st.cutSelection(slideId)
         e.preventDefault()
       }
     }
@@ -322,15 +389,19 @@ export function VideoView({
     if (name && name !== project?.name) renameProject(name)
     else setNameDraft(project?.name ?? '')
   }
+  // Ask before discarding unsaved changes (Open / New / Reload).
+  const confirmDiscard = async () =>
+    !dirty || (await confirm('You have unsaved changes — discard them?'))
+
   const doSave = async () => {
     // Prompt for a real name the first time an "Untitled video" is saved, so the
     // Drive file lands with a meaningful name.
     const cur = useVideoStore.getState().project
     if (cur && (!cur.name || cur.name === 'Untitled video')) {
-      const entered = window.prompt('Name this video:', '')
-      if (entered && entered.trim()) {
-        renameProject(entered.trim())
-        setNameDraft(entered.trim())
+      const entered = await prompt('Name this video:', '')
+      if (entered) {
+        renameProject(entered)
+        setNameDraft(entered)
       }
     }
     setStatus('saving…')
@@ -345,22 +416,23 @@ export function VideoView({
   const doSaveAs = async () => {
     const cur = useVideoStore.getState().project
     if (!cur) return
-    const entered = window.prompt('Save a copy as:', `${cur.name} copy`)
-    if (!entered || !entered.trim()) return
+    const entered = await prompt('Save a copy as:', `${cur.name} copy`)
+    if (!entered) return
     setStatus('saving copy…')
     try {
-      const id = await saveProjectAs(entered.trim(), font)
-      setNameDraft(entered.trim())
+      const id = await saveProjectAs(entered, font)
+      // The editor switched documents (to the copy) — undo must not cross that.
+      videoHistory.clear()
+      setNameDraft(entered)
       setStatus('saved copy')
       refreshList()
-      setFilesOpen(false)
       return id
     } catch (e) {
       setStatus('copy failed: ' + e)
     }
   }
-  const doDelete = async (id: string, name: string) => {
-    if (!window.confirm(`Delete "${name}"? This moves it to Drive trash.`)) return
+  // Files-menu operations (delete confirmation + duplicate naming live in the menu).
+  const doDelete = async (id: string) => {
     try {
       await projectStore.remove(id)
       refreshList()
@@ -373,11 +445,44 @@ export function VideoView({
     }
   }
   const doLoad = async (id: string) => {
+    if (id === useVideoStore.getState().project?.id) return
+    if (!(await confirmDiscard())) return
     setStatus('loading…')
     await loadProject(id)
     videoHistory.clear()
-    setFilesOpen(false)
     setStatus('loaded')
+  }
+  /** Rename via the Files menu. The OPEN project renames locally (persists on the
+   *  next save, like the toolbar name field); other files rename on Drive now. */
+  const doRenameFile = async (id: string, name: string) => {
+    if (id === useVideoStore.getState().project?.id) {
+      renameProject(name)
+      setNameDraft(name)
+      setStatus('renamed — Save to persist')
+      return
+    }
+    const p = await projectStore.load(id)
+    if (p) await projectStore.save({ ...p, name, updatedAt: new Date().toISOString() })
+  }
+  /** Duplicate via the Files menu. The OPEN project duplicates its live state and
+   *  switches to the copy (= Save a copy); other files copy on the server as-is. */
+  const doDuplicateFile = async (id: string, name: string) => {
+    if (id === useVideoStore.getState().project?.id) {
+      await saveProjectAs(name, font)
+      videoHistory.clear() // the editor switched to the copy — undo must not cross that
+      setNameDraft(name)
+      return
+    }
+    await projectStore.copy(id, makeId(), name)
+  }
+  const doReload = async () => {
+    const cur = useVideoStore.getState().project
+    if (!cur) return
+    if (!(await confirmDiscard())) return
+    setStatus('reloading…')
+    await loadProject(cur.id) // no-op if it was never saved (nothing on Drive)
+    videoHistory.clear()
+    setStatus(useVideoStore.getState().project !== cur ? 'reloaded from Drive' : 'never saved — nothing to reload')
   }
   const doExport = async () => {
     const p = useVideoStore.getState().project
@@ -482,6 +587,8 @@ export function VideoView({
 
   return (
     <div className="video">
+      {promptModal}
+      {confirmModal}
       <div className="video-top">
         <input
           className="proj-name-input"
@@ -515,63 +622,32 @@ export function VideoView({
         <div className="spacer" />
         <button onClick={() => videoHistory.undo()} title="undo">↶</button>
         <button onClick={() => videoHistory.redo()} title="redo">↷</button>
-        <button className="primary" onClick={doSave}>💾 Save</button>
+        <button className="primary" onClick={doSave} disabled={!dirty} title={dirty ? 'Save to Drive' : 'No unsaved changes'}>
+          💾 Save
+        </button>
         <button onClick={doSaveAs} title="Save a copy under a new name">⎘ Save a copy</button>
-        <div className="files-menu" style={{ position: 'relative' }}>
-          <button
-            onClick={() => {
-              if (!filesOpen) refreshList()
-              setFilesOpen((o) => !o)
-            }}
-            title="Open or delete saved videos"
-          >
-            Files ▾
-          </button>
-          {filesOpen && (
-            <div
-              className="files-panel"
-              style={{
-                position: 'absolute',
-                top: '100%',
-                right: 0,
-                zIndex: 30,
-                minWidth: 240,
-                maxHeight: 360,
-                overflowY: 'auto',
-                background: 'var(--panel, #fff)',
-                color: 'var(--text, #111)',
-                border: '1px solid var(--border, #ccc)',
-                borderRadius: 6,
-                boxShadow: '0 6px 24px rgba(0,0,0,0.18)',
-                padding: 4,
-              }}
-            >
-              {projects.length === 0 ? (
-                <div style={{ padding: 8, opacity: 0.7 }}>No saved videos</div>
-              ) : (
-                projects.map((p) => (
-                  <div
-                    key={p.id}
-                    style={{ display: 'flex', alignItems: 'center', gap: 4 }}
-                  >
-                    <button
-                      style={{ flex: 1, textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                      title={`Open ${p.name}`}
-                      onClick={() => doLoad(p.id)}
-                    >
-                      {p.id === project.id ? '● ' : ''}
-                      {p.name} <span style={{ opacity: 0.6 }}>({p.slideCount})</span>
-                    </button>
-                    <button title="Delete" onClick={() => doDelete(p.id, p.name)}>
-                      🗑
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-        <button onClick={() => { newProject(font.hash, brush); videoHistory.clear(); setNameDraft('Untitled video') }}>New</button>
+        <FilesMenu
+          items={projects.map((p) => ({ id: p.id, name: p.name, meta: `${p.slideCount} slide${p.slideCount === 1 ? '' : 's'}`, updatedAt: p.updatedAt }))}
+          currentId={project.id}
+          emptyLabel="No saved videos"
+          onRefresh={refreshList}
+          onOpen={doLoad}
+          onRename={doRenameFile}
+          onDuplicate={doDuplicateFile}
+          onDelete={doDelete}
+          renameHint="renamed — Save to persist"
+        />
+        <button
+          onClick={async () => {
+            if (!(await confirmDiscard())) return
+            newProject(font.hash, brush)
+            videoHistory.clear()
+            setNameDraft('Untitled video')
+          }}
+        >
+          New
+        </button>
+        <button onClick={doReload} title="Reload the open video from Drive (discards unsaved changes)">Reload</button>
         <label className="field export-quality" title="Export resolution — 720p renders roughly 2× faster (smaller file)">
           <span>quality</span>
           <select
@@ -638,7 +714,9 @@ export function VideoView({
           </button>
         ))}
         <span className="slideview-hint">
-          {slideView === 'editor' ? 'drag to move · click empty space to add a textbox · ▶ a slide/textbox chip to preview it' : ''}
+          {slideView === 'editor'
+            ? 'drag to move · click empty space to add a textbox · drag empty space to marquee-select · shift/⌘-click to multi-select · ⌘C/X/V copies elements across slides'
+            : ''}
         </span>
       </div>
 
@@ -651,7 +729,7 @@ export function VideoView({
           <NavigatorPanel fonts={fonts} />
           <SlideCanvas fonts={fonts} font={font} drawings={registryDrawings} />
           <div className="inspector-col">
-            <Inspector />
+            <Inspector fonts={fonts} drawings={registryDrawings} />
             <VoiceoverExtractPanel fonts={fonts} drawings={registryDrawings} />
           </div>
         </div>

@@ -11,7 +11,7 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } 
 import { CSS } from '@dnd-kit/utilities'
 import { contentsDiverge, effLock, framesDiverge } from '@lib/project/aspect'
 import { runsToPlainText } from '@lib/project/runs'
-import type { Slide, SlideDrawing, TextBox } from '@lib/project/schema'
+import type { Slide, SlideDrawing, SlideInk, TextBox } from '@lib/project/schema'
 import { useVideoStore } from '../../state/videoStore'
 import { useConfirm } from './ConfirmDialog'
 import { useDrawingPicker } from './DrawingPicker'
@@ -31,6 +31,8 @@ export function TextboxNavigator() {
   const selectedId = useVideoStore((s) => s.selectedTextBoxId)
   const selectDrawing = useVideoStore((s) => s.selectDrawing)
   const selectedDrawingId = useVideoStore((s) => s.selectedDrawingId)
+  const selectInk = useVideoStore((s) => s.selectInk)
+  const selectedInkId = useVideoStore((s) => s.selectedInkId)
   const addDrawing = useVideoStore((s) => s.addDrawing)
   const setBoxPositionLink = useVideoStore((s) => s.setBoxPositionLink)
   const setSlidePositionLink = useVideoStore((s) => s.setSlidePositionLink)
@@ -51,13 +53,15 @@ export function TextboxNavigator() {
   if (!project || !slide) return <div className="muted order-empty">No slide.</div>
 
   const boxes = [...slide.textBoxes].sort((a, b) => a.animOrder - b.animOrder)
-  // The combined animation sequence: boxes + drawings interleaved by animOrder.
+  // The combined animation sequence: boxes + drawings + inks interleaved by animOrder.
   type Item =
     | { kind: 'box'; id: string; animOrder: number; box: TextBox }
     | { kind: 'draw'; id: string; animOrder: number; drawing: SlideDrawing }
+    | { kind: 'ink'; id: string; animOrder: number; ink: SlideInk }
   const items: Item[] = [
     ...slide.textBoxes.map((b) => ({ kind: 'box' as const, id: b.id, animOrder: b.animOrder, box: b })),
     ...(slide.drawings ?? []).map((d) => ({ kind: 'draw' as const, id: d.id, animOrder: d.animOrder, drawing: d })),
+    ...(slide.inks ?? []).map((k) => ({ kind: 'ink' as const, id: k.id, animOrder: k.animOrder, ink: k })),
   ].sort((a, b) => a.animOrder - b.animOrder)
 
   const onDragEnd = (e: DragEndEvent) => {
@@ -134,7 +138,23 @@ export function TextboxNavigator() {
           <SortableContext items={items.map((it) => it.id)} strategy={verticalListSortingStrategy}>
             <ol className="orderlist">
               {items.map((it, i) =>
-                it.kind === 'box' ? (
+                it.kind === 'ink' ? (
+                  <InkRow
+                    key={it.id}
+                    ink={it.ink}
+                    index={i}
+                    selected={it.id === selectedInkId}
+                    playing={playback?.kind === 'ink' && playback.slideId === slide.id && playback.inkId === it.id}
+                    onSelect={() => selectInk(it.id)}
+                    onTogglePlay={() =>
+                      setPlayback(
+                        playback?.kind === 'ink' && playback.slideId === slide.id && playback.inkId === it.id
+                          ? null
+                          : { kind: 'ink', slideId: slide.id, inkId: it.id },
+                      )
+                    }
+                  />
+                ) : it.kind === 'box' ? (
                   <OrderRow
                     key={it.id}
                     box={it.box}
@@ -238,6 +258,42 @@ function OrderRow({
         <LockButton kind="p" state={posLinked ? 'on' : 'off'} title={posLinked ? 'Position — linked across aspect ratios (click to unlink)' : 'Position — separate per aspect ratio (click to re-link)'} onClick={onTogglePos} />
         <LockButton kind="f" state={fmtLinked ? 'on' : 'off'} title={fmtLinked ? 'Format — linked across aspect ratios (click to unlink)' : 'Format — separate per aspect ratio (click to re-link)'} onClick={onToggleFmt} />
       </span>
+    </li>
+  )
+}
+
+/** A direct-drawing (ink) row: a ✎ marks it; inks are shared across aspects in
+ *  v1, so they carry no padlocks (delete lives in the properties panel / Delete key). */
+function InkRow({
+  ink,
+  index,
+  selected,
+  playing,
+  onSelect,
+  onTogglePlay,
+}: {
+  ink: SlideInk
+  index: number
+  selected: boolean
+  playing: boolean
+  onSelect: () => void
+  onTogglePlay: () => void
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: ink.id })
+  const style = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.6 : 1 }
+  return (
+    <li ref={setNodeRef} style={style} className={selected ? 'order-row sel' : 'order-row'} onClick={onSelect}>
+      <span className="drag" title="drag to reorder" {...attributes} {...listeners}>⠿</span>
+      <span className="order-no">{index + 1}</span>
+      <span className="order-label" title="direct drawing">
+        ✎ {ink.tool}
+      </span>
+      <span className="rowbtns">
+        <button className={playing ? 'on' : ''} title={playing ? 'stop' : 'play this ink (loops)'} onClick={(e) => { e.stopPropagation(); onTogglePlay() }}>
+          {playing ? '■' : '▶'}
+        </button>
+      </span>
+      <span className="lockcols" />
     </li>
   )
 }

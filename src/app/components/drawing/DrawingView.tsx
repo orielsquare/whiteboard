@@ -11,14 +11,20 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy } 
 import { CSS } from '@dnd-kit/utilities'
 import { type BrushSettings, type BrushStyle, type Bbox } from '@lib/manifest/schema'
 import { EASING_NAMES, type EasingName } from '@lib/geometry/easing'
+import { buildLUT } from '@lib/geometry/polyline'
 import { type Transform } from '@lib/render/ribbon'
 import { prepareDrawing, type PreparedDrawing } from '@lib/drawing/timeline'
 import { renderPreparedDrawing } from '@lib/drawing/render'
-import type { DrawingManifest, DrawingPart, PartSection } from '@lib/drawing/schema'
+import type { DrawingManifest, DrawingPart, PartSection, PartSectionTiming } from '@lib/drawing/schema'
 import { DEFAULT_FILL_PARAMS, DEFAULT_STROKE_PARAMS, type FillParams, type StrokeParams } from '@lib/svg/types'
 import { drawingHttpStore, type DrawingSummary } from '@lib/persistence/DrawingStore'
 import { drawingHistory, useDrawingStore, type OrderDim } from '../../state/drawingStore'
 import { useDrawingRegistry } from '../../state/drawingRegistry'
+import { prefGet, prefSet } from '../../state/sessionPrefs'
+import { autosaveRead, slotIsNewer } from '../../state/autosave'
+import { FilesMenu } from '../files/FilesMenu'
+import { usePrompt } from '../files/PromptDialog'
+import { useConfirm } from '../video/ConfirmDialog'
 
 const BRUSH_STYLES: BrushStyle[] = ['chalk', 'ink', 'marker']
 const END_HOLD_MS = 700
@@ -45,6 +51,7 @@ export function DrawingView({
   const setPartColor = useDrawingStore((s) => s.setPartColor)
   const setPartOpacity = useDrawingStore((s) => s.setPartOpacity)
   const setPartTiming = useDrawingStore((s) => s.setPartTiming)
+  const setPartSectionTiming = useDrawingStore((s) => s.setPartSectionTiming)
   const reorderParts = useDrawingStore((s) => s.reorderParts)
   const reorderZ = useDrawingStore((s) => s.reorderZ)
   const copyPartStyle = useDrawingStore((s) => s.copyPartStyle)
@@ -73,10 +80,67 @@ export function DrawingView({
   const [pasteText, setPasteText] = useState('')
   const [saved, setSaved] = useState<DrawingSummary[]>([])
   const [saveStatus, setSaveStatus] = useState<string | null>(null)
+  // Local draft of the drawing name; committed on blur/Enter (matches the Font
+  // and Video tools — no per-keystroke renames flooding the undo history).
+  const [nameDraft, setNameDraft] = useState('')
+
+  const { prompt, modal: promptModal } = usePrompt()
+  const { confirm, modal: confirmModal } = useConfirm()
+  // Ask before discarding unsaved changes (Open / import / Reload).
+  const confirmDiscard = async () => !dirty || (await confirm('You have unsaved changes — discard them?'))
 
   // Refresh the saved-drawings list (on mount + after each save).
   const refreshSaved = () => { void drawingHttpStore.list().then(setSaved).catch(() => {}) }
   useEffect(refreshSaved, [])
+
+  // Reopen the last drawing after a refresh, restoring a NEWER autosaved working
+  // copy if one exists (unsaved edits lost to the refresh). Tab switches keep the
+  // store, so this only runs when the tool starts empty.
+  useEffect(() => {
+    if (useDrawingStore.getState().manifest) return
+    let cancelled = false
+    void (async () => {
+      const lastId = prefGet<string | null>('wb.draw.lastDrawingId', null)
+      const slot = autosaveRead<DrawingManifest>('drawing')
+      const targetId = lastId ?? slot?.id ?? null
+      if (!targetId) return
+      let server: DrawingManifest | null = null
+      try {
+        server = await drawingHttpStore.load(targetId)
+      } catch {
+        server = null
+      }
+      if (cancelled || useDrawingStore.getState().manifest) return
+      if (slot && slot.id === targetId && (!server || slotIsNewer(slot.at, server.updatedAt))) {
+        useDrawingStore.getState().restoreAutosaved(slot.doc)
+        setSaveStatus('restored unsaved changes — Save to keep them')
+      } else if (server) {
+        useDrawingStore.getState().loadManifest(server)
+      }
+      drawingHistory.clear()
+    })()
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Remember the open drawing across refreshes.
+  const openDrawingId = manifest?.metadata.drawingId
+  useEffect(() => {
+    if (openDrawingId) prefSet('wb.draw.lastDrawingId', openDrawingId)
+  }, [openDrawingId])
+
+  // Sync the name field when a different drawing opens.
+  useEffect(() => {
+    setNameDraft(manifest?.metadata.name ?? '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openDrawingId])
+  const commitName = () => {
+    const n = nameDraft.trim()
+    if (manifest && n && n !== manifest.metadata.name) setName(n)
+    else setNameDraft(manifest?.metadata.name ?? '')
+  }
 
   // Clear the per-section selection whenever the selected part changes.
   useEffect(() => { setSelSecIds([]) }, [selId])
@@ -97,23 +161,23 @@ export function DrawingView({
       setSaveStatus(`save failed: ${e}`)
     }
   }
+  const rid = () => {
+    try { return crypto.randomUUID().slice(0, 8) } catch { return Math.random().toString(36).slice(2, 10) }
+  }
   // Save a copy: write the current drawing under its own id (so no edits are lost),
   // then a duplicate under a fresh id + new name, and switch the editor to the copy.
   const doSaveAs = async () => {
     const m = useDrawingStore.getState().manifest
     if (!m) return
-    const entered = window.prompt('Save a copy as:', `${m.metadata.name} copy`)
-    if (!entered || !entered.trim()) return
-    const name = entered.trim()
+    const name = await prompt('Save a copy as:', `${m.metadata.name} copy`)
+    if (!name) return
     setSaveStatus('saving copy…')
     try {
       const now = new Date().toISOString()
-      const rid = (() => {
-        try { return crypto.randomUUID().slice(0, 8) } catch { return Math.random().toString(36).slice(2, 10) }
-      })()
       const cur: DrawingManifest = { ...m, updatedAt: now }
       await drawingHttpStore.save(cur) // keep the original intact with its current state
-      const newId = `${m.metadata.drawingId}-${rid}`
+      markSaved()
+      const newId = `${m.metadata.drawingId}-${rid()}`
       const copy: DrawingManifest = {
         ...cur,
         metadata: { ...cur.metadata, drawingId: newId, hash: newId, name },
@@ -133,12 +197,68 @@ export function DrawingView({
     }
   }
   const doOpen = async (id: string) => {
-    if (!id) return
+    if (!id || id === useDrawingStore.getState().manifest?.metadata.drawingId) return
+    if (!(await confirmDiscard())) return
     try {
       const m = await drawingHttpStore.load(id)
       if (m) { loadManifest(m); setSelId(null); drawingHistory.clear() }
     } catch (e) {
       setSaveStatus(`open failed: ${e}`)
+    }
+  }
+  /** Rename via the Files menu. The OPEN drawing renames locally (persists on the
+   *  next save, like the name field); other files rename on Drive now. */
+  const doRenameFile = async (id: string, name: string) => {
+    if (id === useDrawingStore.getState().manifest?.metadata.drawingId) {
+      setName(name)
+      setNameDraft(name)
+      setSaveStatus('renamed — Save to persist')
+      return
+    }
+    const m = await drawingHttpStore.load(id)
+    if (m) await drawingHttpStore.save({ ...m, metadata: { ...m.metadata, name }, updatedAt: new Date().toISOString() })
+  }
+  /** Duplicate via the Files menu — copies the SAVED state (a file operation;
+   *  use "Save a copy" to duplicate the live working state instead). */
+  const doDuplicateFile = async (id: string, name: string) => {
+    const src = await drawingHttpStore.load(id)
+    if (!src) return
+    const now = new Date().toISOString()
+    const newId = `${id}-${rid()}`
+    await drawingHttpStore.save({
+      ...src,
+      metadata: { ...src.metadata, drawingId: newId, hash: newId, name },
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
+  const doDeleteFile = async (id: string) => {
+    try {
+      await drawingHttpStore.remove(id)
+      if (id === useDrawingStore.getState().manifest?.metadata.drawingId) {
+        setSaveStatus('deleted from Drive — the open copy is now unsaved')
+      }
+      refreshSaved()
+    } catch (e) {
+      setSaveStatus(`delete failed: ${e}`)
+    }
+  }
+  const doReload = async () => {
+    const cur = useDrawingStore.getState().manifest
+    if (!cur) return
+    if (!(await confirmDiscard())) return
+    try {
+      const m = await drawingHttpStore.load(cur.metadata.drawingId)
+      if (m) {
+        loadManifest(m)
+        setSelId(null)
+        drawingHistory.clear()
+        setSaveStatus(null)
+      } else {
+        setSaveStatus('never saved — nothing to reload')
+      }
+    } catch (e) {
+      setSaveStatus(`reload failed: ${e}`)
     }
   }
 
@@ -154,8 +274,14 @@ export function DrawingView({
     [parts],
   )
 
-  const [speed, setSpeed] = useState(1)
-  const [loop, setLoop] = useState(true)
+  // Preview transport (transient — persisted as prefs, never in the file).
+  const [speed, setSpeed] = useState(() => {
+    const v = prefGet('wb.draw.speed', 1)
+    return Number.isFinite(v) && v >= 0.25 && v <= 3 ? v : 1
+  })
+  useEffect(() => { prefSet('wb.draw.speed', speed) }, [speed])
+  const [loop, setLoop] = useState(() => prefGet<boolean>('wb.draw.loop', true) !== false)
+  useEffect(() => { prefSet('wb.draw.loop', loop) }, [loop])
   const [isPlaying, setIsPlaying] = useState(true)
   const [progress, setProgress] = useState(0)
   const totalMs = Math.max(1, timeline?.totalMs ?? 1)
@@ -236,9 +362,10 @@ export function DrawingView({
     const file = e.target.files?.[0]
     if (!file) return
     const text = await file.text()
+    e.target.value = ''
+    if (!(await confirmDiscard())) return
     importSvg(text, file.name.replace(/\.svg$/i, ''), file.name)
     setSelId(null)
-    e.target.value = ''
   }
 
   // The list is displayed in the active order dimension; dragging/↑↓ reorder THAT
@@ -275,6 +402,8 @@ export function DrawingView({
 
   return (
     <div className="drawing-tool">
+      {promptModal}
+      {confirmModal}
       <div className="font-actions">
         <button onClick={() => drawingHistory.undo()}>↶ Undo</button>
         <button onClick={() => drawingHistory.redo()}>↷ Redo</button>
@@ -283,8 +412,12 @@ export function DrawingView({
             <span>Name</span>
             <input
               className="font-name-input"
-              value={manifest.metadata.name}
-              onChange={(e) => setName(e.target.value)}
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onBlur={commitName}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+              }}
               placeholder="drawing name"
               title="Rename this drawing (used as the Drive file name on save)"
             />
@@ -296,22 +429,33 @@ export function DrawingView({
         {manifest && (
           <button onClick={doSaveAs} title="Save a copy under a new name">⎘ Save a copy</button>
         )}
-        <label className="field">
-          <span>Open</span>
-          <select value="" onChange={(e) => { void doOpen(e.target.value); e.target.value = '' }}>
-            <option value="">saved drawings…</option>
-            {saved.map((d) => (
-              <option key={d.id} value={d.id}>{d.name} · {d.partCount} parts</option>
-            ))}
-          </select>
-        </label>
+        <FilesMenu
+          items={saved.map((d) => ({ id: d.id, name: d.name, meta: `${d.partCount} part${d.partCount === 1 ? '' : 's'}`, updatedAt: d.updatedAt }))}
+          currentId={openDrawingId ?? null}
+          emptyLabel="No saved drawings"
+          onRefresh={refreshSaved}
+          onOpen={doOpen}
+          onRename={doRenameFile}
+          onDuplicate={doDuplicateFile}
+          onDelete={doDeleteFile}
+          renameHint="renamed — Save to persist"
+        />
+        {manifest && <button onClick={doReload} title="Reload the open drawing from Drive (discards unsaved changes)">Reload</button>}
         <span className="spacer" />
         <label className="field">
           <span>Load SVG</span>
           <input type="file" accept=".svg,image/svg+xml" onChange={onFile} />
         </label>
         <button onClick={() => setPasteOpen((o) => !o)}>{pasteOpen ? 'Close paste' : 'Paste SVG…'}</button>
-        <button onClick={() => { importSvg(SAMPLE_SVG, 'Sample smiley'); setSelId(null) }}>Load sample</button>
+        <button
+          onClick={async () => {
+            if (!(await confirmDiscard())) return
+            importSvg(SAMPLE_SVG, 'Sample smiley')
+            setSelId(null)
+          }}
+        >
+          Load sample
+        </button>
         {saveStatus && <span className="savestatus-inline">{saveStatus}</span>}
       </div>
 
@@ -325,8 +469,12 @@ export function DrawingView({
           />
           <button
             className="primary"
-            onClick={() => {
-              if (pasteText.trim()) { importSvg(pasteText, 'Pasted drawing'); setSelId(null); setPasteOpen(false) }
+            onClick={async () => {
+              if (!pasteText.trim()) return
+              if (!(await confirmDiscard())) return
+              importSvg(pasteText, 'Pasted drawing')
+              setSelId(null)
+              setPasteOpen(false)
             }}
           >
             Import
@@ -417,16 +565,10 @@ export function DrawingView({
                 {styleClipboard && <div className="muted" style={{ fontSize: 11, marginBottom: 6 }}>clipboard: {styleClipboard.sourceKind} settings</div>}
                 <h3>{selected.kind === 'fill' ? 'Shading' : 'Outline'} — timing</h3>
                 <div className="timing">
-                  <label className="slider">
-                    <span>duration <b>{selected.timing.durationMs}ms</b></span>
-                    <input type="range" min={100} max={4000} step={20} value={selected.timing.durationMs}
-                      onChange={(e) => setPartTiming(selected.id, { durationMs: Number(e.target.value) })} />
-                  </label>
-                  <label className="slider">
-                    <span>delay before <b>{selected.timing.delayBeforeMs}ms</b></span>
-                    <input type="range" min={0} max={1500} step={20} value={selected.timing.delayBeforeMs}
-                      onChange={(e) => setPartTiming(selected.id, { delayBeforeMs: Number(e.target.value) })} />
-                  </label>
+                  <MsControl label="duration" min={100} max={4000} step={20} value={selected.timing.durationMs}
+                    onChange={(v) => setPartTiming(selected.id, { durationMs: Math.max(1, v) })} />
+                  <MsControl label="delay before" min={0} max={1500} step={20} value={selected.timing.delayBeforeMs}
+                    onChange={(v) => setPartTiming(selected.id, { delayBeforeMs: Math.max(0, v) })} />
                   <label className="slider">
                     <span>easing</span>
                     <select value={selected.timing.easing}
@@ -488,6 +630,7 @@ export function DrawingView({
                   onDelete={(id) => { deletePartSection(selected.id, id); setSelSecIds((p) => p.filter((x) => x !== id)) }}
                   onSplit={(id) => { splitPartSection(selected.id, id); setSelSecIds([]) }}
                   onMerge={(a, b) => { mergePartSections(selected.id, a, b); setSelSecIds([]) }}
+                  onSectionTiming={(id, patch) => setPartSectionTiming(selected.id, id, patch)}
                 />
               </div>
             ) : (
@@ -593,6 +736,7 @@ function SectionEditor({
   onDelete,
   onSplit,
   onMerge,
+  onSectionTiming,
 }: {
   part: DrawingPart
   selIds: string[]
@@ -604,7 +748,9 @@ function SectionEditor({
   onDelete: (id: string) => void
   onSplit: (id: string) => void
   onMerge: (a: string, b: string) => void
+  onSectionTiming: (id: string, patch: Partial<PartSectionTiming>) => void
 }) {
+  const selectedSec = selIds.length === 1 ? part.sections.find((s) => s.id === selIds[0]) : undefined
   const ids = part.sections.map((s) => s.id)
   const onDragEnd = (e: DragEndEvent) => {
     const { active, over } = e
@@ -643,7 +789,110 @@ function SectionEditor({
           </ol>
         </SortableContext>
       </DndContext>
+      {selectedSec && <StrokeTimingEditor part={part} sec={selectedSec} onChange={(patch) => onSectionTiming(selectedSec.id, patch)} />}
     </>
+  )
+}
+
+/**
+ * Per-stroke timing for the selected section, baked into the drawing file. Unset
+ * = the stroke's length-proportional share of the part's duration; setting either
+ * field sequences the part stroke-by-stroke around the exact times.
+ */
+function StrokeTimingEditor({
+  part,
+  sec,
+  onChange,
+}: {
+  part: DrawingPart
+  sec: PartSection
+  onChange: (patch: Partial<PartSectionTiming>) => void
+}) {
+  // The stroke's automatic (length-proportional) duration, as the input placeholder.
+  const autoMs = useMemo(() => {
+    let total = 0
+    let mine = 0
+    for (const s of part.sections) {
+      const len = buildLUT(s.points).total
+      total += len
+      if (s.id === sec.id) mine = len
+    }
+    return total > 0 ? Math.round(part.timing.durationMs * (mine / total)) : 0
+  }, [part, sec.id])
+  const pos = part.sections.findIndex((s) => s.id === sec.id) + 1
+  const dur = sec.timing?.durationMs
+  const delay = sec.timing?.delayBeforeMs
+  return (
+    <div className="timing">
+      <h3>Stroke {pos} — timing</h3>
+      <label className="slider">
+        <span>
+          duration {dur != null ? <b>{dur}ms</b> : <span className="muted">auto · {autoMs}ms</span>}
+        </span>
+        <div className="num-row">
+          <input
+            type="number"
+            className="num-input"
+            min={0}
+            step={20}
+            placeholder={`auto (${autoMs})`}
+            value={dur ?? ''}
+            onChange={(e) =>
+              onChange({ durationMs: e.target.value === '' ? undefined : Math.max(1, Math.round(Number(e.target.value) || 0)) })
+            }
+          />
+          <span className="num-unit">ms</span>
+        </div>
+      </label>
+      <label className="slider">
+        <span>pen-lift before <b>{delay ?? 0}ms</b></span>
+        <div className="num-row">
+          <input
+            type="number"
+            className="num-input"
+            min={0}
+            step={20}
+            placeholder="0"
+            value={delay ?? ''}
+            onChange={(e) =>
+              onChange({ delayBeforeMs: e.target.value === '' ? undefined : Math.max(0, Math.round(Number(e.target.value) || 0)) })
+            }
+          />
+          <span className="num-unit">ms</span>
+        </div>
+      </label>
+      <div className="muted env-natural">blank = this stroke's length-proportional share of the part duration</div>
+    </div>
+  )
+}
+
+/** A ms timing control: slider for feel + an exact number input (which can also
+ *  exceed the slider's range). */
+function MsControl({
+  label,
+  min,
+  max,
+  step,
+  value,
+  onChange,
+}: {
+  label: string
+  min: number
+  max: number
+  step: number
+  value: number
+  onChange: (v: number) => void
+}) {
+  return (
+    <label className="slider">
+      <span>{label} <b>{value}ms</b></span>
+      <div className="sliderow">
+        <input type="range" min={min} max={max} step={step} value={Math.min(max, Math.max(min, value))}
+          onChange={(e) => onChange(Number(e.target.value))} />
+        <input type="number" className="num-input" min={min} step={step} value={value}
+          onChange={(e) => { const v = Number(e.target.value); if (Number.isFinite(v)) onChange(Math.round(v)) }} />
+      </div>
+    </label>
   )
 }
 
@@ -677,6 +926,9 @@ function SecRow({
       <span className="ord">{pos + 1}</span>
       <span className="sk">{sec.kind}</span>
       <span className="muted" style={{ fontSize: 11 }}>{sec.points.length}pt</span>
+      {sec.timing && (sec.timing.durationMs != null || sec.timing.delayBeforeMs != null) && (
+        <span title={`custom stroke timing${sec.timing.durationMs != null ? ` · ${sec.timing.durationMs}ms` : ''}${sec.timing.delayBeforeMs ? ` · +${sec.timing.delayBeforeMs}ms lift` : ''}`}>⏱</span>
+      )}
       <span className="spacer" />
       <span className="rowbtns">
         <button title="move earlier" disabled={first} onClick={(e) => { stop(e); onMove(-1) }}>↑</button>

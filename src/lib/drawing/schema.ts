@@ -20,11 +20,23 @@ export const DRAWING_VERSION = 2 as const
 
 export type PartKind = 'outline' | 'fill'
 
-/** A baked stroke (outline subpath or one hatch run); geometry only. */
+/** Optional per-stroke timing override, baked into the file. Absent ⇒ the
+ *  section takes its length-proportional share of the part's `durationMs` (the
+ *  part sets the base pace; overriding one stroke doesn't disturb the others). */
+export interface PartSectionTiming {
+  /** exact draw time for this section (ms). */
+  durationMs?: number
+  /** pen-lift gap before this section begins (ms). */
+  delayBeforeMs?: number
+}
+
+/** A baked stroke (outline subpath or one hatch run). Geometry + an optional
+ *  per-stroke timing override (`timing`). */
 export interface PartSection {
   id: string
   points: StrokePoint[]
   kind: SectionKind
+  timing?: PartSectionTiming
 }
 
 /** How a whole part draws: one constant-speed motion across all its sections,

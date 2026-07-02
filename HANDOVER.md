@@ -5,6 +5,25 @@ designs so you can continue without re-deriving anything.
 
 > ## 👉 CURRENT IN-FLIGHT WORK (start here)
 >
+> **UX rationalisation is landed & verified — see [`UX_RATIONALISATION_DESIGN.md`](UX_RATIONALISATION_DESIGN.md).**
+> In short: (1) one shared **Files ▾** menu (open/rename/duplicate/delete) + consistent
+> action bars (`Save` greys when clean, `⎘ Save a copy`, `Reload`, dirty-guard confirms)
+> across Font/Drawing/Video — fonts gained open-saved/duplicate/delete (`saved:<id>`
+> source, new `DELETE /whiteboard/api/fonts/:id` in the builder repo); (2) session
+> prefs (`wb.*` localStorage) + single-slot **autosave** restore unsaved work and your
+> place (tabs, open file, timeline zoom/scroll) across refreshes; (3) richer timing —
+> per-stroke ms overrides in drawings (`PartSection.timing`), exact-ms inputs + a
+> transient play speed in the font editor; (4) the **envelope container-bar model**
+> for video elements — `speed` sets the animation block, `envelopeMs` is the slot it
+> sits in with `delayBeforeMs` reinterpreted as the padding-before, blocks slide
+> within their envelope (the Inspector's `EnvelopeBar` widget), overflow compresses
+> to fit (pace preserved under edits), and the global rate scales whole envelopes
+> (engine: `elementSlot` in `timing.ts`; render samples the anim window, so preview
+> == export); (5) **direct drawings** (`Slide.inks` — freehand/line/curve/arrow pen
+> tools on the slide canvas, stored inline, animated sequentially through the shared
+> `animOrder` with the same speed/envelope controls; engine in
+> `src/lib/project/ink.ts`, tests `tools/ink.test.mjs`).
+>
 > **Dual aspect-ratio + editor rework is the active feature — see [`DUAL_ASPECT_DESIGN.md`](DUAL_ASPECT_DESIGN.md)
 > for the live design + status (Phases 1–2 + format-lock content divergence + the editor/playback rework are
 > landed & verified; only the Phase-3 *directional* re-link modal remains).** That rework **supersedes parts

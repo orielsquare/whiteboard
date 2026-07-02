@@ -3,6 +3,7 @@ import { DEFAULT_TTS, makeId, type TtsSettings, type VoiceoverCue } from '@lib/p
 import { formatTimestamp, hashText, isAudioStale, parseVtt, reconcileParsed, serializeVtt } from '@lib/project/vtt'
 import { apiUrl, apiFetch } from '@lib/persistence/apiBase'
 import { useVideoStore, videoHistory } from '../../state/videoStore'
+import { useConfirm } from './ConfirmDialog'
 
 const EMPTY: never[] = []
 
@@ -48,6 +49,7 @@ export function VttView() {
   const ttsRaw = useVideoStore((s) => s.project?.tts)
   const tts = { ...DEFAULT_TTS, ...(ttsRaw ?? {}), settings: { ...DEFAULT_TTS.settings, ...(ttsRaw?.settings ?? {}) } }
   const setTts = useVideoStore((s) => s.setTts)
+  const { confirm, modal: confirmModal } = useConfirm()
   const setVoiceover = useVideoStore((s) => s.setVoiceover)
   const updateCue = useVideoStore((s) => s.updateCue)
   const removeCue = useVideoStore((s) => s.removeCue)
@@ -144,14 +146,14 @@ export function VttView() {
   }
 
   /** Adopt the voice/model/settings a clip was generated with (after a confirm). */
-  const useClipSettings = (cue: VoiceoverCue) => {
+  const useClipSettings = async (cue: VoiceoverCue) => {
     const t = cue.audio?.tts
     if (!t) return
     const summary =
       t.model === 'eleven_v3'
         ? `Direction: ${t.direction || '—'}`
         : `Stability ${t.settings.stability}, Similarity ${t.settings.similarityBoost}, Style ${t.settings.style}, Speed ${t.settings.speed}`
-    if (window.confirm(`Use these settings?\n\nVoice: ${t.voiceName || t.voiceId}\nModel: ${t.model}\n${summary}`)) {
+    if (await confirm(`Use these settings? Voice: ${t.voiceName || t.voiceId} · Model: ${t.model} · ${summary}`)) {
       setTts(t)
     }
   }
@@ -311,6 +313,7 @@ export function VttView() {
 
   return (
     <div className="vttview">
+      {confirmModal}
       <div className="vtt-head">
         <h3>Voiceover script (WebVTT)</h3>
         <div className="spacer" />

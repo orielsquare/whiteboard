@@ -6,6 +6,7 @@ import type {
   NormRect,
   Slide,
   SlideDrawing,
+  SlideInk,
   TextBox,
   VideoProject,
 } from './schema'
@@ -35,9 +36,13 @@ export const otherAspect = (a: Aspect): Aspect => (a === '16:9' ? '9:16' : '16:9
 export type FlatBox = Omit<TextBox, 'frame'> & { frame: NormRect }
 /** A placed drawing flattened to one aspect (frame.y back in width-units). */
 export type FlatDrawing = Omit<SlideDrawing, 'frame'> & { frame: NormRect }
-export type FlatSlide = Omit<Slide, 'textBoxes' | 'drawings'> & {
+/** A direct drawing flattened to one aspect: point y back in width-units, so the
+ *  ink geometry is isotropic (distances/angles meaningful). */
+export type FlatInk = SlideInk
+export type FlatSlide = Omit<Slide, 'textBoxes' | 'drawings' | 'inks'> & {
   textBoxes: FlatBox[]
   drawings: FlatDrawing[]
+  inks: FlatInk[]
 }
 /** A single-aspect project: the legacy shape the pure pipeline + exporter take.
  *  Carries `aspect` so canvas-sizing code can read it. */
@@ -74,12 +79,19 @@ export function boxForAspect(box: TextBox, aspect: Aspect): FlatBox {
   return { ...box, frame: frameOf(box, aspect), ...contentOf(box, aspect) }
 }
 
-/** A flattened slide for `aspect` (textBoxes AND placed drawings). */
+/** Flatten a direct drawing's points to one aspect (y → width units). */
+export function inkForAspect(ink: SlideInk, aspect: Aspect): FlatInk {
+  const H = aspectHeightUnits(aspect)
+  return { ...ink, points: ink.points.map((p) => ({ x: p.x, y: p.y * H })) }
+}
+
+/** A flattened slide for `aspect` (textBoxes, placed drawings AND direct inks). */
 export function flattenSlide(slide: Slide, aspect: Aspect): FlatSlide {
   return {
     ...slide,
     textBoxes: slide.textBoxes.map((b) => boxForAspect(b, aspect)),
     drawings: (slide.drawings ?? []).map((d) => drawingForAspect(d, aspect)),
+    inks: (slide.inks ?? []).map((k) => inkForAspect(k, aspect)),
   }
 }
 

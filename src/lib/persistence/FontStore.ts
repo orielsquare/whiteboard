@@ -19,6 +19,8 @@ export interface FontStore {
   saveFont(id: string, buffer: ArrayBuffer): Promise<void>
   /** Fetch the raw font bytes (to build an extractor for deriving glyphs). */
   loadFontBytes(id: string): Promise<ArrayBuffer | null>
+  /** Trash the saved font (manifest + bytes). */
+  remove(id: string): Promise<void>
 }
 
 const BASE = apiUrl('/api/fonts')
@@ -62,5 +64,10 @@ export const httpStore: FontStore = {
     if (res.status === 404) return null
     if (!res.ok) throw new Error(`loadFontBytes failed (${res.status})`)
     return await res.arrayBuffer()
+  },
+
+  async remove(id) {
+    const res = await apiFetch(`${BASE}/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    if (!res.ok) throw new Error(`delete failed (${res.status})`)
   },
 }

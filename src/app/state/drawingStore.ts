@@ -12,7 +12,8 @@ import {
   reorderSections as secReorder,
   splitSection as secSplit,
 } from '@lib/drawing/partEdit'
-import type { DrawingElement, DrawingManifest, DrawingPart, PartKind, PartTiming } from '@lib/drawing/schema'
+import type { DrawingElement, DrawingManifest, DrawingPart, PartKind, PartSectionTiming, PartTiming } from '@lib/drawing/schema'
+import { autosaveClear, autosaveWrite } from './autosave'
 
 export type OrderDim = 'draw' | 'z'
 
@@ -43,12 +44,18 @@ interface DrawingState {
   /** Replace the current drawing with a loaded manifest, re-parsing its stored
    *  source SVG so param changes can still re-derive geometry. */
   loadManifest: (manifest: DrawingManifest) => void
+  /** Like `loadManifest`, but the document starts DIRTY (an autosaved working
+   *  copy that differs from what's on Drive until saved). */
+  restoreAutosaved: (manifest: DrawingManifest) => void
   // part edits (the user-managed animation/display units)
   renamePart: (id: string, name: string) => void
   togglePartVisible: (id: string) => void
   setPartColor: (id: string, color: string | null) => void
   setPartOpacity: (id: string, opacity: number) => void
   setPartTiming: (id: string, patch: Partial<PartTiming>) => void
+  /** Per-stroke timing override (baked into the file). Passing `undefined` for a
+   *  field clears it; a section with no remaining fields drops its override. */
+  setPartSectionTiming: (partId: string, sectionId: string, patch: Partial<PartSectionTiming>) => void
   /** reorder the DRAW (animation) order — the parts array. */
   reorderParts: (orderedIds: string[]) => void
   /** reorder the Z (stacking) order — the `zOrder` fields (first id = highest z). */
@@ -128,11 +135,35 @@ export const useDrawingStore = create<DrawingState>()(
         set({ manifest, parsed, svgText: manifest.source ?? null, editRev: 0, savedRev: 0, error: null })
       },
 
+      restoreAutosaved: (manifest) => {
+        let parsed: ParsedSvg | null = null
+        try {
+          if (manifest.source) parsed = parseSvg(manifest.source)
+        } catch {
+          parsed = null
+        }
+        set({ manifest, parsed, svgText: manifest.source ?? null, editRev: 1, savedRev: 0, error: null })
+      },
+
       renamePart: (id, name) => set((s) => patchPart(s, id, (p) => ({ ...p, name }))),
       togglePartVisible: (id) => set((s) => patchPart(s, id, (p) => ({ ...p, visible: !p.visible }))),
       setPartColor: (id, color) => set((s) => patchPart(s, id, (p) => ({ ...p, color }))),
       setPartOpacity: (id, opacity) => set((s) => patchPart(s, id, (p) => ({ ...p, opacity }))),
       setPartTiming: (id, patch) => set((s) => patchPart(s, id, (p) => ({ ...p, timing: { ...p.timing, ...patch } }))),
+      setPartSectionTiming: (partId, sectionId, patch) =>
+        set((s) =>
+          patchPart(s, partId, (p) => ({
+            ...p,
+            sections: p.sections.map((sec) => {
+              if (sec.id !== sectionId) return sec
+              const merged: PartSectionTiming = { ...sec.timing, ...patch }
+              if (merged.durationMs == null) delete merged.durationMs
+              if (merged.delayBeforeMs == null) delete merged.delayBeforeMs
+              const { timing: _drop, ...rest } = sec
+              return merged.durationMs != null || merged.delayBeforeMs != null ? { ...rest, timing: merged } : rest
+            }),
+          })),
+        ),
 
       reorderParts: (orderedIds) =>
         set((s) => {
@@ -237,12 +268,25 @@ export const useDrawingStore = create<DrawingState>()(
       setName: (name) =>
         set((s) => (s.manifest ? bump(s, { ...s.manifest, metadata: { ...s.manifest.metadata, name } }) : s)),
 
-      markSaved: () => set((s) => ({ savedRev: s.editRev })),
+      markSaved: () =>
+        set((s) => {
+          autosaveClear('drawing')
+          return { savedRev: s.editRev }
+        }),
       clear: () => set({ manifest: null, parsed: null, svgText: null, editRev: 0, savedRev: 0, error: null }),
     }),
     { limit: 80, partialize: (s) => ({ manifest: s.manifest, editRev: s.editRev }) },
   ),
 )
+
+// Autosave the working copy while dirty (debounced, single slot; cleared on save).
+// Undoing back to the clean state drops the slot — otherwise a refresh would
+// resurrect the undone edit.
+useDrawingStore.subscribe((s, prev) => {
+  if (!s.manifest || s.manifest === prev.manifest) return
+  if (s.editRev !== s.savedRev) autosaveWrite('drawing', s.manifest.metadata.drawingId, s.manifest)
+  else if (prev.editRev !== prev.savedRev) autosaveClear('drawing')
+})
 
 /** Param tweak (kinds unchanged): re-derive the element and swap each matching
  *  part's sections, preserving every part's name/colour/visibility/timing/order. */

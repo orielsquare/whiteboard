@@ -236,5 +236,86 @@ const box0 = (p) => p.slides[0].textBoxes[0]
   ok(!sf.slides[0].drawings[0].lock, 'slide format link-all clears the drawing content override')
 }
 
+// --- multi-element ops: translate / remove / collect / paste ----------------
+{
+  const H = 9 / 16 // aspectHeightUnits('16:9')
+  const mkInk = (over = {}) => ({
+    id: 'k',
+    tool: 'freehand',
+    points: [
+      { x: 0.1, y: 0.2 },
+      { x: 0.3, y: 0.25 },
+    ],
+    animOrder: 2,
+    delayBeforeMs: 0,
+    ...over,
+  })
+  const mkDraw = (over = {}) => ({
+    id: 'd',
+    drawingId: 'D1',
+    frame: { '16:9': { x: 0.4, y: 0.3, w: 0.3 }, '9:16': { x: 0.4, y: 0.3, w: 0.3 } },
+    animOrder: 1,
+    delayBeforeMs: 0,
+    ...over,
+  })
+  const base = () => mkProject([mkBox()], { drawings: [mkDraw()], inks: [mkInk()] })
+
+  // translate: one write moves a box + a drawing + an ink; linked frames stay equal
+  {
+    const p = E.translateElements(base(), 's', new Set(['b', 'd', 'k']), 0.1, 0.1125, '16:9') // dyW 0.1125 → dyStored 0.2
+    const b = box0(p)
+    approx(b.frame['16:9'].x, 0.3, 'translate: box x moved')
+    approx(b.frame['16:9'].y, 0.7, 'translate: box stored-y moved by dyW/H')
+    approx(b.frame['9:16'].x, 0.3, 'translate: linked box keeps both cuts equal (x)')
+    approx(b.frame['9:16'].y, 0.7, 'translate: linked box keeps both cuts equal (y)')
+    approx(p.slides[0].drawings[0].frame['16:9'].x, 0.5, 'translate: drawing moved')
+    approx(p.slides[0].inks[0].points[0].x, 0.2, 'translate: ink x moved')
+    approx(p.slides[0].inks[0].points[0].y, 0.4, 'translate: ink y moved by dyW/H')
+    void H
+  }
+  // translate ignores unselected elements + clamps to [0,1]
+  {
+    const p = E.translateElements(base(), 's', new Set(['b']), 0.9, 0, '16:9')
+    approx(box0(p).frame['16:9'].x, 1, 'translate: clamped to 1')
+    approx(p.slides[0].drawings[0].frame['16:9'].x, 0.4, 'translate: unselected drawing untouched')
+  }
+  // remove: any mix of kinds in one write, sequence reindexed contiguously
+  {
+    const p = E.removeElements(base(), 's', new Set(['b', 'k']))
+    ok(p.slides[0].textBoxes.length === 0, 'remove: box gone')
+    ok(p.slides[0].inks.length === 0, 'remove: ink gone')
+    ok(p.slides[0].drawings.length === 1 && p.slides[0].drawings[0].animOrder === 0, 'remove: survivor reindexed to 0')
+  }
+  // collect + paste: clones land with fresh ids, nudged, appended in order
+  {
+    const src = base()
+    const clip = E.collectElements(src.slides[0], new Set(['b', 'd', 'k']))
+    ok(clip.length === 3 && clip[0].kind === 'box' && clip[1].kind === 'drawing' && clip[2].kind === 'ink', 'collect: all three, in animOrder')
+    // deep clone: mutating the clip must not touch the source
+    clip[0].box.frame['16:9'].x = 0.99
+    approx(box0(src).frame['16:9'].x, 0.2, 'collect: clones are independent')
+
+    const { project: pasted, ids } = E.pasteElements(src, 's', E.collectElements(src.slides[0], new Set(['b', 'd', 'k'])))
+    ok(ids.length === 3, 'paste: three new ids')
+    ok(pasted.slides[0].textBoxes.length === 2 && pasted.slides[0].drawings.length === 2 && pasted.slides[0].inks.length === 2, 'paste: all appended')
+    const newBox = pasted.slides[0].textBoxes.find((b) => b.id === ids[0])
+    approx(newBox.frame['16:9'].x, 0.23, 'paste: nudged +0.03')
+    ok(newBox.id !== 'b', 'paste: fresh id')
+    // appended after the existing sequence, preserving relative order
+    const orders = ids.map((id) =>
+      [...pasted.slides[0].textBoxes, ...pasted.slides[0].drawings, ...pasted.slides[0].inks].find((el) => el.id === id).animOrder,
+    )
+    ok(orders[0] === 3 && orders[1] === 4 && orders[2] === 5, 'paste: appended in original relative order')
+    // paste onto ANOTHER slide works too (cross-slide clipboard)
+    const two = { ...src, slides: [...src.slides, { id: 's2', background: '#000', textBoxes: [], holdBeforeTransitionMs: 0, transition: { kind: 'none', durationMs: 0 } }] }
+    const { project: crossed, ids: ids2 } = E.pasteElements(two, 's2', E.collectElements(two.slides[0], new Set(['b', 'k'])))
+    ok(crossed.slides[1].textBoxes.length === 1 && crossed.slides[1].inks.length === 1, 'paste: lands on the other slide')
+    const orders2 = ids2.map((id) =>
+      [...crossed.slides[1].textBoxes, ...crossed.slides[1].inks].find((el) => el.id === id).animOrder,
+    )
+    ok(orders2[0] === 0 && orders2[1] === 1, 'paste: fresh sequence on an empty slide')
+  }
+}
+
 console.log(`\n${passed} passed, ${failed} failed`)
 if (failed) process.exit(1)

@@ -1189,14 +1189,26 @@ body {
   position: absolute;
   bottom: 7px;
   height: 30px;
-  background: var(--accent);
-  opacity: 0.85;
+  /* the ENVELOPE (the element's slot) — lighter; the animation block sits inside */
+  background: rgba(122, 162, 255, 0.28);
   border-radius: 4px;
   overflow: hidden;
   display: flex;
   align-items: center;
   /* hoverable so its title (box number + text) shows for narrow bars; it has no
      onClick, so clicks still bubble to the section (select slide). */
+}
+/* the animation block inside the envelope */
+.tl-box .tl-box-block {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--accent);
+  opacity: 0.85;
+  pointer-events: none;
+}
+.tl-box .tl-box-label {
+  position: relative; /* above the block */
 }
 .tl-box-label {
   font-size: 10px;
@@ -1206,6 +1218,242 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   font-weight: 600;
+}
+/* shared Files ▾ menu (fonts / drawings / videos) */
+.files-menu {
+  position: relative;
+}
+.files-panel {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 30;
+  min-width: 300px;
+  max-height: 380px;
+  overflow-y: auto;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  padding: 4px;
+}
+.files-empty {
+  padding: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.files-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.files-row.current .files-name {
+  font-weight: 600;
+}
+.files-open {
+  flex: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  text-align: left;
+}
+.files-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-meta {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.files-actions {
+  display: flex;
+  gap: 2px;
+}
+.files-actions button {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+}
+.files-rename {
+  flex: 1;
+  min-width: 0;
+}
+.files-rename input {
+  width: 100%;
+  box-sizing: border-box;
+}
+.files-hint {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 2px 2px 4px;
+}
+/* the usePrompt dialog's text field */
+.prompt-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 8px;
+  font-size: 14px;
+}
+
+/* the direct-drawing (ink) tool strip above the slide canvas */
+.ink-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 0;
+}
+.ink-tools-hint {
+  font-size: 11px;
+  margin-left: 8px;
+}
+
+/* the Inspector's time-envelope bar (the element's slot; solid block = the
+   animation, shaded = padding; drag the block to slide it, the edge to resize) */
+.envwrap {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.env-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.env-compressed {
+  color: #e0a23a;
+  font-weight: 600;
+}
+.envbar {
+  position: relative;
+  height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 15px; /* the lozenge — always the full panel width (= 100% of the envelope) */
+  background: var(--panel-2);
+  overflow: hidden;
+  width: 100%;
+}
+.envbar.auto {
+  border-style: dashed;
+}
+.envbar-pad {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.05) 0 5px, transparent 5px 10px);
+  pointer-events: none;
+}
+.envbar-anim {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  background: var(--accent);
+  border-radius: 12px;
+  cursor: grab;
+  opacity: 0.9;
+  touch-action: none;
+  min-width: 14px; /* always room to grab the grips */
+}
+.envbar-anim:active {
+  cursor: grabbing;
+}
+/* the block's stretch grips (resize the animation time → element speed) */
+.envbar-grip {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  cursor: ew-resize;
+  touch-action: none;
+}
+.envbar-grip.left {
+  left: 0;
+  border-radius: 12px 0 0 12px;
+}
+.envbar-grip.right {
+  right: 0;
+  border-radius: 0 12px 12px 0;
+}
+.envbar-grip::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: rgba(11, 13, 17, 0.55);
+}
+.envbar-grip.right::after {
+  left: auto;
+  right: 3px;
+}
+.env-fields {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.env-fields .num-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.env-fields .num-input {
+  width: 64px;
+}
+.num-pre {
+  color: var(--muted);
+  font-size: 11px;
+}
+.env-summary {
+  font-size: 11px;
+}
+
+/* the "natural pace" hint under the fixed-duration input */
+.env-natural {
+  font-size: 11px;
+  margin-top: 2px;
+}
+/* a slider paired with an exact numeric input */
+.sliderow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.sliderow input[type='range'] {
+  flex: 1;
+  min-width: 0;
+}
+.sliderow .num-input {
+  width: 72px;
+}
+/* a placed drawing's pen-work bar (same band as textbox bars, its own hue) */
+.tl-box.tl-draw {
+  background: rgba(127, 214, 164, 0.28);
+}
+.tl-box.tl-draw .tl-box-block {
+  background: #7fd6a4;
+}
+/* a direct drawing's (ink) bar */
+.tl-box.tl-ink {
+  background: rgba(255, 212, 121, 0.25);
+}
+.tl-box.tl-ink .tl-box-block {
+  background: #ffd479;
+}
+/* an element pinned to a fixed time envelope — bracketed ends */
+.tl-box.tl-fixed {
+  box-shadow: inset 2px 0 0 #0b0d11, inset -2px 0 0 #0b0d11;
+  outline: 1px solid rgba(255, 212, 121, 0.9);
 }
 
 /* closing transition overlays (sit on top, bleed into next section) */

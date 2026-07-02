@@ -9,6 +9,7 @@ import { runsToPlainText } from '@lib/project/runs'
 import { isAudioStale } from '@lib/project/vtt'
 import type { VoiceoverCue } from '@lib/project/schema'
 import { useVideoStore } from '../../state/videoStore'
+import { prefGet, prefSetDebounced } from '../../state/sessionPrefs'
 import { previewCanvasW } from './layoutCanvas'
 import { SlideThumbnail } from './SlideThumbnail'
 
@@ -74,13 +75,43 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
   const addCue = useVideoStore((s) => s.addCue)
   const selectSlide = useVideoStore((s) => s.selectSlide)
 
-  const [pxPerSec, setPxPerSec] = useState(80)
+  // Zoom lives in the (transient) store so it survives tab switches, and is
+  // mirrored to a per-project pref so it survives refreshes. `tlZoom === null`
+  // means "not initialized for this project yet" → restore from prefs.
+  const tlZoom = useVideoStore((s) => s.tlZoom)
+  const setTlZoom = useVideoStore((s) => s.setTlZoom)
+  const projectId = project?.id
+  const pxPerSec = tlZoom ?? (projectId ? clampPxPerSec(prefGet(`wb.tl.${projectId}`, { zoom: 80, scroll: 0 }).zoom) : 80)
+  const setPxPerSec = useCallback(
+    (next: number) => {
+      setTlZoom(next)
+      if (projectId) prefSetDebounced(`wb.tl.${projectId}`, { zoom: next, scroll: scrollRef.current?.scrollLeft ?? 0 })
+    },
+    [setTlZoom, projectId],
+  )
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const pxPerSecRef = useRef(pxPerSec)
   const spaceRef = useRef(false)
   const hoverRef = useRef(false)
   const anchorRef = useRef<{ timeSec: number; offsetX: number } | null>(null)
   pxPerSecRef.current = pxPerSec
+
+  // Restore the scroll position (store survives tab switches; prefs a refresh),
+  // and keep both up to date as the user scrolls (no re-render — refs + store).
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const st = useVideoStore.getState()
+    el.scrollLeft = st.tlZoom != null ? st.tlScroll : projectId ? prefGet(`wb.tl.${projectId}`, { zoom: 80, scroll: 0 }).scroll : 0
+    if (st.tlZoom == null) setTlZoom(pxPerSecRef.current) // mark initialized for this project
+    const onScroll = () => {
+      useVideoStore.getState().setTlScroll(el.scrollLeft)
+      if (projectId) prefSetDebounced(`wb.tl.${projectId}`, { zoom: pxPerSecRef.current, scroll: el.scrollLeft })
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId])
 
   const playbackRate = project?.playbackRate ?? 1
   // rc (slide layout + timing) depends only on the SLIDES, not the voiceover — so
@@ -192,8 +223,9 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
         </span>
         <div className="spacer" />
         <span className="muted tl-zoom-label">zoom</span>
-        <button className="tool" onClick={() => setPxPerSec((v) => clampPxPerSec(v / 1.4))} title="zoom out">−</button>
-        <button className="tool" onClick={() => setPxPerSec((v) => clampPxPerSec(v * 1.4))} title="zoom in">＋</button>
+        {/* read the CURRENT zoom (store), not the render's — rapid clicks must all land */}
+        <button className="tool" onClick={() => setPxPerSec(clampPxPerSec((useVideoStore.getState().tlZoom ?? pxPerSecRef.current) / 1.4))} title="zoom out">−</button>
+        <button className="tool" onClick={() => setPxPerSec(clampPxPerSec((useVideoStore.getState().tlZoom ?? pxPerSecRef.current) * 1.4))} title="zoom in">＋</button>
         <button className="tool" onClick={fit} title="fit to width">Fit</button>
       </div>
 
@@ -260,25 +292,44 @@ export function TimelineView({ fonts, drawings }: { fonts: FontSet; drawings: Dr
                       title="hold before transition"
                     />
                   )}
-                  {st.boxes.map((b, bi) => {
-                    const box = slide?.textBoxes.find((x) => x.id === b.boxId)
-                    const bw = xOf(b.endMs - b.startMs)
-                    const text = box ? cueLabel(runsToPlainText(box.runs)) : ''
-                    return (
-                      <div
-                        key={b.boxId}
-                        className="tl-box"
-                        style={{ left: xOf(b.startMs), width: Math.max(3, bw) }}
-                        title={`${bi + 1}. ${text}`}
-                      >
-                        {detail && bw > 26 && (
-                          <span className="tl-box-label">
-                            {bi + 1}. {text}
-                          </span>
-                        )}
-                      </div>
-                    )
-                  })}
+                  {[
+                    ...st.boxes.map((b) => ({ ...b, id: b.boxId, kind: 'box' as const })),
+                    ...st.drawings.map((d) => ({ ...d, kind: 'drawing' as const })),
+                    ...st.inks.map((k) => ({ ...k, kind: 'ink' as const })),
+                  ]
+                    .sort((a, b) => a.startMs - b.startMs)
+                    .map((it, bi) => {
+                      const box = it.kind === 'box' ? slide?.textBoxes.find((x) => x.id === it.id) : undefined
+                      const drawing = it.kind === 'drawing' ? slide?.drawings?.find((x) => x.id === it.id) : undefined
+                      const ink = it.kind === 'ink' ? slide?.inks?.find((x) => x.id === it.id) : undefined
+                      const bw = xOf(it.endMs - it.startMs)
+                      const env = it.endMs - it.startMs
+                      const text = box ? cueLabel(runsToPlainText(box.runs)) : ink ? `${ink.tool} ink` : drawing?.name ?? 'drawing'
+                      const envMs = box?.envelopeMs ?? drawing?.envelopeMs ?? ink?.envelopeMs
+                      const fixed = envMs != null && envMs > 0
+                      // the animation block within the envelope, as % of the bar
+                      const blockLeft = env > 0 ? ((it.animStartMs - it.startMs) / env) * 100 : 0
+                      const blockW = env > 0 ? ((it.animEndMs - it.animStartMs) / env) * 100 : 0
+                      return (
+                        <div
+                          key={it.id}
+                          className={
+                            (it.kind === 'drawing' ? 'tl-box tl-draw' : it.kind === 'ink' ? 'tl-box tl-ink' : 'tl-box') +
+                            (fixed ? ' tl-fixed' : '')
+                          }
+                          style={{ left: xOf(it.startMs), width: Math.max(3, bw) }}
+                          title={`${bi + 1}. ${text}${fixed ? ` — fixed ${(envMs / 1000).toFixed(1)}s envelope` : ''}`}
+                        >
+                          <div className="tl-box-block" style={{ left: `${blockLeft}%`, width: `${Math.max(1, blockW)}%` }} />
+                          {detail && bw > 26 && (
+                            <span className="tl-box-label">
+                              {fixed ? '⧖ ' : ''}
+                              {bi + 1}. {text}
+                            </span>
+                          )}
+                        </div>
+                      )
+                    })}
                 </div>
               )
             })}

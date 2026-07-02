@@ -10,11 +10,14 @@ import {
   newVideoProject,
   type Aspect,
   type BoxContent,
+  type InkPoint,
+  type InkTool,
   type NamedStyle,
   type NormRect,
   type ProjectDefaults,
   type Slide,
   type SlideDrawing,
+  type SlideInk,
   type TextBox,
   type TextRun,
   type TtsSettings,
@@ -22,13 +25,32 @@ import {
   type VoiceoverAudio,
   type VoiceoverCue,
 } from '@lib/project/schema'
-import { ASPECTS, effLock, migrateProject, toStoredY } from '@lib/project/aspect'
+import { ASPECTS, contentOf, effLock, migrateProject, toStoredY } from '@lib/project/aspect'
+import { runsToPlainText } from '@lib/project/runs'
+import { autosaveClear, autosaveWrite } from './autosave'
 
 /** Resolve a box's effective content (format) lock for write-through routing. */
 function contentLinked(project: VideoProject, slideId: string, boxId: string): boolean {
   const slide = project.slides.find((sl) => sl.id === slideId)
   const box = slide?.textBoxes.find((b) => b.id === boxId)
   return slide && box ? effLock(project, slide, box).content : true
+}
+
+/** Derive the primary-selection fields (what the Inspector shows) from a
+ *  multi-selection: the LAST id wins; its kind is looked up on the current slide. */
+function primaryFrom(
+  s: { project: VideoProject | null; selectedSlideId: string | null },
+  ids: string[],
+): { selectedTextBoxId: string | null; selectedDrawingId: string | null; selectedInkId: string | null } {
+  const none = { selectedTextBoxId: null, selectedDrawingId: null, selectedInkId: null }
+  const id = ids[ids.length - 1]
+  if (!id || !s.project) return none
+  const slide = s.project.slides.find((sl) => sl.id === s.selectedSlideId) ?? s.project.slides[0]
+  if (!slide) return none
+  if (slide.textBoxes.some((b) => b.id === id)) return { ...none, selectedTextBoxId: id }
+  if ((slide.drawings ?? []).some((d) => d.id === id)) return { ...none, selectedDrawingId: id }
+  if ((slide.inks ?? []).some((k) => k.id === id)) return { ...none, selectedInkId: id }
+  return none
 }
 import type { BrushSettings } from '@lib/manifest/schema'
 import type { StylePatch } from '@lib/project/runs'
@@ -53,10 +75,14 @@ export type Playback =
   | { kind: 'slide'; slideId: string }
   | { kind: 'box'; slideId: string; boxId: string }
   | { kind: 'drawing'; slideId: string; drawingId: string }
+  | { kind: 'ink'; slideId: string; inkId: string }
 
 interface VideoState {
   project: VideoProject | null
   loaded: boolean
+  /** The project object as of the last save/load — the dirty baseline
+   *  (`dirty = project !== savedProject`). Transient, not undoable. */
+  savedProject: VideoProject | null
   // transient UI state — NOT undoable, NOT persisted (see partialize)
   /** the aspect ratio currently being edited/previewed (16:9 or 9:16). */
   activeAspect: Aspect
@@ -64,23 +90,50 @@ interface VideoState {
   selectedTextBoxId: string | null
   /** the selected placed drawing (mutually exclusive with a selected textbox). */
   selectedDrawingId: string | null
+  /** the selected direct drawing (mutually exclusive with box/drawing selection). */
+  selectedInkId: string | null
+  /** ALL selected elements on the current slide (boxes/drawings/inks mixed) — the
+   *  marquee / shift-click multi-selection. The single `selected*Id` fields hold
+   *  the PRIMARY (last-picked) element and drive the Inspector; when this list is
+   *  non-empty the primary is one of its members. */
+  selectedElementIds: string[]
+  /** the active direct-drawing pen on the canvas; null = select/move mode. */
+  inkTool: InkTool | null
   /** active sub-range selection inside the selected textbox (for the format bar). */
   selection: TextSelection | null
-  /** copy/cut buffer for a textbox (transient — survives slide switches). */
-  clipboardBox: TextBox | null
+  /** copy/cut buffer for elements (any mix of kinds; survives slide switches). */
+  clipboardElements: E.ClipboardElement[] | null
   slideView: SlideView
   /** Editor navigator tab; also gates which properties the Inspector shows. */
   navTab: NavTab
   /** what the editor canvas is playing (null = editing). */
   playback: Playback | null
+  /** Timeline zoom (px per second); null = not initialized for this project yet
+   *  (the Timeline view restores it from prefs). Transient — survives tab
+   *  switches; mirrored to localStorage per project for refresh survival. */
+  tlZoom: number | null
+  /** Timeline horizontal scroll (px). Same lifecycle as `tlZoom`. */
+  tlScroll: number
 
   selectSlide: (id: string | null) => void
   selectTextBox: (id: string | null) => void
   selectDrawing: (id: string | null) => void
+  selectInk: (id: string | null) => void
+  /** shift/ctrl-click: toggle an element in/out of the multi-selection. */
+  toggleSelectElement: (id: string) => void
+  /** marquee: replace the multi-selection wholesale (last id becomes primary). */
+  setSelectedElements: (ids: string[]) => void
+  /** move every selected element by (dx, dyWidthUnits) in ONE write (one undo). */
+  translateSelected: (slideId: string, ids: string[], dx: number, dyW: number) => void
+  /** delete a set of elements in one write. */
+  removeElements: (slideId: string, ids: string[]) => void
+  setInkTool: (tool: InkTool | null) => void
   setSelection: (sel: TextSelection | null) => void
   setSlideView: (v: SlideView) => void
   setNavTab: (t: NavTab) => void
   setPlayback: (p: Playback | null) => void
+  setTlZoom: (v: number) => void
+  setTlScroll: (v: number) => void
 
   addSlide: () => void
   copySlide: (id: string) => void
@@ -94,8 +147,13 @@ interface VideoState {
   updateDrawingFrame: (slideId: string, instanceId: string, patch: Partial<NormRect>) => void
   updateDrawing: (slideId: string, instanceId: string, patch: Partial<SlideDrawing>) => void
   removeDrawing: (slideId: string, instanceId: string) => void
-  /** reorder the slide's combined boxes+drawings animation sequence. */
+  /** reorder the slide's combined boxes+drawings+inks animation sequence. */
   reorderSlideItems: (slideId: string, orderedIds: string[]) => void
+
+  // direct drawings (hand-drawn annotations on a slide)
+  addInk: (slideId: string, tool: InkTool, points: InkPoint[], color?: string | null, widthScale?: number) => string
+  updateInk: (slideId: string, inkId: string, patch: Partial<SlideInk>) => void
+  removeInk: (slideId: string, inkId: string) => void
 
   addTextBox: (slideId: string, x: number, y: number) => string
   updateTextBox: (slideId: string, boxId: string, patch: Partial<TextBox>) => void
@@ -105,6 +163,11 @@ interface VideoState {
   setBoxContent: (slideId: string, boxId: string, patch: Partial<BoxContent>) => void
   /** apply a run-style patch to [start,end) of a textbox (format bar). */
   applyTextStyle: (slideId: string, boxId: string, start: number, end: number, patch: StylePatch) => void
+  /** apply a run-style patch to the FULL text of several boxes at once (the
+   *  format bar on a multi-selection) — one write ≡ one undo step. */
+  applyTextStyleToBoxes: (slideId: string, boxIds: string[], patch: StylePatch) => void
+  /** patch content (align / line-height / brush) on several boxes at once. */
+  setBoxContentForBoxes: (slideId: string, boxIds: string[], patch: Partial<BoxContent>) => void
   reorderTextBoxes: (slideId: string, orderedIds: string[]) => void
   deleteTextBox: (slideId: string, boxId: string) => void
   /** link/unlink a box's position across aspects (linking converges, active wins). */
@@ -123,10 +186,10 @@ interface VideoState {
   setSlideFormatLink: (slideId: string, linked: boolean) => void
   /** link/unlink every box's format across the whole project. */
   setProjectFormatLink: (linked: boolean) => void
-  // textbox clipboard (Cmd/Ctrl C / X / V); works across slides
-  copyTextBox: (slideId: string, boxId: string) => void
-  cutTextBox: (slideId: string, boxId: string) => void
-  pasteTextBox: (slideId: string) => void
+  // element clipboard (Cmd/Ctrl C / X / V); works across slides within the project
+  copySelection: (slideId: string) => void
+  cutSelection: (slideId: string) => void
+  pasteClipboard: (slideId: string) => void
 
   setActiveAspect: (a: Aspect) => void
   setBaseEmFraction: (v: number) => void
@@ -153,6 +216,9 @@ interface VideoState {
 
   newProject: (fontId: string, brush: BrushSettings) => void
   loadProject: (id: string) => Promise<void>
+  /** Adopt an autosaved working copy — like a load, but the document starts
+   *  DIRTY (it differs from what's on Drive until saved). */
+  restoreProject: (raw: VideoProject) => void
   saveProject: (font: LoadedFont) => Promise<void>
   /** Rename the open project (cosmetic; persisted on next save, which renames the
    *  Drive file too). */
@@ -168,22 +234,31 @@ export const useVideoStore = create<VideoState>()(
     (set, get) => ({
       project: null,
       loaded: false,
+      savedProject: null,
       activeAspect: '16:9',
       selectedSlideId: null,
       selectedTextBoxId: null,
       selectedDrawingId: null,
+      selectedInkId: null,
+      selectedElementIds: [],
+      inkTool: null,
       selection: null,
-      clipboardBox: null,
+      clipboardElements: null,
       slideView: 'editor',
       navTab: 'slides',
       playback: null,
+      tlZoom: null,
+      tlScroll: 0,
 
       // Selecting a slide/box returns to the editing layout (stops any playback).
-      selectSlide: (id) => set({ selectedSlideId: id, selectedTextBoxId: null, selectedDrawingId: null, selection: null, playback: null }),
+      selectSlide: (id) =>
+        set({ selectedSlideId: id, selectedTextBoxId: null, selectedDrawingId: null, selectedInkId: null, selectedElementIds: [], selection: null, playback: null }),
       selectTextBox: (id) =>
         set((s) => ({
           selectedTextBoxId: id,
           selectedDrawingId: id ? null : s.selectedDrawingId,
+          selectedInkId: id ? null : s.selectedInkId,
+          selectedElementIds: id ? [id] : [],
           // keep a same-box selection alive; drop it when the box changes
           selection: s.selection && s.selection.boxId === id ? s.selection : null,
           // selecting a box (e.g. clicking it on the canvas) reveals it in the navigator
@@ -191,12 +266,52 @@ export const useVideoStore = create<VideoState>()(
           playback: null,
         })),
       selectDrawing: (id) =>
-        set({ selectedDrawingId: id, selectedTextBoxId: null, selection: null, playback: null }),
+        set({ selectedDrawingId: id, selectedTextBoxId: null, selectedInkId: null, selectedElementIds: id ? [id] : [], selection: null, playback: null }),
+      selectInk: (id) =>
+        set((s) => ({
+          selectedInkId: id,
+          selectedTextBoxId: null,
+          selectedDrawingId: null,
+          selectedElementIds: id ? [id] : [],
+          selection: null,
+          playback: null,
+          ...(id ? { navTab: 'boxes' as const } : null),
+          // picking an ink implicitly returns to select mode (no accidental over-draw)
+          inkTool: id ? null : s.inkTool,
+        })),
+      toggleSelectElement: (id) =>
+        set((s) => {
+          const ids = s.selectedElementIds.includes(id)
+            ? s.selectedElementIds.filter((x) => x !== id)
+            : [...s.selectedElementIds, id]
+          return { ...primaryFrom(s, ids), selectedElementIds: ids, selection: null, playback: null, navTab: 'boxes' }
+        }),
+      setSelectedElements: (ids) =>
+        set((s) => ({ ...primaryFrom(s, ids), selectedElementIds: ids, selection: null, playback: null, ...(ids.length ? { navTab: 'boxes' as const } : null) })),
+      translateSelected: (slideId, ids, dx, dyW) =>
+        set((s) => (s.project ? { project: E.translateElements(s.project, slideId, new Set(ids), dx, dyW, s.activeAspect) } : s)),
+      removeElements: (slideId, ids) =>
+        set((s) => {
+          if (!s.project) return s
+          const gone = new Set(ids)
+          return {
+            project: E.removeElements(s.project, slideId, gone),
+            selectedElementIds: s.selectedElementIds.filter((x) => !gone.has(x)),
+            selectedTextBoxId: s.selectedTextBoxId && gone.has(s.selectedTextBoxId) ? null : s.selectedTextBoxId,
+            selectedDrawingId: s.selectedDrawingId && gone.has(s.selectedDrawingId) ? null : s.selectedDrawingId,
+            selectedInkId: s.selectedInkId && gone.has(s.selectedInkId) ? null : s.selectedInkId,
+            selection: s.selection && gone.has(s.selection.boxId) ? null : s.selection,
+          }
+        }),
+      setInkTool: (tool) =>
+        set({ inkTool: tool, ...(tool ? { selectedTextBoxId: null, selectedDrawingId: null, selectedInkId: null, selectedElementIds: [], selection: null, playback: null } : null) }),
       setSelection: (sel) => set({ selection: sel }),
       // changing the top view stops inline playback (it's an Editor-only mode).
       setSlideView: (v) => set({ slideView: v, playback: null }),
       setNavTab: (t) => set({ navTab: t }),
       setPlayback: (p) => set({ playback: p }),
+      setTlZoom: (v) => set({ tlZoom: v }),
+      setTlScroll: (v) => set({ tlScroll: v }),
 
       addSlide: () =>
         set((s) => {
@@ -224,6 +339,9 @@ export const useVideoStore = create<VideoState>()(
             project,
             selectedSlideId: sel,
             selectedTextBoxId: null,
+            selectedDrawingId: null,
+            selectedInkId: null,
+            selectedElementIds: [],
             playback: null,
           }
         }),
@@ -272,11 +390,32 @@ export const useVideoStore = create<VideoState>()(
             ? {
                 project: E.removeDrawing(s.project, slideId, instanceId),
                 selectedDrawingId: s.selectedDrawingId === instanceId ? null : s.selectedDrawingId,
+                selectedElementIds: s.selectedElementIds.filter((x) => x !== instanceId),
               }
             : s,
         ),
       reorderSlideItems: (slideId, orderedIds) =>
         set((s) => (s.project ? { project: E.reorderSlideItems(s.project, slideId, orderedIds) } : s)),
+
+      addInk: (slideId, tool, points, color, widthScale) => {
+        const s = get()
+        if (!s.project) return ''
+        const { project, inkId } = E.addInk(s.project, slideId, tool, points, color, widthScale)
+        set({ project, selectedInkId: inkId, selectedTextBoxId: null, selectedDrawingId: null })
+        return inkId
+      },
+      updateInk: (slideId, inkId, patch) =>
+        set((s) => (s.project ? { project: E.updateInk(s.project, slideId, inkId, patch) } : s)),
+      removeInk: (slideId, inkId) =>
+        set((s) =>
+          s.project
+            ? {
+                project: E.removeInk(s.project, slideId, inkId),
+                selectedInkId: s.selectedInkId === inkId ? null : s.selectedInkId,
+                selectedElementIds: s.selectedElementIds.filter((x) => x !== inkId),
+              }
+            : s,
+        ),
       updateTextBox: (slideId, boxId, patch) =>
         set((s) => (s.project ? { project: E.updateTextBox(s.project, slideId, boxId, patch) } : s)),
       updateTextBoxFrame: (slideId, boxId, patch) =>
@@ -310,6 +449,28 @@ export const useVideoStore = create<VideoState>()(
             ? { project: E.applyTextStyle(s.project, slideId, boxId, start, end, patch, s.activeAspect, contentLinked(s.project, slideId, boxId)) }
             : s,
         ),
+      applyTextStyleToBoxes: (slideId, boxIds, patch) =>
+        set((s) => {
+          if (!s.project) return s
+          let project = s.project
+          for (const boxId of boxIds) {
+            const sl = project.slides.find((x) => x.id === slideId)
+            const b = sl?.textBoxes.find((x) => x.id === boxId)
+            if (!sl || !b) continue
+            const len = runsToPlainText(contentOf(b, s.activeAspect).runs).length
+            project = E.applyTextStyle(project, slideId, boxId, 0, len, patch, s.activeAspect, contentLinked(project, slideId, boxId))
+          }
+          return { project }
+        }),
+      setBoxContentForBoxes: (slideId, boxIds, patch) =>
+        set((s) => {
+          if (!s.project) return s
+          let project = s.project
+          for (const boxId of boxIds) {
+            project = E.updateTextBoxContent(project, slideId, boxId, patch, s.activeAspect, contentLinked(project, slideId, boxId))
+          }
+          return { project }
+        }),
       reorderTextBoxes: (slideId, orderedIds) =>
         set((s) => (s.project ? { project: E.reorderTextBoxes(s.project, slideId, orderedIds) } : s)),
       setBoxPositionLink: (slideId, boxId, linked) =>
@@ -338,33 +499,46 @@ export const useVideoStore = create<VideoState>()(
             ? {
                 project: E.deleteTextBox(s.project, slideId, boxId),
                 selectedTextBoxId: s.selectedTextBoxId === boxId ? null : s.selectedTextBoxId,
+                selectedElementIds: s.selectedElementIds.filter((x) => x !== boxId),
                 selection: s.selection?.boxId === boxId ? null : s.selection,
               }
             : s,
         ),
 
-      copyTextBox: (slideId, boxId) => {
-        const box = get()
-          .project?.slides.find((sl) => sl.id === slideId)
-          ?.textBoxes.find((b) => b.id === boxId)
-        if (box) set({ clipboardBox: E.cloneTextBox(box) })
+      copySelection: (slideId) => {
+        const s = get()
+        const slide = s.project?.slides.find((sl) => sl.id === slideId)
+        if (!slide || !s.selectedElementIds.length) return
+        const clip = E.collectElements(slide, new Set(s.selectedElementIds))
+        if (clip.length) set({ clipboardElements: clip })
       },
-      cutTextBox: (slideId, boxId) =>
+      cutSelection: (slideId) =>
         set((s) => {
-          const box = s.project?.slides.find((sl) => sl.id === slideId)?.textBoxes.find((b) => b.id === boxId)
-          if (!s.project || !box) return s
+          const slide = s.project?.slides.find((sl) => sl.id === slideId)
+          if (!s.project || !slide || !s.selectedElementIds.length) return s
+          const ids = new Set(s.selectedElementIds)
+          const clip = E.collectElements(slide, ids)
+          if (!clip.length) return s
           return {
-            clipboardBox: E.cloneTextBox(box),
-            project: E.deleteTextBox(s.project, slideId, boxId),
-            selectedTextBoxId: s.selectedTextBoxId === boxId ? null : s.selectedTextBoxId,
-            selection: s.selection?.boxId === boxId ? null : s.selection,
+            clipboardElements: clip,
+            project: E.removeElements(s.project, slideId, ids),
+            selectedElementIds: [],
+            selectedTextBoxId: null,
+            selectedDrawingId: null,
+            selectedInkId: null,
+            selection: null,
           }
         }),
-      pasteTextBox: (slideId) =>
+      pasteClipboard: (slideId) =>
         set((s) => {
-          if (!s.project || !s.clipboardBox) return s
-          const { project, boxId } = E.pasteTextBox(s.project, slideId, s.clipboardBox)
-          return { project, selectedTextBoxId: boxId, selection: null }
+          if (!s.project || !s.clipboardElements?.length) return s
+          const { project, ids } = E.pasteElements(s.project, slideId, s.clipboardElements)
+          return {
+            project,
+            selectedElementIds: ids,
+            ...primaryFrom({ project, selectedSlideId: slideId }, ids),
+            selection: null,
+          }
         }),
 
       setActiveAspect: (a) => set({ activeAspect: a }),
@@ -411,14 +585,20 @@ export const useVideoStore = create<VideoState>()(
         set({
           project: p,
           loaded: true,
+          savedProject: p, // fresh default content — nothing worth guarding yet
           activeAspect: '16:9',
           selectedSlideId: p.slides[0]?.id ?? null,
           selectedTextBoxId: null,
           selectedDrawingId: null,
+          selectedInkId: null,
+          selectedElementIds: [],
+          inkTool: null,
           selection: null,
           slideView: 'editor',
           navTab: 'slides',
           playback: null,
+          tlZoom: null,
+          tlScroll: 0,
         })
       },
       loadProject: async (id) => {
@@ -428,14 +608,42 @@ export const useVideoStore = create<VideoState>()(
         set({
           project: p,
           loaded: true,
+          savedProject: p,
           activeAspect: aspect,
           selectedSlideId: p.slides[0]?.id ?? null,
           selectedTextBoxId: null,
           selectedDrawingId: null,
+          selectedInkId: null,
+          selectedElementIds: [],
+          inkTool: null,
           selection: null,
           slideView: 'editor',
           navTab: 'slides',
           playback: null,
+          tlZoom: null,
+          tlScroll: 0,
+        })
+      },
+
+      restoreProject: (raw) => {
+        const { project: p, aspect } = migrateProject(raw)
+        set({
+          project: p,
+          loaded: true,
+          savedProject: null, // differs from disk until saved
+          activeAspect: aspect,
+          selectedSlideId: p.slides[0]?.id ?? null,
+          selectedTextBoxId: null,
+          selectedDrawingId: null,
+          selectedInkId: null,
+          selectedElementIds: [],
+          inkTool: null,
+          selection: null,
+          slideView: 'editor',
+          navTab: 'slides',
+          playback: null,
+          tlZoom: null,
+          tlScroll: 0,
         })
       },
       saveProject: async (font) => {
@@ -449,6 +657,8 @@ export const useVideoStore = create<VideoState>()(
         // Persist the editor font's bytes so the project's default font is on disk
         // (other referenced fonts are saved via the Font tab).
         await httpStore.saveFont(font.hash, font.buffer)
+        set({ savedProject: next }) // disk is the truth again
+        autosaveClear('video')
       },
       renameProject: (name) =>
         set((s) => (s.project ? { project: { ...s.project, name, updatedAt: nowIso() } } : s)),
@@ -464,13 +674,24 @@ export const useVideoStore = create<VideoState>()(
         await projectStore.copy(saved.id, newId, name)
         // Switch the editor to the copy; its voiceover cues now resolve under the
         // new id (the server deep-copied the clips into the copy's folder).
-        set({ project: { ...saved, id: newId, name, updatedAt: nowIso() } })
+        const copy = { ...saved, id: newId, name, updatedAt: nowIso() }
+        set({ project: copy, savedProject: copy })
+        autosaveClear('video')
         return newId
       },
     }),
     { limit: 60, partialize: (s) => ({ project: s.project }) },
   ),
 )
+
+// Autosave the working copy while dirty (debounced, single slot; cleared on save).
+// Undoing back to the saved state drops the slot — otherwise a refresh would
+// resurrect the undone edits.
+useVideoStore.subscribe((s, prev) => {
+  if (!s.project || s.project === prev.project) return
+  if (s.project !== s.savedProject) autosaveWrite('video', s.project.id, s.project)
+  else if (prev.project !== prev.savedProject) autosaveClear('video')
+})
 
 export const videoHistory = {
   undo: () => useVideoStore.temporal.getState().undo(),

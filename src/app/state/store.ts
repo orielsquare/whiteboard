@@ -5,6 +5,7 @@ import { httpStore } from '@lib/persistence/FontStore'
 import { seedFontManifest, seedGlyphAnimation } from '@lib/manifest/seed'
 import { DEFAULT_PARAMS, extractionSig, type ExtractionParams, type GlyphExtractor } from '@lib/extraction'
 import type { FontManifest, GlyphAnimation } from '@lib/manifest/schema'
+import { autosaveClear, autosaveWrite } from './autosave'
 
 const nowIso = () => new Date().toISOString()
 
@@ -32,6 +33,9 @@ interface EditorState {
   setFontName: (name: string) => void
   markSaved: () => void
   loadFontManifest: (font: LoadedFont) => Promise<void>
+  /** Replace the manifest with an autosaved working copy — like a load, but the
+   *  document starts DIRTY (it differs from what's on disk until saved). */
+  restoreManifest: (m: FontManifest) => void
 }
 
 /** The extraction settings a glyph is (or would be) derived with. */
@@ -131,8 +135,15 @@ export const useEditorStore = create<EditorState>()(
             : s,
         ),
 
-      // Record that the live manifest has been persisted (clears the dirty flag).
-      markSaved: () => set((s) => ({ savedRev: s.editRev })),
+      // Record that the live manifest has been persisted (clears the dirty flag
+      // and drops the autosave slot — disk is now the truth).
+      markSaved: () =>
+        set((s) => {
+          autosaveClear('font')
+          return { savedRev: s.editRev }
+        }),
+
+      restoreManifest: (m) => set({ manifest: m, loaded: true, loadedFromDisk: true, editRev: 1, savedRev: 0 }),
 
       loadFontManifest: async (font) => {
         let m: FontManifest | null = null
@@ -168,6 +179,15 @@ export const useEditorStore = create<EditorState>()(
     { limit: 60, partialize: (s) => ({ manifest: s.manifest, editRev: s.editRev }) },
   ),
 )
+
+// Autosave the working copy while dirty (debounced, single slot). Skips silent
+// background derivations (they don't change editRev/dirty). Undoing back to the
+// clean state drops the slot — otherwise a refresh would resurrect the undone edit.
+useEditorStore.subscribe((s, prev) => {
+  if (!s.manifest || s.manifest === prev.manifest) return
+  if (s.editRev !== s.savedRev) autosaveWrite('font', s.manifest.metadata.fontId, s.manifest)
+  else if (prev.editRev !== prev.savedRev) autosaveClear('font')
+})
 
 /** Imperative undo/redo handles (zundo temporal store). */
 export const editorHistory = {

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { aspectHeightUnits, aspectWidthFraction } from '@lib/project/coords'
-import { boxForAspect, drawingForAspect } from '@lib/project/aspect'
+import { boxForAspect, drawingForAspect, inkForAspect } from '@lib/project/aspect'
 import { layoutTextBox, type FontSet } from '@lib/project/layout'
+import { prepareInk, renderInk } from '@lib/project/ink'
 import { renderTextBox } from '@lib/project/render'
 import { drawingMinHalfWidth, drawingTransform, renderPreparedDrawing, type DrawingSet } from '@lib/drawing/render'
 import type { Slide } from '@lib/project/schema'
@@ -47,6 +48,7 @@ export function SlideThumbnail({
           r: b.runs.map((r) => [r.text, r.sizeScale ?? 1, r.color ?? '', !!r.underline, r.letterSpacing ?? 0, r.fontId ?? '']),
         })),
         drawings: (slide.drawings ?? []).map((d) => [d.drawingId, d.frame[aspect].x, d.frame[aspect].y, d.frame[aspect].w]),
+        inks: (slide.inks ?? []).map((k) => [k.tool, k.color ?? '', k.widthScale ?? 1, k.points.length, k.points[0]?.x, k.points[0]?.y]),
       }),
     [aspect, baseEmFraction, brush, slide],
   )
@@ -82,6 +84,10 @@ export function SlideThumbnail({
       if (fw == null || fw <= 0) continue
       const tr = drawingTransform(entry.viewBox, fd.frame.x * w, fd.frame.y * w, fw * w)
       renderPreparedDrawing(ctx, entry.prepared, tr, brush, drawingMinHalfWidth(entry.viewBox), Infinity)
+    }
+    // Direct drawings, fully drawn.
+    for (const k of slide.inks ?? []) {
+      renderInk(ctx, prepareInk(inkForAspect(k, aspect)), w, brush, k.color, Infinity, k.id)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig, fonts, drawings])

@@ -69,10 +69,20 @@ export interface TextBox {
   lineHeightScale: number
   /** animation order within the slide; kept contiguous 0..n-1. Always shared across aspects. */
   animOrder: number
-  /** ms before this box starts, from the previous box's animation END (first box: from slide shown). Shared. */
+  /** padding-before: ms between this box's envelope opening (= the previous
+   *  element's envelope END; first element: slide shown) and its writing
+   *  starting. The animation block's offset within its envelope. Shared. */
   delayBeforeMs: number
   /** handwriting cadence between glyphs in this box. Shared. */
   interCharDelayMs: number
+  /** the animation block's own writing speed (×); >1 writes faster
+   *  (`animMs = contentMs / speed`). Absent ⇒ 1. */
+  speed?: number
+  /** the envelope: the fixed length (ms at rate 1) of this element's slot on the
+   *  timeline. The block sits at `delayBeforeMs` within it; padding-after is the
+   *  remainder. An overflowing block compresses to fit (the envelope is master —
+   *  content edits keep the video's pace). Absent ⇒ tight/auto (offset + block). */
+  envelopeMs?: number
   /** per-box brush override; undefined = use the project brush. A run's colour still wins. */
   brush?: BrushSettings
   /** per-box lock override; undefined fields inherit slide then `project.lockDefault`. */
@@ -113,15 +123,54 @@ export interface SlideDrawing {
   /** animation order within the slide, SHARED with textBoxes (so a drawing can
    *  draw before/after/between text). Kept contiguous across boxes + drawings. */
   animOrder: number
-  /** ms before this drawing starts, from the previous item's animation END. */
+  /** padding-before: the animation block's offset within this drawing's
+   *  envelope (see TextBox.delayBeforeMs). */
   delayBeforeMs: number
-  /** per-drawing relative draw speed (×); >1 draws faster. Combines with the
-   *  project playbackRate. Absent ⇒ 1. */
+  /** the animation block's own draw speed (×); >1 draws faster. Absent ⇒ 1. */
   speed?: number
+  /** the envelope: this drawing's fixed slot length (ms at rate 1); the block
+   *  compresses to fit when it overflows. Absent ⇒ tight/auto. */
+  envelopeMs?: number
   /** per-drawing lock override (mirrors TextBox.lock): `position` links the frame
    *  across aspects; `content` is kept for UI parity but redundant (a drawing has no
    *  per-aspect content). Undefined fields inherit slide then `project.lockDefault`. */
   lock?: Partial<BoxLockState>
+}
+
+/** The direct-drawing pens available on a slide. */
+export type InkTool = 'freehand' | 'line' | 'curve' | 'arrow'
+
+/** A point of a direct drawing: x is a fraction of canvas WIDTH, y a fraction of
+ *  canvas HEIGHT (the same convention as frames; shared across aspects). */
+export interface InkPoint {
+  x: number
+  y: number
+}
+
+/**
+ * A direct drawing ("ink") on a slide — freehand loops, straight lines, smoothed
+ * curves and arrows, drawn by hand on the canvas and stored INLINE in the
+ * project (unlike placed drawings, which reference saved artifacts). Animated
+ * sequentially with everything else via the shared `animOrder`, with the same
+ * speed/envelope model.
+ */
+export interface SlideInk {
+  id: string
+  tool: InkTool
+  /** the captured (already smoothed/coerced) polyline, normalized (see InkPoint). */
+  points: InkPoint[]
+  /** pen colour override; null/undefined ⇒ the project brush colour. */
+  color?: string | null
+  /** stroke width multiplier (×) on the standard ink width. Absent ⇒ 1. */
+  widthScale?: number
+  /** animation order within the slide, SHARED with textBoxes + drawings. */
+  animOrder: number
+  /** padding-before within this ink's envelope (see TextBox.delayBeforeMs). */
+  delayBeforeMs: number
+  /** the block's own draw speed (×). Absent ⇒ 1. */
+  speed?: number
+  /** the envelope: fixed slot length (ms at rate 1). Absent ⇒ tight/auto. */
+  envelopeMs?: number
 }
 
 export interface Slide {
@@ -130,6 +179,8 @@ export interface Slide {
   textBoxes: TextBox[]
   /** placed drawings (SVG animations) on this slide; share animOrder with textBoxes. */
   drawings?: SlideDrawing[]
+  /** direct drawings (hand-drawn annotations); share animOrder with boxes + drawings. */
+  inks?: SlideInk[]
   /** ms the finished slide holds before its closing transition begins. */
   holdBeforeTransitionMs: number
   transition: ClosingTransition
@@ -292,6 +343,19 @@ export function newTextBox(defaults: ProjectDefaults, x: number, y: number, anim
     animOrder,
     delayBeforeMs: defaults.delayBeforeMs,
     interCharDelayMs: defaults.interCharDelayMs,
+  }
+}
+
+/** A freshly-drawn ink: given the next animation slot, no padding (annotations
+ *  usually follow their text immediately). Points arrive already normalized. */
+export function newSlideInk(tool: InkTool, points: InkPoint[], animOrder: number, color?: string | null): SlideInk {
+  return {
+    id: makeId(),
+    tool,
+    points,
+    ...(color != null ? { color } : {}),
+    animOrder,
+    delayBeforeMs: 0,
   }
 }
 

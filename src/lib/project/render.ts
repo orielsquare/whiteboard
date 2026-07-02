@@ -13,10 +13,12 @@ import { layoutTextBox, type FontSet, type TextBoxLayout } from './layout'
 import { aspectWidthFraction } from './coords'
 import type { FlatProject, FlatSlide } from './aspect'
 import type { NormRect } from './schema'
+import { prepareInk, renderInk, type PreparedInk } from './ink'
 import { computeProjectTiming, type ProjectTiming, type SlideTiming } from './timing'
 import { composeTransition, transitionProgress } from './transitions'
 
 const EMPTY_DRAWINGS: Map<string, PreparedDrawingEntry> = new Map()
+const EMPTY_INKS: Map<string, PreparedInk> = new Map()
 
 /** Paint one placed drawing into its frame rect (px). `t` is writing time (ms
  *  since it began); `ruboutFrac` retracts the tail (closing-transition rubout). */
@@ -134,29 +136,56 @@ export function renderSlideContent(
   brush: BrushSettings,
   speed = 1,
   drawings: Map<string, PreparedDrawingEntry> = EMPTY_DRAWINGS,
+  inks: Map<string, PreparedInk> = EMPTY_INKS,
 ): void {
-  const boxStarts = new Map(timing.boxes.map((b) => [b.boxId, b.startMs]))
-  const drawStarts = new Map(timing.drawings.map((d) => [d.id, d.startMs]))
+  const boxTimes = new Map(timing.boxes.map((b) => [b.boxId, b]))
+  const drawTimes = new Map(timing.drawings.map((d) => [d.id, d]))
+  const inkTimes = new Map(timing.inks.map((k) => [k.id, k]))
+  // An element's sampling factor comes straight from its ANIMATION window:
+  // contentMs / (animEndMs − animStartMs). That folds in the global rate, the
+  // element's `speed` AND envelope compression in one place, and guarantees the
+  // reveal completes exactly at the block's end. `speed` remains only as the
+  // fallback for an element the timing doesn't know (defensive).
+  const factorOf = (contentMs: number, t?: { animStartMs: number; animEndMs: number }): number => {
+    if (!t) return speed
+    const win = t.animEndMs - t.animStartMs
+    return win > 0 ? contentMs / win : 0
+  }
   // Paint boxes + drawings interleaved by their shared animOrder, so a later
   // animOrder paints on top of an earlier one (text over a drawing or vice versa).
-  const items: { animOrder: number; box?: FlatSlide['textBoxes'][number]; drawing?: FlatSlide['drawings'][number] }[] = [
+  const items: {
+    animOrder: number
+    box?: FlatSlide['textBoxes'][number]
+    drawing?: FlatSlide['drawings'][number]
+    ink?: FlatSlide['inks'][number]
+  }[] = [
     ...slide.textBoxes.map((b) => ({ animOrder: b.animOrder, box: b })),
     ...(slide.drawings ?? []).map((d) => ({ animOrder: d.animOrder, drawing: d })),
+    ...(slide.inks ?? []).map((k) => ({ animOrder: k.animOrder, ink: k })),
   ]
   items.sort((a, b) => a.animOrder - b.animOrder)
   for (const it of items) {
-    if (it.box) {
+    if (it.ink) {
+      const prepared = inks.get(it.ink.id)
+      if (!prepared) continue
+      const t = inkTimes.get(it.ink.id)
+      const past = tLocalMs - (t?.animStartMs ?? 0)
+      const writingMs = t && tLocalMs >= t.animEndMs ? Infinity : past * factorOf(prepared.totalMs, t)
+      renderInk(ctx, prepared, w, brush, it.ink.color, writingMs, it.ink.id)
+    } else if (it.box) {
       const layout = layouts.get(it.box.id)
       if (!layout) continue
-      const writingMs = (tLocalMs - (boxStarts.get(it.box.id) ?? 0)) * speed
+      const t = boxTimes.get(it.box.id)
+      const past = tLocalMs - (t?.animStartMs ?? 0)
+      // Past the block ⇒ fully drawn (a zero-length block — pure spacer — still resolves).
+      const writingMs = t && tLocalMs >= t.animEndMs ? Infinity : past * factorOf(layout.contentMs, t)
       renderTextBox(ctx, layout, boxOrigin(it.box, w), it.box.brush ?? brush, writingMs)
     } else if (it.drawing) {
       const entry = drawings.get(it.drawing.id)
       if (!entry) continue
-      // writing scales by the global speed AND the per-drawing relative speed,
-      // matching the (totalMs / drawingSpeed) content window from the timing.
-      const dSpeed = it.drawing.speed && it.drawing.speed > 0 ? it.drawing.speed : 1
-      const writingMs = (tLocalMs - (drawStarts.get(it.drawing.id) ?? 0)) * speed * dSpeed
+      const t = drawTimes.get(it.drawing.id)
+      const past = tLocalMs - (t?.animStartMs ?? 0)
+      const writingMs = t && tLocalMs >= t.animEndMs ? Infinity : past * factorOf(entry.prepared.totalMs, t)
       paintDrawingInstance(ctx, entry, it.drawing.frame, w, brush, writingMs)
     }
   }
@@ -174,10 +203,11 @@ function drawSlideFull(
   brush: BrushSettings,
   speed: number,
   drawings: Map<string, PreparedDrawingEntry> = EMPTY_DRAWINGS,
+  inks: Map<string, PreparedInk> = EMPTY_INKS,
 ): void {
   ctx.fillStyle = slide.background
   ctx.fillRect(0, 0, w, h)
-  renderSlideContent(ctx, slide, layouts, timing, tLocalMs, w, brush, speed, drawings)
+  renderSlideContent(ctx, slide, layouts, timing, tLocalMs, w, brush, speed, drawings, inks)
 }
 
 /** A slide's ink with the last `p` fraction of every stroke retracted (rubout). */
@@ -189,6 +219,7 @@ function renderSlideInkRubout(
   w: number,
   p: number,
   drawings: Map<string, PreparedDrawingEntry> = EMPTY_DRAWINGS,
+  inks: Map<string, PreparedInk> = EMPTY_INKS,
 ): void {
   const frac = 1 - p
   if (frac <= 0) return
@@ -216,6 +247,11 @@ function renderSlideInkRubout(
     const entry = drawings.get(d.id)
     if (entry) paintDrawingInstance(ctx, entry, d.frame, w, brush, Infinity, p)
   }
+  // Direct drawings likewise.
+  for (const k of slide.inks ?? []) {
+    const prepared = inks.get(k.id)
+    if (prepared) renderInk(ctx, prepared, w, brush, k.color, Infinity, k.id, p)
+  }
 }
 
 /** Pre-computed layouts + timing for a project. Build once; sample every frame. */
@@ -223,6 +259,8 @@ export interface RenderContext {
   layoutsBySlide: Map<string, Map<string, TextBoxLayout>>
   /** prepared placed drawings per slide, keyed slideId → SlideDrawing instance id. */
   drawingsBySlide: Map<string, Map<string, PreparedDrawingEntry>>
+  /** prepared direct drawings per slide, keyed slideId → SlideInk id. */
+  inksBySlide: Map<string, Map<string, PreparedInk>>
   timing: ProjectTiming
   /** writing-animation speed multiplier (scales the per-box glyph-reveal clock). */
   speed: number
@@ -248,6 +286,8 @@ export function buildRenderContext(
   const layoutsBySlide = new Map<string, Map<string, TextBoxLayout>>()
   const drawingsBySlide = new Map<string, Map<string, PreparedDrawingEntry>>()
   const drawingDurationsBySlide = new Map<string, Map<string, number>>()
+  const inksBySlide = new Map<string, Map<string, PreparedInk>>()
+  const inkDurationsBySlide = new Map<string, Map<string, number>>()
   for (const slide of project.slides) {
     const m = new Map<string, TextBoxLayout>()
     for (const box of slide.textBoxes) {
@@ -266,11 +306,23 @@ export function buildRenderContext(
     }
     drawingsBySlide.set(slide.id, dm)
     drawingDurationsBySlide.set(slide.id, dur)
+
+    // Prepare each direct drawing (LUTs + natural duration) — self-contained.
+    const km = new Map<string, PreparedInk>()
+    const kdur = new Map<string, number>()
+    for (const k of slide.inks ?? []) {
+      const prepared = prepareInk(k)
+      km.set(k.id, prepared)
+      kdur.set(k.id, prepared.totalMs)
+    }
+    inksBySlide.set(slide.id, km)
+    inkDurationsBySlide.set(slide.id, kdur)
   }
   return {
     layoutsBySlide,
     drawingsBySlide,
-    timing: computeProjectTiming(project, layoutsBySlide, drawingDurationsBySlide, speed),
+    inksBySlide,
+    timing: computeProjectTiming(project, layoutsBySlide, drawingDurationsBySlide, speed, inkDurationsBySlide),
     speed: speed > 0 ? speed : 1,
   }
 }
@@ -309,7 +361,7 @@ export function renderProject(
   if (vis.length === 1) {
     const v = vis[0]
     const slide = project.slides[v.i]
-    drawSlideFull(ctx, slide, rc.layoutsBySlide.get(slide.id) ?? new Map(), v.st.timing, v.tLocal, w, h, project.brush, rc.speed, rc.drawingsBySlide.get(slide.id) ?? EMPTY_DRAWINGS)
+    drawSlideFull(ctx, slide, rc.layoutsBySlide.get(slide.id) ?? new Map(), v.st.timing, v.tLocal, w, h, project.brush, rc.speed, rc.drawingsBySlide.get(slide.id) ?? EMPTY_DRAWINGS, rc.inksBySlide.get(slide.id) ?? EMPTY_INKS)
     return
   }
 
@@ -323,17 +375,19 @@ export function renderProject(
   const incLayouts = rc.layoutsBySlide.get(incSlide.id) ?? new Map()
   const outDrawings = rc.drawingsBySlide.get(outSlide.id) ?? EMPTY_DRAWINGS
   const incDrawings = rc.drawingsBySlide.get(incSlide.id) ?? EMPTY_DRAWINGS
+  const outInks = rc.inksBySlide.get(outSlide.id) ?? EMPTY_INKS
+  const incInks = rc.inksBySlide.get(incSlide.id) ?? EMPTY_INKS
   const p = transitionProgress(out.tLocal, out.st.timing.holdEndMs, out.st.timing.transitionMs)
 
   composeTransition(outSlide.transition.kind, ctx, w, h, p, {
-    drawIncomingFull: () => drawSlideFull(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, h, project.brush, rc.speed, incDrawings),
-    drawOutgoingFull: () => drawSlideFull(ctx, outSlide, outLayouts, out.st.timing, out.tLocal, w, h, project.brush, rc.speed, outDrawings),
+    drawIncomingFull: () => drawSlideFull(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, h, project.brush, rc.speed, incDrawings, incInks),
+    drawOutgoingFull: () => drawSlideFull(ctx, outSlide, outLayouts, out.st.timing, out.tLocal, w, h, project.brush, rc.speed, outDrawings, outInks),
     fillOutgoingBg: () => {
       ctx.fillStyle = outSlide.background
       ctx.fillRect(0, 0, w, h)
     },
-    drawIncomingContent: () => renderSlideContent(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, project.brush, rc.speed, incDrawings),
-    drawOutgoingInk: () => renderSlideInkRubout(ctx, outSlide, outLayouts, project.brush, w, p, outDrawings),
+    drawIncomingContent: () => renderSlideContent(ctx, incSlide, incLayouts, inc.st.timing, inc.tLocal, w, project.brush, rc.speed, incDrawings, incInks),
+    drawOutgoingInk: () => renderSlideInkRubout(ctx, outSlide, outLayouts, project.brush, w, p, outDrawings, outInks),
   })
 }
 
@@ -355,11 +409,12 @@ export function renderSlide(
   if (!slide) return
   const layouts = rc.layoutsBySlide.get(slide.id) ?? new Map()
   const drawings = rc.drawingsBySlide.get(slide.id) ?? EMPTY_DRAWINGS
+  const inks = rc.inksBySlide.get(slide.id) ?? EMPTY_INKS
   const st = rc.timing.slides[slideIndex].timing
   ctx.clearRect(0, 0, w, h)
 
   if (st.transitionMs <= 0 || tLocalMs < st.holdEndMs) {
-    drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.speed, drawings)
+    drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.speed, drawings, inks)
     return
   }
 
@@ -371,12 +426,12 @@ export function renderSlide(
       ctx.fillStyle = slide.background
       ctx.fillRect(0, 0, w, h)
     },
-    drawOutgoingFull: () => drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.speed, drawings),
+    drawOutgoingFull: () => drawSlideFull(ctx, slide, layouts, st, tLocalMs, w, h, project.brush, rc.speed, drawings, inks),
     fillOutgoingBg: () => {
       ctx.fillStyle = slide.background
       ctx.fillRect(0, 0, w, h)
     },
     drawIncomingContent: () => {},
-    drawOutgoingInk: () => renderSlideInkRubout(ctx, slide, layouts, project.brush, w, p, drawings),
+    drawOutgoingInk: () => renderSlideInkRubout(ctx, slide, layouts, project.brush, w, p, drawings, inks),
   })
 }

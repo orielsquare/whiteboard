@@ -2,15 +2,19 @@ import {
   makeId,
   newSlide,
   newSlideDrawing,
+  newSlideInk,
   newTextBox,
   type Aspect,
   type BoxContent,
   type BoxLockState,
+  type InkPoint,
+  type InkTool,
   type NamedStyle,
   type NormRect,
   type ProjectDefaults,
   type Slide,
   type SlideDrawing,
+  type SlideInk,
   type TextBox,
   type TextRun,
   type TtsSettings,
@@ -18,7 +22,7 @@ import {
   type VoiceoverAudio,
   type VoiceoverCue,
 } from '@lib/project/schema'
-import { contentOf, otherAspect } from '@lib/project/aspect'
+import { ASPECTS, aspectHeightUnits, contentOf, effLock, otherAspect } from '@lib/project/aspect'
 import { DEFAULT_TTS, DEFAULT_TTS_VOICE_SETTINGS } from '@lib/project/schema'
 import type { BrushSettings } from '@lib/manifest/schema'
 import { applyStyleToRange, type StylePatch } from '@lib/project/runs'
@@ -28,21 +32,23 @@ function mapSlide(p: VideoProject, slideId: string, fn: (s: Slide) => Slide): Vi
   return { ...p, slides: p.slides.map((s) => (s.id === slideId ? fn(s) : s)) }
 }
 
-/** Re-assign contiguous animOrder 0..n-1 across a slide's boxes AND drawings,
- *  preserving their current relative order. The two share ONE animation sequence,
- *  so any structural change (add/delete/reorder/paste) must reindex both together
- *  — reindexing boxes alone would collide with a drawing's animOrder. Keeps the
- *  `drawings` field optional (only present if the slide already had one). */
+/** Re-assign contiguous animOrder 0..n-1 across a slide's boxes, drawings AND
+ *  inks, preserving their current relative order. All three share ONE animation
+ *  sequence, so any structural change (add/delete/reorder/paste) must reindex
+ *  them together — reindexing one kind alone would collide with the others.
+ *  Keeps the optional fields optional (only present if the slide had them). */
 function reindexSlideOrder(s: Slide): Slide {
   const items = [
     ...s.textBoxes.map((b) => ({ id: b.id, animOrder: b.animOrder })),
     ...(s.drawings ?? []).map((d) => ({ id: d.id, animOrder: d.animOrder })),
+    ...(s.inks ?? []).map((k) => ({ id: k.id, animOrder: k.animOrder })),
   ].sort((a, b) => a.animOrder - b.animOrder)
   const idx = new Map(items.map((it, i) => [it.id, i]))
   return {
     ...s,
     textBoxes: s.textBoxes.map((b) => ({ ...b, animOrder: idx.get(b.id) ?? b.animOrder })),
     ...(s.drawings ? { drawings: s.drawings.map((d) => ({ ...d, animOrder: idx.get(d.id) ?? d.animOrder })) } : {}),
+    ...(s.inks ? { inks: s.inks.map((k) => ({ ...k, animOrder: idx.get(k.id) ?? k.animOrder })) } : {}),
   }
 }
 
@@ -67,8 +73,8 @@ export function copySlide(p: VideoProject, slideId: string): { project: VideoPro
       frame: { '16:9': { ...b.frame['16:9'] }, '9:16': { ...b.frame['9:16'] } },
       runs: b.runs.map((r) => ({ ...r })),
     })),
-    // Only carry a `drawings` field if the source had one (keep drawing-less
-    // slides shape-identical after a copy).
+    // Only carry `drawings`/`inks` fields if the source had them (keep slides
+    // without them shape-identical after a copy).
     ...(src.drawings
       ? {
           drawings: src.drawings.map((d) => ({
@@ -77,6 +83,9 @@ export function copySlide(p: VideoProject, slideId: string): { project: VideoPro
             frame: { '16:9': { ...d.frame['16:9'] }, '9:16': { ...d.frame['9:16'] } },
           })),
         }
+      : {}),
+    ...(src.inks
+      ? { inks: src.inks.map((k) => ({ ...k, id: makeId(), points: k.points.map((pt) => ({ ...pt })) })) }
       : {}),
   }
   const slides = [...p.slides]
@@ -159,11 +168,12 @@ export function updateTextBoxFrame(
 
 // --- placed drawings ------------------------------------------------------
 
-/** The next animation slot on a slide, shared across its boxes AND drawings. */
+/** The next animation slot on a slide, shared across boxes, drawings AND inks. */
 function nextAnimOrder(s: Slide): number {
   let max = -1
   for (const b of s.textBoxes) max = Math.max(max, b.animOrder)
   for (const d of s.drawings ?? []) max = Math.max(max, d.animOrder)
+  for (const k of s.inks ?? []) max = Math.max(max, k.animOrder)
   return max + 1
 }
 
@@ -223,8 +233,39 @@ export function removeDrawing(p: VideoProject, slideId: string, instanceId: stri
   )
 }
 
-/** Reorder the slide's combined animation sequence (boxes AND drawings) to match
- *  `orderedIds` (the new top-to-bottom order in the Elements list). */
+// --- direct drawings (inks) -------------------------------------------------
+
+/** Add a freshly-drawn ink to a slide; it draws last (highest animOrder). */
+export function addInk(
+  p: VideoProject,
+  slideId: string,
+  tool: InkTool,
+  points: InkPoint[],
+  color?: string | null,
+  widthScale?: number,
+): { project: VideoProject; inkId: string } {
+  const base = newSlideInk(tool, points, 0, color)
+  if (widthScale != null && widthScale !== 1) base.widthScale = widthScale
+  const project = mapSlide(p, slideId, (s) => ({
+    ...s,
+    inks: [...(s.inks ?? []), { ...base, animOrder: nextAnimOrder(s) }],
+  }))
+  return { project, inkId: base.id }
+}
+
+export function updateInk(p: VideoProject, slideId: string, inkId: string, patch: Partial<SlideInk>): VideoProject {
+  return mapSlide(p, slideId, (s) => ({
+    ...s,
+    inks: (s.inks ?? []).map((k) => (k.id === inkId ? { ...k, ...patch } : k)),
+  }))
+}
+
+export function removeInk(p: VideoProject, slideId: string, inkId: string): VideoProject {
+  return mapSlide(p, slideId, (s) => reindexSlideOrder({ ...s, inks: (s.inks ?? []).filter((k) => k.id !== inkId) }))
+}
+
+/** Reorder the slide's combined animation sequence (boxes, drawings AND inks) to
+ *  match `orderedIds` (the new top-to-bottom order in the Elements list). */
 export function reorderSlideItems(p: VideoProject, slideId: string, orderedIds: string[]): VideoProject {
   return mapSlide(p, slideId, (s) => {
     const pos = new Map(orderedIds.map((id, i) => [id, i]))
@@ -233,8 +274,144 @@ export function reorderSlideItems(p: VideoProject, slideId: string, orderedIds: 
       ...s,
       textBoxes,
       ...(s.drawings ? { drawings: s.drawings.map((d) => ({ ...d, animOrder: pos.get(d.id) ?? d.animOrder })) } : {}),
+      ...(s.inks ? { inks: s.inks.map((k) => ({ ...k, animOrder: pos.get(k.id) ?? k.animOrder })) } : {}),
     })
   })
+}
+
+// --- multi-element operations (marquee / shift-click selections) -----------
+
+const clampFrac = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
+
+/**
+ * Translate a set of elements (boxes, drawings AND inks) by `dx` (fraction of
+ * width) / `dyW` (width-units), as ONE project write (≡ one undo step). Frames
+ * follow the same conventions as a single drag: stored-y delta uses the ACTIVE
+ * aspect's height, written to both aspect keys when position-linked (the two
+ * cuts stay identical) or just the active one when not.
+ */
+export function translateElements(
+  p: VideoProject,
+  slideId: string,
+  ids: ReadonlySet<string>,
+  dx: number,
+  dyW: number,
+  activeAspect: Aspect,
+): VideoProject {
+  const dyStored = dyW / aspectHeightUnits(activeAspect)
+  return mapSlide(p, slideId, (s) => {
+    const moveFrame = <T extends { id: string; lock?: Partial<BoxLockState>; frame: Record<Aspect, NormRect> }>(item: T): T => {
+      if (!ids.has(item.id)) return item
+      const targets = effLock(p, s, item).position ? ASPECTS : [activeAspect]
+      const frame = { ...item.frame }
+      for (const a of targets) {
+        frame[a] = { ...frame[a], x: clampFrac(frame[a].x + dx), y: clampFrac(frame[a].y + dyStored) }
+      }
+      return { ...item, frame }
+    }
+    return {
+      ...s,
+      textBoxes: s.textBoxes.map(moveFrame),
+      ...(s.drawings ? { drawings: s.drawings.map(moveFrame) } : {}),
+      ...(s.inks
+        ? {
+            inks: s.inks.map((k) =>
+              ids.has(k.id) ? { ...k, points: k.points.map((pt) => ({ x: pt.x + dx, y: pt.y + dyStored })) } : k,
+            ),
+          }
+        : {}),
+    }
+  })
+}
+
+/** Delete a set of elements (any mix of kinds) in one write, reindexing the
+ *  shared animation order. */
+export function removeElements(p: VideoProject, slideId: string, ids: ReadonlySet<string>): VideoProject {
+  return mapSlide(p, slideId, (s) =>
+    reindexSlideOrder({
+      ...s,
+      textBoxes: s.textBoxes.filter((b) => !ids.has(b.id)),
+      ...(s.drawings ? { drawings: s.drawings.filter((d) => !ids.has(d.id)) } : {}),
+      ...(s.inks ? { inks: s.inks.filter((k) => !ids.has(k.id)) } : {}),
+    }),
+  )
+}
+
+/** One element on the clipboard, kind-tagged (order = animation order). */
+export type ClipboardElement =
+  | { kind: 'box'; box: TextBox }
+  | { kind: 'drawing'; drawing: SlideDrawing }
+  | { kind: 'ink'; ink: SlideInk }
+
+/** Deep-clone a slide's selected elements, in their shared animation order —
+ *  the copy/cut payload (independent of later edits, reusable across slides). */
+export function collectElements(s: Slide, ids: ReadonlySet<string>): ClipboardElement[] {
+  const items: { animOrder: number; el: ClipboardElement }[] = [
+    ...s.textBoxes.filter((b) => ids.has(b.id)).map((b) => ({ animOrder: b.animOrder, el: { kind: 'box' as const, box: cloneTextBox(b) } })),
+    ...(s.drawings ?? [])
+      .filter((d) => ids.has(d.id))
+      .map((d) => ({
+        animOrder: d.animOrder,
+        el: { kind: 'drawing' as const, drawing: { ...d, frame: { '16:9': { ...d.frame['16:9'] }, '9:16': { ...d.frame['9:16'] } } } },
+      })),
+    ...(s.inks ?? [])
+      .filter((k) => ids.has(k.id))
+      .map((k) => ({ animOrder: k.animOrder, el: { kind: 'ink' as const, ink: { ...k, points: k.points.map((pt) => ({ ...pt })) } } })),
+  ]
+  return items.sort((a, b) => a.animOrder - b.animOrder).map((it) => it.el)
+}
+
+/**
+ * Paste clipboard elements onto a slide: fresh ids, positions nudged (so a paste
+ * onto the same slide is visible), appended to the animation sequence in their
+ * original relative order. Returns the new ids (for selection).
+ */
+export function pasteElements(
+  p: VideoProject,
+  slideId: string,
+  clip: ClipboardElement[],
+): { project: VideoProject; ids: string[] } {
+  const ids: string[] = []
+  const project = mapSlide(p, slideId, (s) => {
+    let order = nextAnimOrder(s)
+    const nudge = (r: NormRect): NormRect => ({ ...r, x: clampFrac(r.x + 0.03), y: clampFrac(r.y + 0.03) })
+    const boxes = [...s.textBoxes]
+    const drawings = [...(s.drawings ?? [])]
+    const inks = [...(s.inks ?? [])]
+    for (const el of clip) {
+      const id = makeId()
+      ids.push(id)
+      if (el.kind === 'box') {
+        boxes.push({
+          ...cloneTextBox(el.box),
+          id,
+          frame: { '16:9': nudge(el.box.frame['16:9']), '9:16': nudge(el.box.frame['9:16']) },
+          animOrder: order++,
+        })
+      } else if (el.kind === 'drawing') {
+        drawings.push({
+          ...el.drawing,
+          id,
+          frame: { '16:9': nudge(el.drawing.frame['16:9']), '9:16': nudge(el.drawing.frame['9:16']) },
+          animOrder: order++,
+        })
+      } else {
+        inks.push({
+          ...el.ink,
+          id,
+          points: el.ink.points.map((pt) => ({ x: clampFrac(pt.x + 0.03), y: clampFrac(pt.y + 0.03) })),
+          animOrder: order++,
+        })
+      }
+    }
+    return {
+      ...s,
+      textBoxes: boxes,
+      ...(drawings.length ? { drawings } : {}),
+      ...(inks.length ? { inks } : {}),
+    }
+  })
+  return { project, ids }
 }
 
 const cleanLock = (lock: Partial<BoxLockState>): Partial<BoxLockState> | undefined =>
