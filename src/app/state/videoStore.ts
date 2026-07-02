@@ -99,6 +99,8 @@ interface VideoState {
   selectedElementIds: string[]
   /** the active direct-drawing pen on the canvas; null = select/move mode. */
   inkTool: InkTool | null
+  /** whether a newly-drawn line/curve gets an arrowhead (pre-draw default). */
+  inkArrow: boolean
   /** active sub-range selection inside the selected textbox (for the format bar). */
   selection: TextSelection | null
   /** copy/cut buffer for elements (any mix of kinds; survives slide switches). */
@@ -128,6 +130,7 @@ interface VideoState {
   /** delete a set of elements in one write. */
   removeElements: (slideId: string, ids: string[]) => void
   setInkTool: (tool: InkTool | null) => void
+  setInkArrow: (on: boolean) => void
   setSelection: (sel: TextSelection | null) => void
   setSlideView: (v: SlideView) => void
   setNavTab: (t: NavTab) => void
@@ -151,7 +154,7 @@ interface VideoState {
   reorderSlideItems: (slideId: string, orderedIds: string[]) => void
 
   // direct drawings (hand-drawn annotations on a slide)
-  addInk: (slideId: string, tool: InkTool, points: InkPoint[], color?: string | null, widthScale?: number) => string
+  addInk: (slideId: string, tool: InkTool, points: InkPoint[], color?: string | null, widthScale?: number, arrow?: boolean) => string
   updateInk: (slideId: string, inkId: string, patch: Partial<SlideInk>) => void
   removeInk: (slideId: string, inkId: string) => void
 
@@ -242,6 +245,7 @@ export const useVideoStore = create<VideoState>()(
       selectedInkId: null,
       selectedElementIds: [],
       inkTool: null,
+      inkArrow: false,
       selection: null,
       clipboardElements: null,
       slideView: 'editor',
@@ -305,6 +309,7 @@ export const useVideoStore = create<VideoState>()(
         }),
       setInkTool: (tool) =>
         set({ inkTool: tool, ...(tool ? { selectedTextBoxId: null, selectedDrawingId: null, selectedInkId: null, selectedElementIds: [], selection: null, playback: null } : null) }),
+      setInkArrow: (on) => set({ inkArrow: on }),
       setSelection: (sel) => set({ selection: sel }),
       // changing the top view stops inline playback (it's an Editor-only mode).
       setSlideView: (v) => set({ slideView: v, playback: null }),
@@ -397,11 +402,11 @@ export const useVideoStore = create<VideoState>()(
       reorderSlideItems: (slideId, orderedIds) =>
         set((s) => (s.project ? { project: E.reorderSlideItems(s.project, slideId, orderedIds) } : s)),
 
-      addInk: (slideId, tool, points, color, widthScale) => {
+      addInk: (slideId, tool, points, color, widthScale, arrow) => {
         const s = get()
         if (!s.project) return ''
-        const { project, inkId } = E.addInk(s.project, slideId, tool, points, color, widthScale)
-        set({ project, selectedInkId: inkId, selectedTextBoxId: null, selectedDrawingId: null })
+        const { project, inkId } = E.addInk(s.project, slideId, tool, points, color, widthScale, arrow)
+        set({ project, selectedInkId: inkId, selectedTextBoxId: null, selectedDrawingId: null, selectedElementIds: [inkId] })
         return inkId
       },
       updateInk: (slideId, inkId, patch) =>

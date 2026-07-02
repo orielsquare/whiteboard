@@ -1,4 +1,5 @@
 import { buildLUT, type StrokeLUT } from '@lib/geometry/polyline'
+import { ease, type EasingName } from '@lib/geometry/easing'
 import { paintStroke } from '@lib/render/brush'
 import type { BrushSettings, StrokePoint } from '@lib/manifest/schema'
 import type { Transform } from '@lib/render/ribbon'
@@ -110,21 +111,16 @@ export function smoothCatmullRom(pts: InkPoint[], samplesPerSeg = 8): InkPoint[]
 export function coerceInkPoints(tool: InkTool, raw: InkPoint[]): InkPoint[] {
   const pts = resamplePoints(raw, 0.004)
   if (pts.length < 2 || polylineLength(pts) < 0.008) return []
-  switch (tool) {
-    case 'freehand':
-      return pts
-    case 'line':
-    case 'arrow':
-      return [pts[0], pts[pts.length - 1]]
-    case 'curve':
-      return smoothCatmullRom(simplifyRdp(pts, 0.01))
-  }
+  // (Legacy 'arrow' tool → straight line; the arrowhead is now a flag.)
+  if (tool === 'curve') return smoothCatmullRom(simplifyRdp(pts, 0.01))
+  if (tool === 'freehand') return pts
+  return [pts[0], pts[pts.length - 1]] // line
 }
 
-/** The ink's pen sections: the main path, plus arrowhead wings for `arrow`. */
-export function inkSections(tool: InkTool, pts: InkPoint[]): InkPoint[][] {
+/** The ink's pen sections: the main path, plus arrowhead wings when `arrow`. */
+export function inkSections(pts: InkPoint[], arrow: boolean): InkPoint[][] {
   if (pts.length < 2) return []
-  if (tool !== 'arrow') return [pts]
+  if (!arrow) return [pts]
   const tip = pts[pts.length - 1]
   const prev = pts[pts.length - 2]
   const ang = Math.atan2(tip.y - prev.y, tip.x - prev.x)
@@ -150,20 +146,26 @@ export interface PreparedInk {
   segs: PreparedInkSeg[]
   /** natural drawing time (ms) — the timing model's contentMs for this ink. */
   totalMs: number
+  /** easing applied to each stroke's reveal (from the ink; default 'linear'). */
+  easing: EasingName
 }
 
 const toStroke = (pts: InkPoint[], width: number): StrokePoint[] => pts.map((p) => ({ x: p.x, y: p.y, width }))
+
+/** An arrowhead is drawn when the flag is on (legacy: the old 'arrow' tool). */
+const inkHasArrow = (ink: Pick<SlideInk, 'tool' | 'arrow'>): boolean =>
+  !!ink.arrow || (ink.tool as string) === 'arrow'
 
 /**
  * Prepare a FLAT ink for animation: build each section's LUT and give it a
  * duration from its arc length at the standard pace (a pen-lift before the
  * arrowhead). Pure; memoize per ink.
  */
-export function prepareInk(ink: Pick<SlideInk, 'tool' | 'points' | 'widthScale'>): PreparedInk {
+export function prepareInk(ink: Pick<SlideInk, 'tool' | 'points' | 'widthScale' | 'arrow' | 'easing'>): PreparedInk {
   const width = INK_BASE_WIDTH * (ink.widthScale && ink.widthScale > 0 ? ink.widthScale : 1)
   const segs: PreparedInkSeg[] = []
   let cursor = 0
-  const sections = inkSections(ink.tool, ink.points)
+  const sections = inkSections(ink.points, inkHasArrow(ink))
   sections.forEach((pts, i) => {
     const lut = buildLUT(toStroke(pts, width))
     if (lut.total <= 0) return
@@ -172,7 +174,7 @@ export function prepareInk(ink: Pick<SlideInk, 'tool' | 'points' | 'widthScale'>
     segs.push({ lut, startMs: cursor, durationMs })
     cursor += durationMs
   })
-  return { segs, totalMs: cursor }
+  return { segs, totalMs: cursor, easing: ink.easing ?? 'linear' }
 }
 
 /**
@@ -196,7 +198,7 @@ export function renderInk(
   const b = color != null ? { ...brush, color } : brush
   prepared.segs.forEach((s, i) => {
     const local = t - s.startMs
-    const frac = local <= 0 ? 0 : local >= s.durationMs ? 1 : local / s.durationMs
+    const frac = local <= 0 ? 0 : local >= s.durationMs ? 1 : ease(prepared.easing, local / s.durationMs)
     const len = frac * s.lut.total * keep
     if (len > 0) paintStroke(ctx, s.lut, len, tr, b, INK_MIN_HALF_WIDTH, `${seedKey}:${i}`)
   })

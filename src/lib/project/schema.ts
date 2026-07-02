@@ -1,4 +1,5 @@
 import type { BrushSettings } from '@lib/manifest/schema'
+import type { EasingName } from '@lib/geometry/easing'
 import type { StylePatch } from './runs'
 
 /**
@@ -137,8 +138,9 @@ export interface SlideDrawing {
   lock?: Partial<BoxLockState>
 }
 
-/** The direct-drawing pens available on a slide. */
-export type InkTool = 'freehand' | 'line' | 'curve' | 'arrow'
+/** The direct-drawing pens available on a slide. (An arrowhead is a per-ink
+ *  on/off flag on `line`/`curve`, not its own tool — see `SlideInk.arrow`.) */
+export type InkTool = 'freehand' | 'line' | 'curve'
 
 /** A point of a direct drawing: x is a fraction of canvas WIDTH, y a fraction of
  *  canvas HEIGHT (the same convention as frames; shared across aspects). */
@@ -148,21 +150,25 @@ export interface InkPoint {
 }
 
 /**
- * A direct drawing ("ink") on a slide — freehand loops, straight lines, smoothed
- * curves and arrows, drawn by hand on the canvas and stored INLINE in the
- * project (unlike placed drawings, which reference saved artifacts). Animated
- * sequentially with everything else via the shared `animOrder`, with the same
- * speed/envelope model.
+ * A direct drawing ("ink") on a slide — freehand loops, straight lines and
+ * smoothed curves (any of which can carry an arrowhead), drawn by hand on the
+ * canvas and stored INLINE in the project (unlike placed drawings, which
+ * reference saved artifacts). Animated sequentially with everything else via the
+ * shared `animOrder`, with the same speed/envelope model.
  */
 export interface SlideInk {
   id: string
   tool: InkTool
   /** the captured (already smoothed/coerced) polyline, normalized (see InkPoint). */
   points: InkPoint[]
+  /** draw an arrowhead at the end (a flag on `line`/`curve`). Absent ⇒ no head. */
+  arrow?: boolean
   /** pen colour override; null/undefined ⇒ the project brush colour. */
   color?: string | null
   /** stroke width multiplier (×) on the standard ink width. Absent ⇒ 1. */
   widthScale?: number
+  /** easing applied to each stroke's reveal. Absent ⇒ 'linear'. */
+  easing?: EasingName
   /** animation order within the slide, SHARED with textBoxes + drawings. */
   animOrder: number
   /** padding-before within this ink's envelope (see TextBox.delayBeforeMs). */
@@ -348,11 +354,18 @@ export function newTextBox(defaults: ProjectDefaults, x: number, y: number, anim
 
 /** A freshly-drawn ink: given the next animation slot, no padding (annotations
  *  usually follow their text immediately). Points arrive already normalized. */
-export function newSlideInk(tool: InkTool, points: InkPoint[], animOrder: number, color?: string | null): SlideInk {
+export function newSlideInk(
+  tool: InkTool,
+  points: InkPoint[],
+  animOrder: number,
+  color?: string | null,
+  arrow = false,
+): SlideInk {
   return {
     id: makeId(),
     tool,
     points,
+    ...(arrow ? { arrow: true } : {}),
     ...(color != null ? { color } : {}),
     animOrder,
     delayBeforeMs: 0,

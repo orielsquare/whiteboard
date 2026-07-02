@@ -36,8 +36,9 @@ for (let i = 0; i <= 40; i++) noisy.push({ x: 0.1 + (0.4 * i) / 40, y: 0.2 + (i 
   const line = I.coerceInkPoints('line', noisy)
   check('1 line = 2 points', line.length === 2, line.length)
   check('1 line snaps ends', near(line[0].x, 0.1) && near(line[1].x, 0.5), line)
-  const arrow = I.coerceInkPoints('arrow', noisy)
-  check('1 arrow = 2 points', arrow.length === 2, arrow.length)
+  // legacy 'arrow' tool coerces like a line (the arrowhead is now a flag)
+  const legacy = I.coerceInkPoints('arrow', noisy)
+  check('1 legacy arrow tool = 2 points', legacy.length === 2, legacy.length)
 }
 
 // 2) freehand keeps the hand (many points); curve smooths but keeps the span
@@ -55,10 +56,10 @@ for (let i = 0; i <= 40; i++) noisy.push({ x: 0.1 + (0.4 * i) / 40, y: 0.2 + (i 
   check('3 empty rejected', I.coerceInkPoints('line', []).length === 0)
 }
 
-// 4) arrow sections = shaft + two head wings ending at the tip
+// 4) arrowhead sections = shaft + two head wings ending at the tip (flag on)
 {
   const pts = [{ x: 0.1, y: 0.5 }, { x: 0.5, y: 0.5 }]
-  const secs = I.inkSections('arrow', pts)
+  const secs = I.inkSections(pts, true)
   check('4 three sections', secs.length === 3, secs.length)
   const tip = { x: 0.5, y: 0.5 }
   check('4 wings end at the tip', secs[1][1].x === tip.x && secs[2][1].x === tip.x, secs.slice(1))
@@ -66,20 +67,28 @@ for (let i = 0; i <= 40; i++) noisy.push({ x: 0.1 + (0.4 * i) / 40, y: 0.2 + (i 
   check('4 wings mirror around the shaft', near(secs[1][0].y + secs[2][0].y, 2 * tip.y, 1e-9), [secs[1][0].y, secs[2][0].y])
 }
 
-// 5) non-arrow tools are a single section
+// 5) no arrowhead → a single section
 {
-  check('5 line one section', I.inkSections('line', [{ x: 0, y: 0 }, { x: 0.3, y: 0 }]).length === 1)
+  check('5 line one section', I.inkSections([{ x: 0, y: 0 }, { x: 0.3, y: 0 }], false).length === 1)
 }
 
-// 6) prepareInk: duration scales with arc length; arrow adds pen-lifts + wings
+// 6) prepareInk: duration scales with arc length; the arrow flag adds pen-lifts + wings
 {
   const short = I.prepareInk({ tool: 'line', points: [{ x: 0.1, y: 0.5 }, { x: 0.3, y: 0.5 }] })
   const long = I.prepareInk({ tool: 'line', points: [{ x: 0.1, y: 0.5 }, { x: 0.9, y: 0.5 }] })
   check('6 longer stroke takes longer', long.totalMs > short.totalMs, [short.totalMs, long.totalMs])
-  const arrow = I.prepareInk({ tool: 'arrow', points: [{ x: 0.1, y: 0.5 }, { x: 0.5, y: 0.5 }] })
-  check('6 arrow has three segs', arrow.segs.length === 3, arrow.segs.length)
+  const plain = I.prepareInk({ tool: 'line', points: [{ x: 0.1, y: 0.5 }, { x: 0.5, y: 0.5 }] })
+  check('6 no-arrow line = one seg', plain.segs.length === 1, plain.segs.length)
+  const arrow = I.prepareInk({ tool: 'line', arrow: true, points: [{ x: 0.1, y: 0.5 }, { x: 0.5, y: 0.5 }] })
+  check('6 arrow flag → three segs', arrow.segs.length === 3, arrow.segs.length)
   check('6 wings start after the shaft', arrow.segs[1].startMs > arrow.segs[0].durationMs, arrow.segs.map((s) => s.startMs))
   check('6 total covers the last wing', near(arrow.totalMs, arrow.segs[2].startMs + arrow.segs[2].durationMs), arrow.totalMs)
+  // legacy tool 'arrow' still produces the wings (back-compat)
+  const legacy = I.prepareInk({ tool: 'arrow', points: [{ x: 0.1, y: 0.5 }, { x: 0.5, y: 0.5 }] })
+  check('6 legacy arrow tool → three segs', legacy.segs.length === 3, legacy.segs.length)
+  // easing is carried onto the prepared ink (default linear)
+  check('6 default easing linear', plain.easing === 'linear', plain.easing)
+  check('6 easing carried', I.prepareInk({ tool: 'line', easing: 'cubicInOut', points: [{ x: 0.1, y: 0.5 }, { x: 0.5, y: 0.5 }] }).easing === 'cubicInOut')
 }
 
 // 7) hit-testing: near the polyline hits, far away misses; bounds wrap the stroke

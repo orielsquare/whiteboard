@@ -1,4 +1,6 @@
 import { useMemo } from 'react'
+import type { EasingName } from '@lib/geometry/easing'
+import { EASING_NAMES } from '@lib/geometry/easing'
 import type { TransitionKind } from '@lib/project/schema'
 import { boxForAspect, frameOf, inkForAspect } from '@lib/project/aspect'
 import { layoutTextBox, type FontSet } from '@lib/project/layout'
@@ -135,6 +137,27 @@ export function Inspector({ fonts, drawings: drawingSet }: { fonts: FontSet; dra
             value={ink.widthScale ?? 1}
             onChange={(e) => updateInk(slide.id, ink.id, { widthScale: Number(e.target.value) })}
           />
+        </label>
+        {(ink.tool === 'line' || ink.tool === 'curve' || (ink.tool as string) === 'arrow') && (
+          <label className="toggle" title="Draw an arrowhead at the end of this line/curve">
+            <input
+              type="checkbox"
+              checked={!!ink.arrow || (ink.tool as string) === 'arrow'}
+              onChange={(e) => updateInk(slide.id, ink.id, { arrow: e.target.checked })}
+            />
+            arrowhead
+          </label>
+        )}
+        <label className="slider">
+          <span>easing</span>
+          <select
+            value={ink.easing ?? 'linear'}
+            onChange={(e) => updateInk(slide.id, ink.id, { easing: e.target.value as EasingName })}
+          >
+            {EASING_NAMES.map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
         </label>
         <label className="slider">
           <span>draw speed <b>×{(ink.speed ?? 1).toFixed(2)}</b></span>

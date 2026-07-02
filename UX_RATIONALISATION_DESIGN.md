@@ -184,6 +184,18 @@ undo step per completed stroke.
       and **stretches on both edges** — resizing writes the element's `speed`
       (`contentMs / blockMs`); envelope length set via fixed-length toggle +
       seconds field; verified in-browser (grip drag → ×2.56 exactly as computed)
+- [x] P12 — EnvelopeBar drag fix (user feedback): the lozenge is a fixed-length
+      envelope of start-pad + block + **end-pad**. Body-slide moves start↔end pad
+      (block fixed); left edge resizes block + start-pad (end-pad fixed); right edge
+      resizes block + end-pad (start-pad fixed). Every drag pins `envelopeMs` so the
+      length holds; block min ≈2px, max = 100% of the envelope. Verified in-browser
+      (end-pad 211→211px on left-edge, block 380px fixed on slide, start-pad + env
+      fixed on right-edge).
+- [x] P13 — ink: per-ink **easing** (EasingName, applied in `renderInk`), and the
+      **arrowhead is an on/off flag** on line & curve (`SlideInk.arrow`) — the
+      `'arrow'` tool is gone (legacy value still renders wings). Tool strip: ↖ ✎ ─ ～
+      + an arrowhead toggle (line/curve only); Inspector adds the arrowhead checkbox
+      + easing dropdown. `tools/ink.test.mjs` updated.
 - [x] P11 — multi-select + element clipboard: marquee on empty canvas,
       shift/ctrl-⌘ click toggles, group drag (one write, verified numerically —
       4 boxes moved +0.10/+0.10, unselected ink untouched), group delete

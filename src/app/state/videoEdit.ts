@@ -243,8 +243,9 @@ export function addInk(
   points: InkPoint[],
   color?: string | null,
   widthScale?: number,
+  arrow = false,
 ): { project: VideoProject; inkId: string } {
-  const base = newSlideInk(tool, points, 0, color)
+  const base = newSlideInk(tool, points, 0, color, arrow)
   if (widthScale != null && widthScale !== 1) base.widthScale = widthScale
   const project = mapSlide(p, slideId, (s) => ({
     ...s,

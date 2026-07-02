@@ -79,6 +79,8 @@ export function SlideCanvas({
   const removeElements = useVideoStore((s) => s.removeElements)
   const inkTool = useVideoStore((s) => s.inkTool)
   const setInkTool = useVideoStore((s) => s.setInkTool)
+  const inkArrow = useVideoStore((s) => s.inkArrow)
+  const setInkArrow = useVideoStore((s) => s.setInkArrow)
   const addInk = useVideoStore((s) => s.addInk)
   const updateInk = useVideoStore((s) => s.updateInk)
 
@@ -634,10 +636,13 @@ export function SlideCanvas({
         /* never captured */
       }
       const H = aspectHeightUnits(activeAspect)
-      const pts = coerceInkPoints(inkTool ?? 'freehand', raw)
+      const tool = inkTool ?? 'freehand'
+      const pts = coerceInkPoints(tool, raw)
       if (pts.length >= 2) {
-        // flat width-units → stored (y as a fraction of height, like frames)
-        addInk(slide.id, inkTool ?? 'freehand', pts.map((pt) => ({ x: pt.x, y: pt.y / H })))
+        // flat width-units → stored (y as a fraction of height, like frames).
+        // Freehand never gets an arrowhead; line/curve honour the pre-draw toggle.
+        const arrow = inkArrow && tool !== 'freehand'
+        addInk(slide.id, tool, pts.map((pt) => ({ x: pt.x, y: pt.y / H })), undefined, undefined, arrow)
       } else {
         drawScene(null) // too small — drop the preview line
       }
@@ -734,8 +739,9 @@ export function SlideCanvas({
     { tool: 'freehand', label: '✎', title: 'Freehand pen — draw loops, circles, underlines by hand' },
     { tool: 'line', label: '─', title: 'Straight line' },
     { tool: 'curve', label: '～', title: 'Smooth curve — freehand, coerced to a curve' },
-    { tool: 'arrow', label: '→', title: 'Arrow — straight line with an arrowhead' },
   ]
+  // The arrowhead toggle only applies to line/curve (freehand never gets a head).
+  const arrowApplies = inkTool === 'line' || inkTool === 'curve'
 
   return (
     <div className="slidecanvas">
@@ -758,6 +764,14 @@ export function SlideCanvas({
             {t.label}
           </button>
         ))}
+        <button
+          className={inkArrow ? 'tool tool-on' : 'tool'}
+          disabled={!arrowApplies}
+          title="Arrowhead — draw the next line/curve with an arrow at its end"
+          onClick={() => setInkArrow(!inkArrow)}
+        >
+          →
+        </button>
         <span className="ink-tools-hint muted">
           {inkTool ? 'draw on the slide · Esc to stop' : ''}
         </span>

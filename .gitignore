@@ -2,3 +2,9 @@
 .env
 .env.local
 .env.*.local
+/dist
+/dist
+/dist
+/.npm-cache
+/dist/assets
+/voiceover
